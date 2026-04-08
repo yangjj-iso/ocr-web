@@ -1,0 +1,12 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "batch_supervisor": "./app/studio/langgraph_graphs.py:batch_supervisor_graph",
+    "page_agent": "./app/studio/langgraph_graphs.py:page_agent_graph"
+  },
+  "env": "./.env",
+  "http": {
+    "app": "./app/studio/webapp.py:app"
+  }
+}
+

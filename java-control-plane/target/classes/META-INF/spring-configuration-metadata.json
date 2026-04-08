@@ -1,0 +1,285 @@
+{
+  "groups": [
+    {
+      "name": "ocr.ai",
+      "type": "com.ocrweb.controlplane.config.AiServiceProperties",
+      "sourceType": "com.ocrweb.controlplane.config.AiServiceProperties"
+    },
+    {
+      "name": "ocr.auth",
+      "type": "com.ocrweb.controlplane.config.AuthProperties",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties"
+    },
+    {
+      "name": "ocr.internal-api",
+      "type": "com.ocrweb.controlplane.config.InternalApiProperties",
+      "sourceType": "com.ocrweb.controlplane.config.InternalApiProperties"
+    },
+    {
+      "name": "ocr.local-path",
+      "type": "com.ocrweb.controlplane.config.LocalPathProperties",
+      "sourceType": "com.ocrweb.controlplane.config.LocalPathProperties"
+    },
+    {
+      "name": "ocr.mq.command",
+      "type": "com.ocrweb.controlplane.config.RabbitMqProperties",
+      "sourceType": "com.ocrweb.controlplane.config.RabbitMqProperties"
+    },
+    {
+      "name": "ocr.rate-limit",
+      "type": "com.ocrweb.controlplane.config.RateLimitProperties",
+      "sourceType": "com.ocrweb.controlplane.config.RateLimitProperties"
+    },
+    {
+      "name": "ocr.security",
+      "type": "com.ocrweb.controlplane.config.ControlPlaneSecurityProperties",
+      "sourceType": "com.ocrweb.controlplane.config.ControlPlaneSecurityProperties"
+    },
+    {
+      "name": "ocr.storage",
+      "type": "com.ocrweb.controlplane.config.StorageProperties",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+    }
+  ],
+  "properties": [
+    {
+      "name": "ocr.ai.base-url",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.AiServiceProperties",
+      "defaultValue": "http:\/\/127.0.0.1:8001"
+    },
+    {
+      "name": "ocr.ai.circuit-failure-threshold",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.AiServiceProperties",
+      "defaultValue": 5
+    },
+    {
+      "name": "ocr.ai.circuit-open-seconds",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.AiServiceProperties",
+      "defaultValue": 30
+    },
+    {
+      "name": "ocr.ai.connect-timeout-seconds",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.AiServiceProperties",
+      "defaultValue": 10
+    },
+    {
+      "name": "ocr.ai.health-path",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.AiServiceProperties",
+      "defaultValue": "\/api\/health"
+    },
+    {
+      "name": "ocr.ai.read-timeout-seconds",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.AiServiceProperties",
+      "defaultValue": 300
+    },
+    {
+      "name": "ocr.auth.cookie-name",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": "ocr_session"
+    },
+    {
+      "name": "ocr.auth.cookie-same-site",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": "lax"
+    },
+    {
+      "name": "ocr.auth.cookie-secure",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "ocr.auth.enabled",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "ocr.auth.password",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": "change-me"
+    },
+    {
+      "name": "ocr.auth.secret",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": "change-this-secret"
+    },
+    {
+      "name": "ocr.auth.session-ttl",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": 28800
+    },
+    {
+      "name": "ocr.auth.username",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.AuthProperties",
+      "defaultValue": "admin"
+    },
+    {
+      "name": "ocr.internal-api.base-url",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.InternalApiProperties"
+    },
+    {
+      "name": "ocr.internal-api.token",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.InternalApiProperties"
+    },
+    {
+      "name": "ocr.local-path.roots",
+      "type": "java.util.List<java.lang.String>",
+      "sourceType": "com.ocrweb.controlplane.config.LocalPathProperties"
+    },
+    {
+      "name": "ocr.mq.command.dead-letter-exchange",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.RabbitMqProperties"
+    },
+    {
+      "name": "ocr.mq.command.dead-letter-queue",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.RabbitMqProperties"
+    },
+    {
+      "name": "ocr.mq.command.exchange",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.RabbitMqProperties"
+    },
+    {
+      "name": "ocr.mq.command.queue",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.RabbitMqProperties"
+    },
+    {
+      "name": "ocr.mq.command.routing-key",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.RabbitMqProperties"
+    },
+    {
+      "name": "ocr.rate-limit.batch-ai-max-requests",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.RateLimitProperties",
+      "defaultValue": 90
+    },
+    {
+      "name": "ocr.rate-limit.enabled",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.ocrweb.controlplane.config.RateLimitProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "ocr.rate-limit.general-max-requests",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.RateLimitProperties",
+      "defaultValue": 600
+    },
+    {
+      "name": "ocr.rate-limit.preview-max-requests",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.RateLimitProperties",
+      "defaultValue": 240
+    },
+    {
+      "name": "ocr.rate-limit.upload-max-requests",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.RateLimitProperties",
+      "defaultValue": 30
+    },
+    {
+      "name": "ocr.rate-limit.window-seconds",
+      "type": "java.lang.Integer",
+      "sourceType": "com.ocrweb.controlplane.config.RateLimitProperties",
+      "defaultValue": 60
+    },
+    {
+      "name": "ocr.security.cors-allow-credentials",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.ocrweb.controlplane.config.ControlPlaneSecurityProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "ocr.security.cors-allowed-origins",
+      "type": "java.util.List<java.lang.String>",
+      "sourceType": "com.ocrweb.controlplane.config.ControlPlaneSecurityProperties"
+    },
+    {
+      "name": "ocr.security.cors-max-age-seconds",
+      "type": "java.lang.Long",
+      "sourceType": "com.ocrweb.controlplane.config.ControlPlaneSecurityProperties",
+      "defaultValue": 3600
+    },
+    {
+      "name": "ocr.security.public-paths",
+      "type": "java.util.List<java.lang.String>",
+      "sourceType": "com.ocrweb.controlplane.config.ControlPlaneSecurityProperties"
+    },
+    {
+      "name": "ocr.security.require-user-auth",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.ocrweb.controlplane.config.ControlPlaneSecurityProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "ocr.storage.access-key",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+    },
+    {
+      "name": "ocr.storage.backend",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": "local"
+    },
+    {
+      "name": "ocr.storage.bucket",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": "ocr-source"
+    },
+    {
+      "name": "ocr.storage.endpoint",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+    },
+    {
+      "name": "ocr.storage.key-prefix",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": "uploads"
+    },
+    {
+      "name": "ocr.storage.path-style",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "ocr.storage.region",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": "us-east-1"
+    },
+    {
+      "name": "ocr.storage.secret-key",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+    },
+    {
+      "name": "ocr.storage.upload-dir",
+      "type": "java.lang.String",
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+    }
+  ],
+  "hints": []
+}
