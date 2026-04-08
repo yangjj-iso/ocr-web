@@ -1,31 +1,25 @@
 from pathlib import Path
 
 
-def test_main_uses_v1_router_registry():
-    content = Path("app/main.py").read_text(encoding="utf-8")
-    assert "include_v1_routers(app)" in content
-    assert "from app.interfaces.api.v1 import include_v1_routers" in content
+def test_python_web_surface_is_ai_only():
+    assert not Path("app/main.py").exists()
+    assert not Path("app/main_business.py").exists()
+    assert not Path("app/interfaces/api/v1/router_registry.py").exists()
+    assert not Path("app/interfaces/api/business/router_registry.py").exists()
 
 
-def test_router_registry_includes_all_core_router_modules():
-    content = Path("app/interfaces/api/v1/router_registry.py").read_text(encoding="utf-8")
-    required_modules = [
-        "include_business_routers",
-        "include_ai_routers",
-    ]
-    for module in required_modules:
+def test_main_ai_uses_ai_router_registry():
+    content = Path("app/main_ai.py").read_text(encoding="utf-8")
+    assert "include_ai_routers" in content
+    assert "router_loader=include_ai_routers" in content
+
+
+def test_compatibility_router_keeps_only_ai_modules():
+    content = Path("app/api/routes.py").read_text(encoding="utf-8")
+    for module in ["tasks_router", "ai_batches_router", "qa_router", "evaluation_router", "files_router"]:
         assert module in content
-
-
-def test_split_router_registries_are_defined():
-    business_content = Path("app/interfaces/api/business/router_registry.py").read_text(encoding="utf-8")
-    ai_content = Path("app/interfaces/api/ai/router_registry.py").read_text(encoding="utf-8")
-
-    for module in ["auth_routes", "archives", "business_batches"]:
-        assert module in business_content
-
-    for module in ["tasks", "ai_batches", "qa", "evaluation", "files"]:
-        assert module in ai_content
+    for module in ["auth_router", "archives_router", "business_batches_router"]:
+        assert module not in content
 
 
 def test_api_modules_do_not_import_legacy_services_directly():

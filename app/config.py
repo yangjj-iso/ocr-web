@@ -95,10 +95,60 @@ DATABASE_URL = os.getenv(
 )
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
+MQ_BROKER_URL = os.getenv(
+    "MQ_BROKER_URL",
+    os.getenv("RABBITMQ_URL", "amqp://ocr_admin:ocr_password123@127.0.0.1:5672//"),
+).strip()
+MQ_COMMAND_EXCHANGE = os.getenv("MQ_COMMAND_EXCHANGE", "ocr.task.command.exchange").strip()
+MQ_COMMAND_QUEUE = os.getenv("MQ_COMMAND_QUEUE", "ocr.task.command.queue").strip()
+MQ_COMMAND_ROUTING_KEY = os.getenv("MQ_COMMAND_ROUTING_KEY", "ocr.task.submit.v1").strip()
+MQ_COMMAND_DLX = os.getenv("MQ_COMMAND_DLX", "ocr.task.command.dlx").strip()
+MQ_COMMAND_DLQ = os.getenv("MQ_COMMAND_DLQ", "ocr.task.command.dlq").strip()
+MQ_PUBLISH_RETRY_MAX = max(0, int(os.getenv("MQ_PUBLISH_RETRY_MAX", "3")))
+MQ_PREFETCH_COUNT = max(1, int(os.getenv("MQ_PREFETCH_COUNT", "1")))
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", MQ_BROKER_URL).strip()
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "").strip() or None
+CELERY_TASK_EXCHANGE = os.getenv("CELERY_TASK_EXCHANGE", "ocr.compute.internal.exchange").strip()
+CELERY_TASK_QUEUE = os.getenv("CELERY_TASK_QUEUE", "ocr.compute.internal.queue").strip()
+CELERY_TASK_ROUTING_KEY = os.getenv("CELERY_TASK_ROUTING_KEY", "ocr.compute.execute.v1").strip()
+CONTROL_PLANE_BASE_URL = os.getenv("CONTROL_PLANE_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+CONTROL_PLANE_INTERNAL_TOKEN = os.getenv(
+    "CONTROL_PLANE_INTERNAL_TOKEN",
+    os.getenv("OCR_INTERNAL_API_TOKEN", "change-this-internal-token"),
+).strip()
+CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS = float(os.getenv("CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS", "15"))
+CONTROL_PLANE_VERIFY_TLS = _env_flag("CONTROL_PLANE_VERIFY_TLS", True)
+COMPUTE_WORKER_ID = os.getenv("COMPUTE_WORKER_ID", "py-compute-worker").strip() or "py-compute-worker"
+CALLBACK_INLINE_RESULT_MAX_BYTES = max(32768, int(os.getenv("CALLBACK_INLINE_RESULT_MAX_BYTES", str(1024 * 1024))))
+LANGGRAPH_CHECKPOINTER_BACKEND = _env_choice(
+    "LANGGRAPH_CHECKPOINTER_BACKEND",
+    "memory",
+    {"memory", "postgres", "redis"},
+)
+LANGGRAPH_CHECKPOINTER_DSN = os.getenv("LANGGRAPH_CHECKPOINTER_DSN", "").strip()
+LANGGRAPH_CHECKPOINTER_REDIS_URL = os.getenv("LANGGRAPH_CHECKPOINTER_REDIS_URL", "").strip()
+LANGGRAPH_HITL_ENABLED = _env_flag("LANGGRAPH_HITL_ENABLED", True)
+LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD = float(
+    os.getenv("LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD", "0.70")
+)
+LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "").strip()
+LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "ocr-web-compute").strip() or "ocr-web-compute"
+LANGCHAIN_ENDPOINT = os.getenv("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com").strip()
+LANGCHAIN_TRACING_V2 = _env_flag("LANGCHAIN_TRACING_V2", bool(LANGCHAIN_API_KEY))
+if LANGCHAIN_API_KEY and LANGCHAIN_TRACING_V2:
+    os.environ.setdefault("LANGCHAIN_API_KEY", LANGCHAIN_API_KEY)
+    os.environ.setdefault("LANGCHAIN_PROJECT", LANGCHAIN_PROJECT)
+    os.environ.setdefault("LANGCHAIN_ENDPOINT", LANGCHAIN_ENDPOINT)
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
 
 # File storage
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads"))).resolve(strict=False)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+WORKER_TEMP_DIR = Path(os.getenv("WORKER_TEMP_DIR", str(CACHE_DIR / "worker-temp"))).resolve(strict=False)
+WORKER_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+WORKER_METRICS_ENABLED = _env_flag("WORKER_METRICS_ENABLED", True)
+WORKER_METRICS_HOST = os.getenv("WORKER_METRICS_HOST", "0.0.0.0").strip() or "0.0.0.0"
+WORKER_METRICS_PORT = int(os.getenv("WORKER_METRICS_PORT", "9108"))
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pdf"}
 MAX_FILE_SIZE = 50 * 1024 * 1024
 

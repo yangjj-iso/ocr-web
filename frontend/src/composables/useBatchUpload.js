@@ -438,6 +438,7 @@ export function useBatchUpload(mode, callbacks = {}) {
     const submittedTaskIds = []
     let submissionFailures = 0
     let submittedCount = 0
+    let firstSubmissionError = ''
     let needExcelInit = !!excelPath.value.trim()
     for (const file of selectedFiles) {
       try {
@@ -452,8 +453,14 @@ export function useBatchUpload(mode, callbacks = {}) {
           submittedTaskIds.push(data.id)
           needExcelInit = false
         }
-      } catch (_) {
+      } catch (error) {
         submissionFailures += 1
+        firstSubmissionError ||= normalizeAiErrorMessage(error, '材料提交失败，请检查控制面与计算面服务。')
+        console.error('[useBatchUpload] uploadFile failed', {
+          filename: file?.name,
+          mode,
+          error,
+        })
       } finally {
         submittedCount += 1
         updateUploadProgress(submittedCount, requestedCount)
@@ -472,8 +479,14 @@ export function useBatchUpload(mode, callbacks = {}) {
           submittedTaskIds.push(data.id)
           needExcelInit = false
         }
-      } catch (_) {
+      } catch (error) {
         submissionFailures += 1
+        firstSubmissionError ||= normalizeAiErrorMessage(error, '目录材料提交失败，请检查控制面与计算面服务。')
+        console.error('[useBatchUpload] uploadFromPath failed', {
+          path: item?.path,
+          mode,
+          error,
+        })
       } finally {
         submittedCount += 1
         updateUploadProgress(submittedCount, requestedCount)
@@ -519,8 +532,15 @@ export function useBatchUpload(mode, callbacks = {}) {
     }
 
     if (submissionFailures) {
-      setStatus(`本次处理已完成，但有 ${submissionFailures} 份材料处理异常。`, true)
-      setImportState(IMPORT_STAGE.COMPLETED, `处理完成，共核验 ${requestedCount} 份材料，其中 ${submissionFailures} 份需要复核。`, 100)
+      const detail = firstSubmissionError ? ` 原因：${firstSubmissionError}` : ''
+      setStatus(`本次处理已完成，但有 ${submissionFailures} 份材料处理异常。${detail}`, true)
+      setImportState(
+        IMPORT_STAGE.COMPLETED,
+        submittedTaskIds.length
+          ? `处理完成，共核验 ${requestedCount} 份材料，其中 ${submissionFailures} 份需要复核。`
+          : `材料未成功提交到后台。${firstSubmissionError || '请检查控制面、RabbitMQ 与 Worker 是否已启动。'}`,
+        100
+      )
     } else {
       setStatus(`本次处理已完成，共纳入 ${submittedTaskIds.length} 份材料。`)
       setImportState(IMPORT_STAGE.COMPLETED, `处理完成，共纳入 ${submittedTaskIds.length} 份材料。`, 100)

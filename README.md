@@ -6,10 +6,54 @@
 
 系统采用 **Vue 3 + FastAPI + PostgreSQL + Redis** 技术栈，支持内网部署，识别链路与数据存储在本地完成。
 
-当前仓库已支持两种后端运行方式：
+当前仓库已收敛为“Java 控制面 + Python AI 计算面”：
 
-- `app/main.py`：单体兼容模式，业务接口与 AI 接口一起启动
-- `app/main_business.py` + `app/main_ai.py`：拆分模式，分别启动业务服务和 AI 文档服务
+- `java-control-plane/`：控制面与业务入口
+- `app/main_ai.py`：Python AI API 兼容层
+- `app/main_worker.py`：Python 计算 Worker
+- `langgraph.json`：LangGraph Studio / `langgraph dev` 本地调试入口
+
+### 控制面 / 计算面拆分
+
+- Java 控制面：负责上传、任务生命周期、RabbitMQ 投递、状态查询、内部回调持久化
+- Python 计算面：负责 PaddleOCR、Vision LLM、LangGraph、规则引擎、Prometheus 指标与显存回收
+- 两端契约位于 [`app/infrastructure/queue/contracts.py`](/D:/Code/work/OCR-WEB-main/app/infrastructure/queue/contracts.py)
+- 计算面 Worker 入口位于 [`app/main_worker.py`](/D:/Code/work/OCR-WEB-main/app/main_worker.py)
+- 详细说明见 [`docs/control-plane-compute-plane.md`](/D:/Code/work/OCR-WEB-main/docs/control-plane-compute-plane.md)
+
+推荐把控制面存储层切到 MinIO / OSS / 其他 S3 兼容对象存储，避免 Worker 依赖共享本地目录。Worker 默认会额外导出 Prometheus 指标，便于监控队列深度、人工暂停量、页级耗时和 GPU 缓存清理次数。
+
+### LangGraph Studio 本地调试
+
+仓库已内置 LangGraph Studio 配置：
+
+- 图导出模块：[`app/studio/langgraph_graphs.py`](/D:/Code/work/OCR-WEB-main/app/studio/langgraph_graphs.py)
+- 本地调试 WebApp：[`app/studio/webapp.py`](/D:/Code/work/OCR-WEB-main/app/studio/webapp.py)
+- Studio 配置文件：[`langgraph.json`](/D:/Code/work/OCR-WEB-main/langgraph.json)
+
+安装依赖后，可直接在仓库根目录启动：
+
+```powershell
+cd D:\Code\work\OCR-WEB-main
+.\.venv\Scripts\langgraph.exe dev --no-browser --port 8123
+```
+
+启动成功后：
+
+- LangGraph Studio Base URL 填 `http://127.0.0.1:8123`
+- 可用图 ID：
+  - `batch_supervisor`
+  - `page_agent`
+
+若要从 LangSmith Trace 页面点击 `Run in Studio` / `Clone trace locally`，也应填写同一个 Base URL。
+
+前端若接入这套控制面/计算面拆分，推荐环境变量：
+
+```text
+VITE_CONTROL_PLANE_API_BASE_URL=http://localhost:8080
+VITE_AI_API_BASE_URL=http://localhost:8001
+VITE_AI_FILE_BASE_URL=http://localhost:8001
+```
 
 ### 对外汇报口径（甲方版）
 
@@ -93,8 +137,6 @@ d:\OCR\
 │   │   └── models.py              # ORM 模型（ocr_tasks 表）
 │   ├── schemas/
 │   │   └── ocr_schemas.py         # Pydantic 响应模型
-│   ├── interfaces/api/v1/         # API 路由注册入口
-│   ├── interfaces/api/business/   # 业务服务路由注册入口
 │   ├── interfaces/api/ai/         # AI 服务路由注册入口
 │   └── services/
 │       ├── ocr_service.py         # OCR 业务逻辑（创建任务/运行/搜索）
@@ -211,27 +253,25 @@ Start-Process "D:\Redis\redis-server.exe"
 
 ### 4. 启动后端
 
-单体兼容模式：
+控制面 / 计算面模式：
 
 ```powershell
-D:\OCR-WEB-main\.venv\Scripts\python.exe app\main.py
-```
+# Java 控制面
+cd D:\Code\work\OCR-WEB-main\java-control-plane
+mvn spring-boot:run
 
-拆分模式：
+# Python AI API
+D:\Code\work\OCR-WEB-main\.venv\Scripts\python.exe app\main_ai.py
 
-```powershell
-# 业务服务（鉴权 / 归档 / 扫描 / 批次建档）
-D:\OCR-WEB-main\.venv\Scripts\python.exe app\main_business.py
-
-# AI 文档服务（OCR / 文档边界识别 / QA / 评测）
-D:\OCR-WEB-main\.venv\Scripts\python.exe app\main_ai.py
+# Python Worker
+D:\Code\work\OCR-WEB-main\.venv\Scripts\python.exe app\main_worker.py
 ```
 
 说明：
 
-- `main.py` 适合本地开发和兼容现有部署。
-- `main_business.py` 不启动 OCR worker。
-- `main_ai.py` 会启动 OCR worker，并负责文档边界识别、批次整合、QA 和评测链路。
+- Java 控制面负责认证、归档、上传、任务生命周期和 MQ 投递。
+- `main_ai.py` 仅保留 AI 预览、批次分析、QA、评测等代理/兼容接口。
+- `main_worker.py` 负责 OCR、LangGraph、Vision LLM 与人审续跑。
 - Windows 环境下默认不启用热重载，避免重载子进程引用错误 Python 解释器导致服务异常。
 
 ### 5. 启动前端（端口 3000）

@@ -93,8 +93,8 @@
               <div class="ml-2 flex flex-shrink-0 items-center gap-2">
                 <span
                   class="rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-                  :class="task.status === 'done' ? 'bg-emerald-100 text-emerald-700' : task.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'"
-                >{{ task.status === 'done' ? '完成' : task.status === 'failed' ? '失败' : '处理中' }}</span>
+                  :class="task.status === 'done' ? 'bg-emerald-100 text-emerald-700' : task.status === 'failed' ? 'bg-red-100 text-red-700' : task.status === 'human_review' ? 'bg-violet-100 text-violet-700' : 'bg-amber-100 text-amber-700'"
+                >{{ task.status === 'done' ? '完成' : task.status === 'failed' ? '失败' : task.status === 'human_review' ? '待复核' : '处理中' }}</span>
                 <span class="text-[11px] gov-muted">{{ formatTime(task.created_at) }}</span>
               </div>
             </div>
@@ -268,7 +268,7 @@ function openLatestResult(group) {
 }
 
 function canOpenTask(task) {
-  return ['done', 'failed'].includes(String(task?.status || ''))
+  return ['done', 'failed', 'human_review'].includes(String(task?.status || ''))
 }
 
 defineExpose({ refresh, groups })

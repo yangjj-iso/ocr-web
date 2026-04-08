@@ -148,7 +148,7 @@ export function useResultViewState({ taskId, route, router }) {
     try {
       const { data } = await getTask(taskId.value)
       applyTask(data)
-      if (!['done', 'failed'].includes(data?.status)) {
+      if (!['done', 'failed', 'human_review'].includes(data?.status)) {
         await startPolling()
       }
       if ((data?.result_data?.pages || []).length) {

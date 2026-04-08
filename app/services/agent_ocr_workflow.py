@@ -7,11 +7,14 @@ import base64
 import json
 import logging
 import mimetypes
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Awaitable, Callable, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +30,13 @@ from config import (
     CONFIDENCE_THRESHOLD,
     HUMAN_REVIEW_MAX_CONFIDENCE,
     HUMAN_REVIEW_MIN_CONFIDENCE,
+    LANGCHAIN_PROJECT,
+    LANGCHAIN_TRACING_V2,
+    LANGGRAPH_CHECKPOINTER_BACKEND,
+    LANGGRAPH_CHECKPOINTER_DSN,
+    LANGGRAPH_CHECKPOINTER_REDIS_URL,
+    LANGGRAPH_HITL_ENABLED,
+    LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD,
     MAX_RETRIES,
     VISION_ROUTE_COMPLEXITY_THRESHOLD,
 )
@@ -39,6 +49,8 @@ except ImportError:  # pragma: no cover - optional in stripped environments
 
 
 logger = logging.getLogger(__name__)
+_WORKFLOW_EVENT_CALLBACKS: dict[str, Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]]] = {}
+_WORKFLOW_DB_SESSIONS: dict[str, AsyncSession] = {}
 
 ARCHIVE_FIELDS = ["档号", "文号", "责任者", "题名", "日期", "页数", "密级", "备注"]
 PROCESSING_STRATEGIES = [
@@ -87,10 +99,11 @@ class BatchSupervisorState(TypedDict, total=False):
     filename: str
     file_path: str
     mode: str
-    db: AsyncSession | None
     batch_folder: str
     page_images: list[str]
     temp_page_images: list[str]
+    current_page_index: int
+    total_pages: int
     page_outputs: list[dict[str, Any]]
     combined_pages: list[dict[str, Any]]
     merged_fields: dict[str, str]
@@ -103,9 +116,10 @@ class BatchSupervisorState(TypedDict, total=False):
     review_reason: str
     quality_metrics: dict[str, Any]
     archive_saved: bool
+    pending_interrupt: dict[str, Any] | None
+    resume_target: str
+    workflow_thread_id: str
     workflow_result: dict[str, Any] | None
-
-
 def _blank_fields() -> dict[str, str]:
     return {field: "" for field in ARCHIVE_FIELDS}
 
@@ -139,6 +153,256 @@ def _dedupe_issues(values: list[str]) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _page_outputs_to_combined_pages(page_outputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(page_outputs, key=lambda item: int(item.get("page_num") or 0))
+    return normalize_result_pages([dict(item.get("page") or {}) for item in ordered if item.get("page")])
+
+
+def _summarize_page_outputs(page_outputs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], float, list[str]]:
+    combined_pages = _page_outputs_to_combined_pages(page_outputs)
+    confidences = [_clamp_confidence(item.get("confidence")) for item in page_outputs if item is not None]
+    overall_confidence = round(sum(confidences) / len(confidences), 4) if confidences else 0.0
+    issues = _dedupe_issues(
+        [
+            str(issue)
+            for item in page_outputs
+            for issue in (item.get("issues") or [])
+        ]
+    )
+    return combined_pages, overall_confidence, issues
+
+
+def _build_workflow_thread_id(task_id: int, batch_id: str) -> str:
+    safe_batch = _clean_text(batch_id).replace(" ", "_") or "default"
+    return f"ocr-task-{int(task_id)}-{safe_batch}"
+
+
+def _register_workflow_runtime(
+    thread_id: str,
+    *,
+    db: AsyncSession | None = None,
+    event_callback: Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None = None,
+) -> None:
+    if db is not None:
+        _WORKFLOW_DB_SESSIONS[thread_id] = db
+    if event_callback is not None:
+        _WORKFLOW_EVENT_CALLBACKS[thread_id] = event_callback
+
+
+def _clear_workflow_runtime(thread_id: str) -> None:
+    _WORKFLOW_DB_SESSIONS.pop(thread_id, None)
+    _WORKFLOW_EVENT_CALLBACKS.pop(thread_id, None)
+
+
+def _get_workflow_db_session(state: BatchSupervisorState) -> AsyncSession | None:
+    thread_id = _clean_text(state.get("workflow_thread_id"))
+    if not thread_id:
+        return None
+    return _WORKFLOW_DB_SESSIONS.get(thread_id)
+
+
+def _get_event_callback(
+    state: BatchSupervisorState,
+) -> Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None:
+    thread_id = _clean_text(state.get("workflow_thread_id"))
+    if not thread_id:
+        return None
+    return _WORKFLOW_EVENT_CALLBACKS.get(thread_id)
+
+
+@lru_cache(maxsize=1)
+def get_langgraph_checkpointer():
+    backend = LANGGRAPH_CHECKPOINTER_BACKEND
+    if backend == "postgres" and LANGGRAPH_CHECKPOINTER_DSN:
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver  # type: ignore[import-not-found]
+
+            saver_factory = getattr(PostgresSaver, "from_conn_string", None)
+            if callable(saver_factory):
+                return saver_factory(LANGGRAPH_CHECKPOINTER_DSN)
+            return PostgresSaver(LANGGRAPH_CHECKPOINTER_DSN)
+        except Exception:
+            logger.warning("Falling back to InMemorySaver because Postgres checkpointer is unavailable.", exc_info=True)
+    if backend == "redis" and LANGGRAPH_CHECKPOINTER_REDIS_URL:
+        try:
+            from langgraph.checkpoint.redis import RedisSaver  # type: ignore[import-not-found]
+
+            saver_factory = getattr(RedisSaver, "from_conn_string", None)
+            if callable(saver_factory):
+                return saver_factory(LANGGRAPH_CHECKPOINTER_REDIS_URL)
+            return RedisSaver(LANGGRAPH_CHECKPOINTER_REDIS_URL)
+        except Exception:
+            logger.warning("Falling back to InMemorySaver because Redis checkpointer is unavailable.", exc_info=True)
+    return InMemorySaver()
+
+
+def _workflow_config(task_id: int, batch_id: str, thread_id: str) -> dict[str, Any]:
+    metadata = {
+        "task_id": int(task_id),
+        "batch_id": _clean_text(batch_id),
+        "component": "langgraph-batch-supervisor",
+        "thread_id": thread_id,
+    }
+    config: dict[str, Any] = {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+        "tags": ["ocr-web", "batch-supervisor", "hierarchical-agent"],
+    }
+    if LANGCHAIN_TRACING_V2:
+        config["run_name"] = LANGCHAIN_PROJECT
+    return config
+
+
+def _merge_field_overlay(base_fields: dict[str, Any] | None, override_fields: dict[str, Any] | None) -> dict[str, str]:
+    merged = _normalize_fields(base_fields)
+    for field, value in (override_fields or {}).items():
+        if field not in merged:
+            continue
+        cleaned = _clean_text(value)
+        if cleaned:
+            merged[field] = cleaned
+    return merged
+
+
+def _apply_resume_payload_to_page_output(
+    page_output: dict[str, Any],
+    resume_payload: dict[str, Any],
+) -> dict[str, Any]:
+    updated = dict(page_output)
+    page_num = int(updated.get("page_num") or 0)
+    fields = _merge_field_overlay(updated.get("fields"), resume_payload.get("fields") or resume_payload.get("updated_fields"))
+    page = dict(updated.get("page") or {})
+    agent_meta = dict(page.get("agent_meta") or {})
+    corrected_text = _clean_text(resume_payload.get("page_text") or resume_payload.get("corrected_text"))
+    if corrected_text:
+        corrected_page = _page_from_transcript(page_num, corrected_text)
+        corrected_page["agent_meta"] = agent_meta
+        page = normalize_result_pages([corrected_page])[0]
+    notes = _clean_text(resume_payload.get("notes") or resume_payload.get("comment"))
+    reviewed_by = _clean_text(resume_payload.get("reviewed_by"))
+    updated_confidence = max(
+        _clamp_confidence(updated.get("confidence")),
+        _clamp_confidence(resume_payload.get("confidence") or 0.98),
+    )
+    updated["fields"] = fields
+    updated["confidence"] = updated_confidence
+    updated["human_review"] = False
+    updated["review_reason"] = notes or "人工复核已完成，继续执行工作流。"
+    updated["issues"] = _dedupe_issues([str(item) for item in (resume_payload.get("issues") or [])])
+    agent_meta["fields"] = fields
+    agent_meta["confidence"] = updated_confidence
+    agent_meta["human_review"] = False
+    agent_meta["review_reason"] = updated["review_reason"]
+    agent_meta["issues"] = list(updated["issues"])
+    agent_meta["reviewed_at"] = _utc_now_iso()
+    if reviewed_by:
+        agent_meta["reviewed_by"] = reviewed_by
+    page["agent_meta"] = agent_meta
+    updated["page"] = normalize_result_pages([page])[0] if page else page
+    return updated
+
+
+def _build_page_interrupt_payload(state: BatchSupervisorState, page_output: dict[str, Any]) -> dict[str, Any]:
+    page_num = int(page_output.get("page_num") or 0)
+    return {
+        "kind": "page_human_review",
+        "task_id": int(state.get("task_id") or 0),
+        "batch_id": _clean_text(state.get("batch_id")),
+        "filename": _clean_text(state.get("filename")),
+        "workflow_thread_id": _clean_text(state.get("workflow_thread_id")),
+        "page_num": page_num,
+        "confidence": _clamp_confidence(page_output.get("confidence")),
+        "review_reason": _clean_text(page_output.get("review_reason")),
+        "issues": list(page_output.get("issues") or []),
+        "fields": _normalize_fields(page_output.get("fields")),
+        "page": page_output.get("page") or {},
+        "progress": {
+            "current_page": page_num,
+            "total_pages": int(state.get("total_pages") or 0),
+            "percent": round((page_num / max(1, int(state.get("total_pages") or 1))) * 100.0, 2),
+        },
+    }
+
+
+def _build_batch_interrupt_payload(state: BatchSupervisorState) -> dict[str, Any]:
+    return {
+        "kind": "batch_human_review",
+        "task_id": int(state.get("task_id") or 0),
+        "batch_id": _clean_text(state.get("batch_id")),
+        "filename": _clean_text(state.get("filename")),
+        "workflow_thread_id": _clean_text(state.get("workflow_thread_id")),
+        "review_status": _clean_text(state.get("review_status")) or "pending_human_review",
+        "review_reason": _clean_text(state.get("review_reason")),
+        "issues": list(state.get("issues") or []),
+        "fields": _normalize_fields(state.get("merged_fields")),
+        "consistency": dict(state.get("consistency") or {}),
+        "quality_metrics": dict(state.get("quality_metrics") or {}),
+        "progress": {
+            "current_page": int(state.get("current_page_index") or 0),
+            "total_pages": int(state.get("total_pages") or 0),
+            "percent": round(
+                (
+                    int(state.get("current_page_index") or 0)
+                    / max(1, int(state.get("total_pages") or 1))
+                )
+                * 100.0,
+                2,
+            ),
+        },
+    }
+
+
+def _build_interrupted_workflow_result(state: dict[str, Any], workflow_thread_id: str) -> dict[str, Any]:
+    page_outputs = list(state.get("page_outputs") or [])
+    combined_pages, overall_confidence, issues = _summarize_page_outputs(page_outputs)
+    interrupt_items = list(state.get("__interrupt__") or [])
+    interrupt_payload = {}
+    if interrupt_items:
+        interrupt_payload = dict(getattr(interrupt_items[0], "value", {}) or {})
+    return {
+        "status": "INTERRUPTED",
+        "pages": combined_pages,
+        "full_text": serialize_pages_text(combined_pages),
+        "page_count": len(combined_pages),
+        "final_fields": _normalize_fields(state.get("merged_fields")),
+        "overall_confidence": overall_confidence,
+        "issues": _dedupe_issues(issues + [str(item) for item in interrupt_payload.get("issues", [])]),
+        "human_review": True,
+        "review_status": _clean_text(state.get("review_status")) or "pending_human_review",
+        "review_reason": _clean_text(state.get("review_reason")) or _clean_text(interrupt_payload.get("review_reason")),
+        "quality_metrics": dict(state.get("quality_metrics") or {}),
+        "rag_examples": list(state.get("rag_examples") or []),
+        "consistency": dict(state.get("consistency") or {}),
+        "page_outputs": page_outputs,
+        "workflow_thread_id": workflow_thread_id,
+        "interrupt_payload": interrupt_payload,
+    }
+
+
+async def _emit_state_event(
+    state: BatchSupervisorState,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+    progress: dict[str, Any] | None = None,
+) -> None:
+    callback = _get_event_callback(state)
+    if callback is None:
+        return
+    try:
+        await callback(event_type, payload or {}, progress or {})
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "State callback failed: task_id=%s, event_type=%s",
+            state.get("task_id"),
+            event_type,
+            exc_info=True,
+        )
 
 
 def _normalize_fields(fields: dict[str, Any] | None) -> dict[str, str]:
@@ -229,10 +493,26 @@ def _parse_json_object(payload: str) -> dict[str, Any]:
     try:
         return json.loads(content)
     except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        for start in (index for index, char in enumerate(content) if char in "{["):
+            try:
+                parsed, _ = decoder.raw_decode(content[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
         start = content.find("{")
         end = content.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(content[start : end + 1])
+            candidate = content[start : end + 1]
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                logger.debug("Failed to salvage JSON payload: %s", candidate[:500], exc_info=True)
+            else:
+                if isinstance(parsed, dict):
+                    return parsed
+        logger.debug("Unable to parse JSON object from payload: %s", content[:1000])
         raise
 
 
@@ -711,7 +991,7 @@ def _build_quality_metrics(
 
 async def node_prepare_batch(state: BatchSupervisorState) -> dict[str, Any]:
     task_id = int(state["task_id"])
-    db = state.get("db")
+    db = _get_workflow_db_session(state)
     task = await db.get(OCRTask, task_id) if db is not None else None
     filename = state.get("filename") or (task.filename if task else "")
     file_path = state.get("file_path") or (task.file_path if task else "")
@@ -734,93 +1014,152 @@ async def node_prepare_batch(state: BatchSupervisorState) -> dict[str, Any]:
         "batch_folder": str(Path(file_path).parent),
         "page_images": page_images,
         "temp_page_images": temp_page_images,
+        "current_page_index": int(state.get("current_page_index") or 0),
+        "total_pages": len(page_images),
+        "page_outputs": list(state.get("page_outputs") or []),
+        "workflow_thread_id": _clean_text(state.get("workflow_thread_id"))
+        or _build_workflow_thread_id(task_id, _clean_text(state.get("batch_id"))),
     }
 
 
-async def node_run_page_agents(state: BatchSupervisorState) -> dict[str, Any]:
+async def route_after_prepare_batch(state: BatchSupervisorState) -> str:
+    if int(state.get("current_page_index") or 0) >= len(state.get("page_images") or []):
+        return "node_cross_page_consistency"
+    return "node_process_next_page"
+
+
+async def node_process_next_page(state: BatchSupervisorState) -> dict[str, Any]:
     page_graph = get_page_agent_graph()
     page_images = state.get("page_images") or []
     if not page_images:
         raise ValueError("No page images available for hierarchical OCR workflow.")
+    current_index = int(state.get("current_page_index") or 0)
+    if current_index >= len(page_images):
+        combined_pages, overall_confidence, issues = _summarize_page_outputs(list(state.get("page_outputs") or []))
+        return {
+            "combined_pages": combined_pages,
+            "overall_confidence": overall_confidence,
+            "issues": issues,
+        }
 
-    concurrency = min(4, max(1, len(page_images)))
-    semaphore = asyncio.Semaphore(concurrency)
-
-    async def _run_page(page_num: int, image_path: str) -> dict[str, Any]:
-        async with semaphore:
-            initial_state: PageAgentState = {
-                "task_id": int(state["task_id"]),
-                "batch_id": _clean_text(state.get("batch_id")),
-                "filename": _clean_text(state.get("filename")),
-                "mode": _clean_text(state.get("mode")) or "layout",
-                "page_num": page_num,
-                "image_path": image_path,
-                "max_retries": MAX_RETRIES,
-                "retry_count": 0,
-                "processing_strategy": "none",
-            }
-            try:
-                page_state = await page_graph.ainvoke(initial_state)
-                output = page_state.get("page_output") or {}
-                if output:
-                    return output
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "Page agent subgraph failed: task=%s page=%s",
-                    state.get("task_id"),
-                    page_num,
-                )
-                return {
-                    "page_num": page_num,
-                    "page": normalize_result_pages(
-                        [
-                            {
-                                **_page_from_transcript(page_num, ""),
-                                "agent_meta": {
-                                    "confidence": 0.0,
-                                    "issues": [f"Page Agent 执行失败：{exc}"],
-                                    "source": "fallback",
-                                    "retry_count": 0,
-                                    "processing_strategy": "none",
-                                    "human_review": True,
-                                    "review_reason": "页面子图执行失败，需要人工复核。",
-                                },
-                            }
-                        ]
-                    )[0],
-                    "fields": _blank_fields(),
-                    "confidence": 0.0,
-                    "issues": [f"Page Agent 执行失败：{exc}"],
-                    "source": "fallback",
-                    "retry_count": 0,
-                    "processing_strategy": "none",
-                    "human_review": True,
-                    "review_reason": "页面子图执行失败，需要人工复核。",
-                }
+    page_num = current_index + 1
+    image_path = page_images[current_index]
+    initial_state: PageAgentState = {
+        "task_id": int(state["task_id"]),
+        "batch_id": _clean_text(state.get("batch_id")),
+        "filename": _clean_text(state.get("filename")),
+        "mode": _clean_text(state.get("mode")) or "layout",
+        "page_num": page_num,
+        "image_path": image_path,
+        "max_retries": MAX_RETRIES,
+        "retry_count": 0,
+        "processing_strategy": "none",
+    }
+    try:
+        page_state = await page_graph.ainvoke(initial_state)
+        output = page_state.get("page_output") or {}
+        if not output:
             raise RuntimeError(f"Page agent did not return page_output for page {page_num}.")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Page agent subgraph failed: task=%s page=%s",
+            state.get("task_id"),
+            page_num,
+        )
+        output = {
+            "page_num": page_num,
+            "page": normalize_result_pages(
+                [
+                    {
+                        **_page_from_transcript(page_num, ""),
+                        "agent_meta": {
+                            "confidence": 0.0,
+                            "issues": [f"Page Agent 执行失败：{exc}"],
+                            "source": "fallback",
+                            "retry_count": 0,
+                            "processing_strategy": "none",
+                            "human_review": True,
+                            "review_reason": "页面子图执行失败，需要人工复核。",
+                        },
+                    }
+                ]
+            )[0],
+            "fields": _blank_fields(),
+            "confidence": 0.0,
+            "issues": [f"Page Agent 执行失败：{exc}"],
+            "source": "fallback",
+            "retry_count": 0,
+            "processing_strategy": "none",
+            "human_review": True,
+            "review_reason": "页面子图执行失败，需要人工复核。",
+        }
 
-    page_outputs = await asyncio.gather(
-        *(_run_page(index + 1, image_path) for index, image_path in enumerate(page_images))
+    await _emit_state_event(
+        state,
+        "PAGE_COMPLETED",
+        {
+            "page_no": page_num,
+            "page_confidence": _clamp_confidence(output.get("confidence")),
+            "issues": list(output.get("issues") or []),
+            "human_review_required": bool(output.get("human_review"))
+            or _clamp_confidence(output.get("confidence")) <= LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD,
+            "note": "Page agent completed",
+        },
+        {
+            "current_page": page_num,
+            "total_pages": len(page_images),
+            "percent": round((page_num / len(page_images)) * 100.0, 2),
+        },
     )
+
+    page_outputs = list(state.get("page_outputs") or [])
+    page_outputs.append(output)
     page_outputs = sorted(page_outputs, key=lambda item: int(item.get("page_num") or 0))
-    combined_pages = normalize_result_pages([item["page"] for item in page_outputs])
-    overall_confidence = round(
-        sum(_clamp_confidence(item.get("confidence")) for item in page_outputs) / len(page_outputs),
-        4,
+    combined_pages, overall_confidence, issues = _summarize_page_outputs(page_outputs)
+    pending_interrupt = None
+    resume_target = "node_process_next_page"
+    page_requires_review = bool(output.get("human_review")) or (
+        _clamp_confidence(output.get("confidence")) <= LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD
     )
-    issues = _dedupe_issues(
-        [
-            str(issue)
-            for item in page_outputs
-            for issue in (item.get("issues") or [])
-        ]
-    )
+    if (
+        LANGGRAPH_HITL_ENABLED
+        and page_requires_review
+    ):
+        pending_interrupt = _build_page_interrupt_payload(
+            {
+                **state,
+                "workflow_thread_id": _clean_text(state.get("workflow_thread_id")),
+                "total_pages": len(page_images),
+            },
+            output,
+        )
     return {
         "page_outputs": page_outputs,
         "combined_pages": combined_pages,
         "overall_confidence": overall_confidence,
         "issues": issues,
+        "current_page_index": current_index + 1,
+        "total_pages": len(page_images),
+        "pending_interrupt": pending_interrupt,
+        "resume_target": resume_target,
     }
+
+
+async def route_after_next_page(state: BatchSupervisorState) -> str:
+    if state.get("pending_interrupt"):
+        return "node_pause_for_human_review"
+    if int(state.get("current_page_index") or 0) >= int(state.get("total_pages") or 0):
+        return "node_cross_page_consistency"
+    return "node_process_next_page"
+
+
+async def route_after_pause(state: BatchSupervisorState) -> str:
+    resume_target = _clean_text(state.get("resume_target"))
+    if resume_target == "node_final_archiver_and_quality":
+        return "node_final_archiver_and_quality"
+    if int(state.get("current_page_index") or 0) >= int(state.get("total_pages") or 0):
+        return "node_cross_page_consistency"
+    return "node_process_next_page"
 
 
 async def node_cross_page_consistency(state: BatchSupervisorState) -> dict[str, Any]:
@@ -881,14 +1220,15 @@ async def node_rag_retrieve(state: BatchSupervisorState) -> dict[str, Any]:
         ]
         if _clean_text(part)
     )
-    if not query or state.get("db") is None:
+    db = _get_workflow_db_session(state)
+    if not query or db is None:
         return {"rag_examples": []}
 
     try:
         examples = await vector_store.similarity_search(
             query,
             k=3,
-            db=state.get("db"),
+            db=db,
             exclude_batch_id=_clean_text(state.get("batch_id")),
         )
         return {"rag_examples": examples}
@@ -948,6 +1288,17 @@ async def node_human_router(state: BatchSupervisorState) -> dict[str, Any]:
         reason_parts.append(issues[0])
 
     review_reason = "；".join(_dedupe_issues(reason_parts))
+    if human_review:
+        await _emit_state_event(
+            state,
+            "HUMAN_REVIEW_REQUIRED",
+            {
+                "review_status": review_status,
+                "review_reason": review_reason,
+                "conflict_fields": conflict_fields,
+                "issues": issues,
+            },
+        )
 
     page_outputs = []
     for output in state.get("page_outputs") or []:
@@ -972,16 +1323,33 @@ async def node_human_router(state: BatchSupervisorState) -> dict[str, Any]:
         page_outputs.append(updated)
 
     combined_pages = normalize_result_pages([item["page"] for item in page_outputs]) if page_outputs else []
+    pending_interrupt = None
+    resume_target = "node_final_archiver_and_quality"
+    if human_review and LANGGRAPH_HITL_ENABLED:
+        pending_interrupt = _build_batch_interrupt_payload(
+            {
+                **state,
+                "merged_fields": merged_fields,
+                "review_status": review_status,
+                "review_reason": review_reason,
+                "issues": issues,
+                "quality_metrics": dict(state.get("quality_metrics") or {}),
+            }
+        )
     return {
         "human_review": human_review,
         "review_status": review_status,
         "review_reason": review_reason,
         "page_outputs": page_outputs,
         "combined_pages": combined_pages,
+        "pending_interrupt": pending_interrupt,
+        "resume_target": resume_target,
     }
 
 
 async def route_after_human_router(state: BatchSupervisorState) -> str:
+    if state.get("pending_interrupt"):
+        return "node_pause_for_human_review"
     if state.get("human_review"):
         return "node_pending_human_review"
     return "node_final_archiver_and_quality"
@@ -994,6 +1362,57 @@ async def node_pending_human_review(state: BatchSupervisorState) -> dict[str, An
         "issues": _dedupe_issues(issues),
         "review_status": state.get("review_status") or "pending_human_review",
     }
+
+
+async def node_pause_for_human_review(state: BatchSupervisorState) -> dict[str, Any]:
+    interrupt_payload = dict(state.get("pending_interrupt") or {})
+    interrupt_payload.setdefault("workflow_thread_id", _clean_text(state.get("workflow_thread_id")))
+    interrupt_payload.setdefault("issued_at", _utc_now_iso())
+    resume_payload = interrupt(interrupt_payload)
+    resume_data = dict(resume_payload or {})
+    kind = _clean_text(interrupt_payload.get("kind"))
+    updates: dict[str, Any] = {
+        "pending_interrupt": None,
+        "review_status": "approved_by_human",
+        "review_reason": _clean_text(resume_data.get("notes") or resume_data.get("comment"))
+        or "人工复核已完成，工作流恢复执行。",
+        "human_review": False,
+    }
+
+    if kind == "page_human_review":
+        target_page = int(interrupt_payload.get("page_num") or 0)
+        page_outputs: list[dict[str, Any]] = []
+        for item in state.get("page_outputs") or []:
+            if int(item.get("page_num") or 0) == target_page:
+                page_outputs.append(_apply_resume_payload_to_page_output(item, resume_data))
+            else:
+                page_outputs.append(dict(item))
+        combined_pages, overall_confidence, issues = _summarize_page_outputs(page_outputs)
+        issues = _dedupe_issues(issues + ["人工复核已完成，已恢复后续页面处理。"])
+        updates.update(
+            {
+                "page_outputs": page_outputs,
+                "combined_pages": combined_pages,
+                "overall_confidence": overall_confidence,
+                "issues": issues,
+                "resume_target": "node_process_next_page",
+            }
+        )
+        return updates
+
+    merged_fields = _merge_field_overlay(
+        state.get("merged_fields"),
+        resume_data.get("fields") or resume_data.get("updated_fields"),
+    )
+    issues = _dedupe_issues(list(state.get("issues") or []) + ["人工复核已完成，继续归档与导出流程。"])
+    updates.update(
+        {
+            "merged_fields": merged_fields,
+            "issues": issues,
+            "resume_target": "node_final_archiver_and_quality",
+        }
+    )
+    return updates
 
 
 async def node_final_archiver_and_quality(state: BatchSupervisorState) -> dict[str, Any]:
@@ -1029,10 +1448,11 @@ async def node_final_archiver_and_quality(state: BatchSupervisorState) -> dict[s
         combined_pages = normalize_result_pages(combined_pages)
 
     archive_saved = False
-    if state.get("db") is not None and not human_review:
+    db = _get_workflow_db_session(state)
+    if db is not None and not human_review:
         try:
             await save_archive_record(
-                state["db"],
+                db,
                 int(state["task_id"]),
                 _clean_text(state.get("batch_id")),
                 _clean_text(state.get("batch_folder")),
@@ -1087,26 +1507,39 @@ def get_page_agent_graph():
     return graph.compile()
 
 
-@lru_cache(maxsize=1)
-def get_batch_supervisor_graph():
+def _compile_batch_supervisor_graph(*, with_checkpointer: bool):
     graph = StateGraph(BatchSupervisorState)
     graph.add_node("node_prepare_batch", node_prepare_batch)
-    graph.add_node("node_run_page_agents", node_run_page_agents)
+    graph.add_node("node_process_next_page", node_process_next_page)
     graph.add_node("node_cross_page_consistency", node_cross_page_consistency)
     graph.add_node("node_rag_retrieve", node_rag_retrieve)
     graph.add_node("node_human_router", node_human_router)
     graph.add_node("node_pending_human_review", node_pending_human_review)
+    graph.add_node("node_pause_for_human_review", node_pause_for_human_review)
     graph.add_node("node_final_archiver_and_quality", node_final_archiver_and_quality)
 
     graph.add_edge(START, "node_prepare_batch")
-    graph.add_edge("node_prepare_batch", "node_run_page_agents")
-    graph.add_edge("node_run_page_agents", "node_cross_page_consistency")
+    graph.add_conditional_edges("node_prepare_batch", route_after_prepare_batch)
+    graph.add_conditional_edges("node_process_next_page", route_after_next_page)
     graph.add_edge("node_cross_page_consistency", "node_rag_retrieve")
     graph.add_edge("node_rag_retrieve", "node_human_router")
     graph.add_conditional_edges("node_human_router", route_after_human_router)
     graph.add_edge("node_pending_human_review", "node_final_archiver_and_quality")
+    graph.add_conditional_edges("node_pause_for_human_review", route_after_pause)
     graph.add_edge("node_final_archiver_and_quality", END)
+    if with_checkpointer:
+        return graph.compile(checkpointer=get_langgraph_checkpointer())
     return graph.compile()
+
+
+@lru_cache(maxsize=1)
+def get_batch_supervisor_graph():
+    return _compile_batch_supervisor_graph(with_checkpointer=True)
+
+
+@lru_cache(maxsize=1)
+def get_batch_supervisor_graph_for_studio():
+    return _compile_batch_supervisor_graph(with_checkpointer=False)
 
 
 async def run_hierarchical_ocr_task(
@@ -1136,6 +1569,8 @@ async def run_hierarchical_ocr_task(
         else:
             page_images = [file_path]
 
+        workflow_thread_id = _build_workflow_thread_id(task.id, batch_id)
+        _register_workflow_runtime(workflow_thread_id, db=db)
         final_state = await get_batch_supervisor_graph().ainvoke(
             {
                 "task_id": task.id,
@@ -1143,11 +1578,23 @@ async def run_hierarchical_ocr_task(
                 "filename": task.filename,
                 "file_path": task.file_path,
                 "mode": mode,
-                "db": db,
                 "page_images": page_images,
                 "temp_page_images": temp_page_images,
-            }
+                "workflow_thread_id": workflow_thread_id,
+            },
+            config=_workflow_config(task.id, batch_id, workflow_thread_id),
         )
+        if "__interrupt__" in final_state:
+            interrupted = _build_interrupted_workflow_result(final_state, workflow_thread_id)
+            pages = normalize_result_pages(interrupted.get("pages") or [])
+            task.result_json = pages
+            task.full_text = _clean_text(interrupted.get("full_text")) or serialize_pages_text(pages)
+            task.page_count = int(interrupted.get("page_count") or len(pages))
+            task.status = "human_review"
+            task.error_message = None
+            await db.commit()
+            await db.refresh(task)
+            return task, interrupted
         workflow_result = final_state.get("workflow_result") or {}
         pages = normalize_result_pages(workflow_result.get("pages") or [])
         task.result_json = pages
@@ -1166,6 +1613,69 @@ async def run_hierarchical_ocr_task(
         await db.refresh(task)
         return task, {}
     finally:
+        _clear_workflow_runtime(_build_workflow_thread_id(task.id, batch_id))
+        cleanup_images = temp_page_images or list((final_state or {}).get("temp_page_images") or [])
+        for image_path in cleanup_images:
+            try:
+                Path(image_path).unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Failed to cleanup temp page image: %s", image_path, exc_info=True)
+
+
+async def run_hierarchical_ocr_detached(
+    *,
+    task_id: int,
+    filename: str,
+    file_path: str = "",
+    mode: str = "layout",
+    batch_id: str = "",
+    event_callback: Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None = None,
+    workflow_thread_id: str = "",
+    resume_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    page_images: list[str] = []
+    temp_page_images: list[str] = []
+    final_state: dict[str, Any] | None = None
+
+    try:
+        resolved_thread_id = _clean_text(workflow_thread_id) or _build_workflow_thread_id(task_id, batch_id)
+        _register_workflow_runtime(resolved_thread_id, event_callback=event_callback)
+        if resume_payload is None:
+            if not file_path:
+                raise ValueError("Initial hierarchical OCR invocation requires file_path.")
+            if Path(file_path).suffix.lower() == ".pdf":
+                page_images = await asyncio.to_thread(pdf_to_images, file_path)
+                temp_page_images = list(page_images)
+            else:
+                page_images = [file_path]
+            graph_input: dict[str, Any] | Command = {
+                "task_id": int(task_id),
+                "batch_id": batch_id,
+                "filename": filename,
+                "file_path": file_path,
+                "mode": mode,
+                "page_images": page_images,
+                "temp_page_images": temp_page_images,
+                "workflow_thread_id": resolved_thread_id,
+            }
+        else:
+            graph_input = Command(resume=resume_payload)
+
+        final_state = await get_batch_supervisor_graph().ainvoke(
+            graph_input,
+            config=_workflow_config(task_id, batch_id, resolved_thread_id),
+        )
+        if "__interrupt__" in final_state:
+            workflow_result = _build_interrupted_workflow_result(final_state, resolved_thread_id)
+            workflow_result["page_images"] = list(page_images)
+            return workflow_result
+        workflow_result = dict(final_state.get("workflow_result") or {})
+        workflow_result["page_outputs"] = list(final_state.get("page_outputs") or [])
+        workflow_result["page_images"] = list(page_images)
+        workflow_result["workflow_thread_id"] = resolved_thread_id
+        return workflow_result
+    finally:
+        _clear_workflow_runtime(_clean_text(workflow_thread_id) or _build_workflow_thread_id(task_id, batch_id))
         cleanup_images = temp_page_images or list((final_state or {}).get("temp_page_images") or [])
         for image_path in cleanup_images:
             try:

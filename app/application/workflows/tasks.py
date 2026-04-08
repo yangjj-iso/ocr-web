@@ -70,6 +70,9 @@ async def submit_upload_task(
         OCRJob(
             task_id=task.id,
             mode=mode,
+            filename=task.filename,
+            file_path=task.file_path,
+            file_type=task.file_type,
             excel_path=excel_path,
             excel_init=excel_init,
             output_dir=output_dir,
@@ -109,6 +112,9 @@ async def submit_path_task(
         OCRJob(
             task_id=task.id,
             mode=mode,
+            filename=task.filename,
+            file_path=task.file_path,
+            file_type=task.file_type,
             excel_path=excel_path,
             excel_init=excel_init,
             output_dir=output_dir,

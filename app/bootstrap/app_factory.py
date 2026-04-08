@@ -11,7 +11,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.db.database import init_db
-from app.services.task_queue import start_task_worker, stop_task_worker
 from config import (
     CORS_ALLOW_ORIGINS,
     MINIMAX_API_KEY,
@@ -69,9 +68,10 @@ def create_service_app(
             )
 
         if start_worker:
-            logger.info("Startup checkpoint: task worker begin")
-            await start_task_worker()
-            logger.info("Startup checkpoint: task worker complete")
+            logger.warning(
+                "Startup checkpoint: in-process task worker has been retired. "
+                "Use RabbitMQ producer + app/main_worker.py or Celery worker for compute tasks."
+            )
         else:
             logger.info("Startup checkpoint: task worker skipped for service=%s", service_name)
 
@@ -79,10 +79,7 @@ def create_service_app(
         try:
             yield
         finally:
-            if start_worker:
-                logger.info("Service shutdown: stopping task worker for %s...", service_name)
-                await stop_task_worker()
-                logger.info("Service shutdown complete: %s", service_name)
+            logger.info("Service shutdown complete: %s", service_name)
 
     app = FastAPI(
         title=title,
@@ -112,12 +109,22 @@ def create_service_app(
     async def health():
         return {"status": "ok", "service": service_name}
 
+    @app.get("/health/live")
+    async def health_live():
+        return {"status": "up", "service": service_name}
+
+    @app.get("/health/ready")
+    async def health_ready():
+        return {"status": "up", "service": service_name}
+
     @app.get("/")
     async def api_root():
         return {
             "service": service_name,
             "docs": "/docs",
             "health": "/api/health",
+            "live": "/health/live",
+            "ready": "/health/ready",
         }
 
     return app

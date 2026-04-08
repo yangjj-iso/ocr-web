@@ -48,8 +48,8 @@ npm run dev -- --host 0.0.0.0 --port 3000
 默认访问地址：
 
 - 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:8000`
-- Swagger：`http://localhost:8000/docs`
+- Java 控制面：`http://localhost:8080`
+- Python AI API：`http://localhost:8001`
 
 ### 构建生产包
 
@@ -63,24 +63,23 @@ npm run build
 dist
 ```
 
-若前后端分离部署，推荐在 `frontend/.env.local` 中设置：
+若按当前推荐架构联调，推荐在 `frontend/.env.local` 中设置：
 
 ```text
-VITE_API_BASE_URL=http://localhost:8000
-```
-
-如果已经按“双服务”方式拆分部署，推荐改成：
-
-```text
-VITE_BUSINESS_API_BASE_URL=http://localhost:8000
+VITE_CONTROL_PLANE_API_BASE_URL=http://localhost:8080
 VITE_AI_API_BASE_URL=http://localhost:8001
 VITE_AI_FILE_BASE_URL=http://localhost:8001
 ```
 
-其中：
+此时前端默认会：
 
-- `Auth`、归档记录、目录扫描、批次建档走 `business-api`
-- OCR 上传、任务列表、文件预览、批次整合、QA、评测走 `ai-document-service`
+- 上传、任务列表、任务进度、任务删除走 `java-control-plane`
+- 搜索、任务详情、结果编辑、文件预览、字段提取也优先走 `java-control-plane`
+- 批次整合、边界分析、QA、评测也优先走 `java-control-plane`
+- 目录扫描、归档记录、认证也走 `java-control-plane`
+- `java-control-plane` 再按需代理到 `ai-document-service`
+
+如果本地只运行了前端，没有启动 Java 控制面，Vite 会在控制台看到 `/api/auth/*` 的 `ECONNREFUSED`。当前默认开发代理目标已经改成 `http://localhost:8080`，所以本地联调至少要先启动控制面。
 
 ---
 

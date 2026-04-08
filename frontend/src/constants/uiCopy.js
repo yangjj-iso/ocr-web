@@ -44,6 +44,10 @@ const STATUS_META = {
     label: '处理异常',
     className: 'bg-red-100 text-red-700',
   },
+  human_review: {
+    label: '待人工复核',
+    className: 'bg-violet-100 text-violet-700',
+  },
   processing: {
     label: '处理中',
     className: 'bg-amber-100 text-amber-700',

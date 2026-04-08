@@ -13,7 +13,7 @@ API Controller Layer: OCR Task Routes
 
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,8 +68,18 @@ async def upload_and_enqueue(
     excel_init: int = Query(0),
     output_dir: str = Query(""),
     batch_id: str = Query(""),
+    response: Response = None,
     db: AsyncSession = Depends(get_db),
 ):
+    logger.warning(
+        "Deprecated compatibility endpoint used: POST /api/ocr/upload. "
+        "Prefer java-control-plane /api/ocr/upload for control-plane ownership."
+    )
+    if response is not None:
+        response.headers["Deprecation"] = "true"
+        response.headers["Warning"] = '299 - "Deprecated compatibility endpoint. Use java-control-plane /api/ocr/upload."'
+        response.headers["Link"] = '</docs/control-plane-compute-plane.md>; rel="deprecation"'
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing file name.")
 
@@ -105,8 +115,18 @@ async def upload_from_path(
     excel_init: int = Query(0),
     output_dir: str = Query(""),
     batch_id: str = Query(""),
+    response: Response = None,
     db: AsyncSession = Depends(get_db),
 ):
+    logger.warning(
+        "Deprecated compatibility endpoint used: POST /api/ocr/upload-from-path. "
+        "Prefer java-control-plane /api/ocr/upload-from-path for control-plane ownership."
+    )
+    if response is not None:
+        response.headers["Deprecation"] = "true"
+        response.headers["Warning"] = '299 - "Deprecated compatibility endpoint. Use java-control-plane /api/ocr/upload-from-path."'
+        response.headers["Link"] = '</docs/control-plane-compute-plane.md>; rel="deprecation"'
+
     from app.api.deps import ensure_allowed_path
 
     try:

@@ -15,10 +15,10 @@ logging.basicConfig(
 app = create_service_app(
     service_name="ai-document-service",
     title="OCR AI Document Service",
-    description="AI-facing API for OCR tasks, document boundary recognition, QA, and evaluation.",
+    description="AI-facing API for OCR tasks, document boundary recognition, QA, and evaluation. Heavy OCR execution is delegated to external workers.",
     version="2.2.0",
     router_loader=include_ai_routers,
-    start_worker=True,
+    start_worker=False,
     preload_vl_pipeline=True,
 )
 

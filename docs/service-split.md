@@ -2,13 +2,14 @@
 
 ## 目标
 
-将当前单体后端按职责拆成两类服务：
+将当前后端按职责收敛为“Java 控制面 + Python AI 服务”：
 
-- `business-api`
+- `java-control-plane`
   - 鉴权
   - 归档记录
   - 文件夹扫描
-  - 批次建档
+  - 上传与任务生命周期
+  - MQ 命令投递与 Worker 回调落库
 - `ai-document-service`
   - OCR 上传与任务管理
   - 文档边界识别
@@ -18,27 +19,15 @@
 
 ## 当前入口
 
-- 兼容单体：[`app/main.py`](/D:/Code/work/OCR-WEB-main/app/main.py)
-- 业务服务：[`app/main_business.py`](/D:/Code/work/OCR-WEB-main/app/main_business.py)
 - AI 服务：[`app/main_ai.py`](/D:/Code/work/OCR-WEB-main/app/main_ai.py)
+- 计算 Worker：[`app/main_worker.py`](/D:/Code/work/OCR-WEB-main/app/main_worker.py)
+- Java 控制面：[`java-control-plane`](/D:/Code/work/OCR-WEB-main/java-control-plane)
 
 ## 路由边界
-
-业务服务路由注册：
-
-- [`app/interfaces/api/business/router_registry.py`](/D:/Code/work/OCR-WEB-main/app/interfaces/api/business/router_registry.py)
 
 AI 服务路由注册：
 
 - [`app/interfaces/api/ai/router_registry.py`](/D:/Code/work/OCR-WEB-main/app/interfaces/api/ai/router_registry.py)
-
-## 关键拆分点
-
-### 业务侧
-
-- 鉴权：[`app/api/auth_routes.py`](/D:/Code/work/OCR-WEB-main/app/api/auth_routes.py)
-- 归档：[`app/api/archives.py`](/D:/Code/work/OCR-WEB-main/app/api/archives.py)
-- 批次管理：[`app/api/business_batches.py`](/D:/Code/work/OCR-WEB-main/app/api/business_batches.py)
 
 ### AI 侧
 
@@ -76,16 +65,16 @@ AI 服务路由注册：
 推荐环境变量：
 
 ```text
-VITE_BUSINESS_API_BASE_URL=http://localhost:8000
+VITE_CONTROL_PLANE_API_BASE_URL=http://localhost:8080
 VITE_AI_API_BASE_URL=http://localhost:8001
 VITE_AI_FILE_BASE_URL=http://localhost:8001
 ```
 
 ## 下一步建议
 
-1. 先按当前 Python 双服务方式部署稳定运行。
-2. 再把 `business-api` 逐步替换为 Java 服务。
-3. Java 服务通过 HTTP / 消息队列调用 `ai-document-service`。
+1. 继续把前端和第三方接入统一收敛到 Java 控制面。
+2. Python Web 侧仅保留 AI 查询与兼容接口，实际 OCR 执行固定走 [`app/main_worker.py`](/D:/Code/work/OCR-WEB-main/app/main_worker.py) 或 Celery Worker。
+3. 通过内部回调接口把进度、完成态和失败态回写控制面。
 4. 在样本量上来后，把当前的轻量先验升级成可训练的边界分类器。
 
 ## 已落库的边界诊断表

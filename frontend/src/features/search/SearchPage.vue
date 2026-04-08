@@ -192,6 +192,7 @@ function statusDot(status) {
   return {
     done: 'bg-emerald-500',
     failed: 'bg-rose-500',
+    human_review: 'bg-violet-500',
     processing: 'bg-amber-400',
     pending: 'bg-slate-300',
   }[status] || 'bg-slate-300'
@@ -206,7 +207,7 @@ function formatTime(value) {
 }
 
 function canOpenResult(item) {
-  return ['done', 'failed'].includes(String(item?.status || ''))
+  return ['done', 'failed', 'human_review'].includes(String(item?.status || ''))
 }
 
 function openResult(item) {

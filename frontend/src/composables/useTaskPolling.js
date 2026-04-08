@@ -1,7 +1,7 @@
 import { onBeforeUnmount, ref } from 'vue'
 
 const DEFAULT_INTERVAL = 2000
-const TERMINAL_STATUSES = new Set(['done', 'failed'])
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'human_review'])
 
 export function useTaskPolling(fetchTask, onUpdate, interval = DEFAULT_INTERVAL) {
   const polling = ref(false)

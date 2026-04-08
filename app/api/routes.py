@@ -1,18 +1,15 @@
-"""Compatibility router shell.
+"""AI-only compatibility router shell.
 
 This module keeps backward compatibility for historical imports such as:
     from app.api.routes import router
 
-New code should import routers from dedicated modules under ``app.api`` or use
-``app.interfaces.api.v1.include_v1_routers`` from ``main.py``.
+The Python web surface now exposes only AI-facing APIs. Business/control-plane
+responsibilities have moved to the Java control plane.
 """
 
 from fastapi import APIRouter
 
 from app.api.ai_batches import router as ai_batches_router
-from app.api.archives import router as archives_router
-from app.api.auth_routes import router as auth_router
-from app.api.business_batches import router as business_batches_router
 from app.api.evaluation import router as evaluation_router
 from app.api.files import router as files_router
 from app.api.qa import router as qa_router
@@ -35,10 +32,7 @@ from app.services.llm_field_extraction_service import compare_rule_and_llm_field
 from app.services.ocr_service import get_task_detail
 
 router = APIRouter()
-router.include_router(auth_router)
 router.include_router(tasks_router)
-router.include_router(archives_router)
-router.include_router(business_batches_router)
 router.include_router(ai_batches_router)
 router.include_router(qa_router)
 router.include_router(evaluation_router)

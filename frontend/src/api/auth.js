@@ -1,8 +1,8 @@
 import axios from 'axios'
-import { businessApiBase, requestDefaults } from './runtime.js'
+import { controlPlaneApiBase, requestDefaults } from './runtime.js'
 
 const authApi = axios.create({
-  baseURL: businessApiBase('/auth'),
+  baseURL: controlPlaneApiBase('/auth'),
   ...requestDefaults,
 })
 

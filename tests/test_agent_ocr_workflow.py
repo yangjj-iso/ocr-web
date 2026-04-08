@@ -27,6 +27,27 @@ def _page(page_num: int, confidence: float = 0.9):
 
 
 class AgentOCRWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    def test_parse_json_object_extracts_first_json_from_mixed_text(self):
+        payload = """以下是结果：
+```json
+{"fields":{"题名":"测试材料"},"confidence":0.91,"issues":[]}
+```
+补充说明：字段已标准化。"""
+
+        parsed = workflow._parse_json_object(payload)
+
+        self.assertEqual("测试材料", parsed["fields"]["题名"])
+        self.assertEqual(0.91, parsed["confidence"])
+
+    def test_parse_json_object_handles_multiple_json_objects(self):
+        payload = """{"fields":{"题名":"第一页"},"confidence":0.82}
+{"fields":{"题名":"第二页"},"confidence":0.66}"""
+
+        parsed = workflow._parse_json_object(payload)
+
+        self.assertEqual("第一页", parsed["fields"]["题名"])
+        self.assertEqual(0.82, parsed["confidence"])
+
     def test_merge_page_field_candidates_prefers_consensus_and_sets_page_count(self):
         merged = workflow._merge_page_field_candidates(
             [
