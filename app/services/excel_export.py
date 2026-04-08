@@ -1,0 +1,590 @@
+"""
+归档文件目录 Excel 导出服务
+从 OCR 结果中提取关键字段，写入/追加到 Excel
+"""
+import re
+import logging
+from pathlib import Path
+
+import openpyxl
+from openpyxl.styles import Font, Alignment
+
+logger = logging.getLogger(__name__)
+
+HEADERS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '备注']
+
+DEFAULT_EXCEL_NAME = '归档文件目录.xlsx'
+
+TITLE_TYPES = {'doc_title', 'title', 'paragraph_title', 'content_title', 'abstract_title', 'reference_title'}
+TITLE_KEYWORDS = ('关于', '通知', '决定', '意见', '办法', '规则', '方法', '规范', '条例', '规定', '请示', '通报', '公告', '方案', '细则', '会议纪要')
+ORG_SUFFIXES = (
+    '工会委员会', '委员会办公室', '人力资源和社会保障局', '人力资源和社会保障厅', '人力资源和社会保障部',
+    '人民政府', '总工会', '办公室', '工会', '委员会', '档案馆', '档案局', '有限责任公司', '集团有限公司',
+    '股份有限公司', '有限公司', '检察院', '法院', '医院', '学校', '大学', '学院', '集团', '公司', '政府',
+    '党委', '支部', '协会', '中心', '银行', '局', '厅', '部', '院', '馆'
+)
+ORG_SUFFIX_PATTERN = '|'.join(re.escape(item) for item in sorted(ORG_SUFFIXES, key=len, reverse=True))
+ORG_BODY_PATTERN = rf'[\u4e00-\u9fa5A-Za-z0-9·（）()]{2,60}(?:{ORG_SUFFIX_PATTERN})'
+RESP_HEAD_PATTERN = re.compile(rf'({ORG_BODY_PATTERN})\s*(?:关于|印发|发布|转发|公布|报送|请示|通知|决定|意见|办法|规定|通报|公告|方案)')
+RESP_FULL_PATTERN = re.compile(rf'({ORG_BODY_PATTERN})$')
+RESP_FRAGMENT_PATTERN = re.compile(rf'({ORG_BODY_PATTERN})')
+DOC_NO_PATTERNS = (
+    re.compile(r'([\u4e00-\u9fa5A-Za-z]{2,20}(?:字|发|函|办|通|报|党组|工)?(?:\[\d{4}\]|\(\d{4}\)|\d{4})\s*(?:第\s*)?\d+\s*号)'),
+    re.compile(r'([\u4e00-\u9fa5A-Za-z]{2,20}(?:发|函|字|办)\s*(?:\[\d{4}\]|\(\d{4}\))\s*\d+\s*号)'),
+)
+DATE_PATTERN = re.compile(r'(\d{4})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?')
+CLASSIFICATION_PATTERN = re.compile(r'(绝密|机密|秘密|内部|公开)')
+
+def _extract_archive_number(filename: str) -> str:
+    stem = Path(filename).stem.strip()
+    if not stem:
+        return ""
+
+    ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+(?:-\d+)+)$', stem, re.IGNORECASE)
+    if ws_match:
+        return ws_match.group(1)
+
+    kj_match = re.match(r'^(KJ(?:-[A-Za-z0-9]+){4,})$', stem, re.IGNORECASE)
+    if kj_match:
+        return kj_match.group(1)
+
+    legacy_ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+[-]\d+)$', stem, re.IGNORECASE)
+    if legacy_ws_match:
+        return legacy_ws_match.group(1)
+
+    if re.match(r'^(KJ[-].*)$', stem, re.IGNORECASE):
+        parts = stem.split('-')
+        if len(parts) >= 5:
+            return '-'.join(parts[:5])
+
+    return ""
+
+def _clean_line_text(text: str) -> str:
+    clean = str(text or '').replace('\u3000', ' ').replace('\xa0', ' ')
+    clean = re.sub(r'\s+', ' ', clean)
+    return clean.strip(' \t\r\n，。；;:：')
+
+def _normalize_search_text(text: str) -> str:
+    clean = _clean_line_text(text)
+    return (
+        clean
+        .replace('〔', '[')
+        .replace('〕', ']')
+        .replace('（', '(')
+        .replace('）', ')')
+        .replace('【', '[')
+        .replace('】', ']')
+    )
+
+def _format_doc_no(text: str) -> str:
+    clean = re.sub(r'\s+', '', _normalize_search_text(text))
+    return clean.replace('[', '〔').replace(']', '〕').replace('(', '〔').replace(')', '〕')
+
+def _bbox_to_rect(data: dict) -> list[float] | None:
+    bbox = data.get('layout_bbox') or data.get('bbox') or []
+    if not bbox:
+        return None
+    if isinstance(bbox[0], (list, tuple)):
+        xs = [float(p[0]) for p in bbox if isinstance(p, (list, tuple)) and len(p) >= 2]
+        ys = [float(p[1]) for p in bbox if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if xs and ys:
+            return [min(xs), min(ys), max(xs), max(ys)]
+        return None
+    if len(bbox) >= 4:
+        x1, y1, x2, y2 = [float(x) for x in bbox[:4]]
+        return [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+    return None
+
+def _get_page_dimensions(page: dict) -> tuple[float, float]:
+    max_x = 0.0
+    max_y = 0.0
+    for region in page.get('regions', []):
+        rect = _bbox_to_rect(region)
+        if rect:
+            max_x = max(max_x, rect[2])
+            max_y = max(max_y, rect[3])
+    for line in page.get('lines', []):
+        rect = _bbox_to_rect(line)
+        if rect:
+            max_x = max(max_x, rect[2])
+            max_y = max(max_y, rect[3])
+    return max_x or 1.0, max_y or 1.0
+
+def _build_page_items(page: dict, page_index: int, page_total: int) -> list[dict]:
+    page_w, page_h = _get_page_dimensions(page)
+    items = []
+
+    for region in page.get('regions', []):
+        if not isinstance(region, dict):
+            continue
+        text = _clean_line_text(region.get('content', ''))
+        rtype = (region.get('type', '') or '').strip()
+        if not text or rtype == 'table':
+            continue
+        rect = _bbox_to_rect(region) or [0.0, 0.0, page_w, page_h]
+        x1, y1, x2, y2 = rect
+        items.append({
+            'text': text,
+            'type': rtype or 'text',
+            'source': 'region',
+            'page_index': page_index,
+            'page_total': page_total,
+            'x1': x1,
+            'y1': y1,
+            'x2': x2,
+            'y2': y2,
+            'height': max(y2 - y1, 1.0),
+            'y_ratio': y1 / page_h if page_h else 0.0,
+        })
+
+    for line in page.get('lines', []):
+        if not isinstance(line, dict):
+            continue
+        text = _clean_line_text(line.get('text', ''))
+        if not text:
+            continue
+        rect = _bbox_to_rect(line) or [0.0, 0.0, page_w, page_h]
+        x1, y1, x2, y2 = rect
+        items.append({
+            'text': text,
+            'type': 'line',
+            'source': 'line',
+            'page_index': page_index,
+            'page_total': page_total,
+            'x1': x1,
+            'y1': y1,
+            'x2': x2,
+            'y2': y2,
+            'height': max(y2 - y1, 1.0),
+            'y_ratio': y1 / page_h if page_h else 0.0,
+        })
+
+    seen = set()
+    deduped = []
+    for item in sorted(items, key=lambda value: (value['y1'], value['x1'], 0 if value['source'] == 'region' else 1)):
+        key = (
+            item['page_index'],
+            re.sub(r'\s+', '', item['text']),
+            round(item['y1'] / 12),
+            round(item['x1'] / 12),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+def _build_text_only_items(full_text: str) -> list[dict]:
+    lines = []
+    for raw in full_text.split('\n'):
+        clean = _clean_line_text(raw)
+        if not clean or re.match(r'^---\s*第\s*\d+\s*页\s*---$', clean):
+            continue
+        lines.append(clean)
+    page_h = float(max(len(lines), 1))
+    items = []
+    for idx, line in enumerate(lines):
+        items.append({
+            'text': line,
+            'type': 'text',
+            'source': 'text',
+            'page_index': 0,
+            'page_total': 1,
+            'x1': 0.0,
+            'y1': float(idx),
+            'x2': 100.0,
+            'y2': float(idx) + 1.0,
+            'height': 1.0,
+            'y_ratio': float(idx) / page_h if page_h else 0.0,
+        })
+    return items
+
+def _collect_items(result_json, full_text: str) -> list[dict]:
+    """
+    将 OCR 的深层 JSON 数据结构（页、区域、行、字符）拍平并重组成一维数组。
+    
+    目标：标准化各种来源（PaddleOCR、Baidu VL等）输出的碎片坐标，方便基于 y 坐标的 `_score` 逻辑
+    判断元素的真实物理位置分布。
+    """
+    if isinstance(result_json, list):
+        pages = [page for page in result_json if isinstance(page, dict)]
+    elif isinstance(result_json, dict):
+        pages = [result_json]
+    else:
+        pages = []
+
+    items = []
+    for page_index, page in enumerate(pages):
+        items.extend(_build_page_items(page, page_index, len(pages)))
+    if not items:
+        items = _build_text_only_items(full_text)
+    return sorted(items, key=lambda value: (value['page_index'], value['y1'], value['x1']))
+
+def _extract_doc_no_from_text(text: str) -> str:
+    search_text = _normalize_search_text(text)
+    for pattern in DOC_NO_PATTERNS:
+        match = pattern.search(search_text)
+        if match:
+            return _format_doc_no(match.group(1))
+    return ''
+
+def _extract_date_candidates(text: str) -> list[str]:
+    values = []
+    search_text = _normalize_search_text(text)
+    for match in DATE_PATTERN.finditer(search_text):
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+        if not (1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
+            continue
+        value = f'{year:04d}-{month:02d}-{day:02d}'
+        if value not in values:
+            values.append(value)
+    return values
+
+def _looks_like_page_number(text: str) -> bool:
+    search_text = _normalize_search_text(text)
+    return bool(re.fullmatch(r'(?:第?\s*\d+\s*页|共?\s*\d+\s*页|[-—－]+\s*\d+\s*[-—－]+|\d+\s*/\s*\d+)', search_text))
+
+def _is_probable_title_text(text: str) -> bool:
+    return any(keyword in text for keyword in TITLE_KEYWORDS)
+
+def _score_title_item(item: dict) -> int:
+    """
+    打分系统（标题评判）
+    
+    由于OCR识别出的标题可能因字体大小被割裂或与其他正文混淆，这里通过多个特征维度进行加减分：
+    - 是否出现在首页顶部？（极高加分）
+    - 是否包含类似页码、文号等干扰项？（一票否决/大幅扣分）
+    - OCR是否将类型直接分类为 "title/doc_title"？（系统信任）
+    
+    返回分数越高，该行文本是文件标题的概率越大。
+    """
+    text = item['text']
+    if item['page_index'] != 0 or item['y_ratio'] > 0.55:
+        return -100
+    if _looks_like_page_number(text):
+        return -100
+    if _extract_doc_no_from_text(text):
+        return -80
+    if _extract_date_candidates(text) and len(text) <= 24:
+        return -40
+    if CLASSIFICATION_PATTERN.fullmatch(text):
+        return -40
+
+    score = 0
+    if item['type'] in TITLE_TYPES:
+        score += 14
+    if item['source'] == 'region':
+        score += 3
+    if _is_probable_title_text(text):
+        score += 10
+    if 6 <= len(text) <= 40:
+        score += 5
+    elif len(text) <= 80:
+        score += 2
+    else:
+        score -= 4
+    if item['y_ratio'] < 0.35:
+        score += 4
+    if any(text.endswith(suffix) for suffix in ORG_SUFFIXES) and '关于' not in text:
+        score -= 5
+    if sum(ch.isdigit() for ch in text) >= 8:
+        score -= 4
+    return score
+
+def _join_title_group(group: list[dict]) -> str:
+    text = ''.join(item['text'].strip() for item in group if item['text'].strip())
+    return re.sub(r'\s+', '', text)[:120]
+
+def _extract_title(items: list[dict], fallback_lines: list[str]) -> str:
+    top_items = [item for item in items if item['page_index'] == 0 and item['y_ratio'] <= 0.55]
+    candidates = [item for item in top_items if _score_title_item(item) > 0]
+    if candidates:
+        groups = []
+        current = []
+        for item in sorted(candidates, key=lambda value: (value['y1'], value['x1'])):
+            if not current:
+                current = [item]
+                continue
+            prev = current[-1]
+            gap = item['y1'] - prev['y2']
+            if gap <= max(18.0, prev['height'] * 1.8):
+                current.append(item)
+            else:
+                groups.append(current)
+                current = [item]
+        if current:
+            groups.append(current)
+
+        best_text = ''
+        best_score = -10**9
+        for group in groups[:6]:
+            group_text = _join_title_group(group)
+            if not group_text:
+                continue
+            score = sum(_score_title_item(item) for item in group)
+            if _is_probable_title_text(group_text):
+                score += 6
+            if 8 <= len(group_text) <= 80:
+                score += 4
+            if group_text.endswith(('通知', '决定', '意见', '办法', '规则', '方法', '规范', '条例', '规定', '请示', '通报', '公告', '方案', '细则', '会议纪要')):
+                score += 2
+            if score > best_score:
+                best_score = score
+                best_text = group_text
+        if best_text:
+            return best_text
+
+    for line in fallback_lines[:10]:
+        clean = _clean_line_text(line)
+        if len(clean) >= 6 and not _looks_like_page_number(clean) and not _extract_doc_no_from_text(clean) and _is_probable_title_text(clean):
+            return clean[:120]
+
+    candidates = sorted((_clean_line_text(line) for line in fallback_lines[:8]), key=len, reverse=True)
+    return candidates[0][:120] if candidates else ''
+
+def _clean_org_name(text: str) -> str:
+    clean = _clean_line_text(text)
+    clean = re.sub(r'[（(][^()（）]*(?:盖章|印章|公章|章)[^()（）]*[）)]', '', clean)
+    clean = re.sub(r'(关于|印发|发布|转发|公布|报送|请示|通知|决定|意见|办法|规定|通报|公告|方案).*$','', clean)
+    clean = clean.strip(' ，。；;:：')
+    match = RESP_FRAGMENT_PATTERN.search(clean)
+    if match:
+        clean = match.group(1).strip(' ，。；;:：')
+    if 4 <= len(clean) <= 40:
+        return clean
+    return ''
+
+def _extract_responsible_candidates(text: str) -> list[str]:
+    clean = _clean_line_text(text)
+    candidates = []
+    for pattern in (RESP_HEAD_PATTERN, RESP_FULL_PATTERN, RESP_FRAGMENT_PATTERN):
+        for match in pattern.finditer(clean):
+            candidate = _clean_org_name(match.group(1))
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+def _extract_responsible(items: list[dict], doc_no: str) -> str:
+    best_value = ''
+    best_score = -10**9
+    for item in items:
+        for candidate in _extract_responsible_candidates(item['text']):
+            score = 0
+            if item['page_index'] == 0 and item['y_ratio'] < 0.35:
+                score += 8
+            if item['page_index'] == item['page_total'] - 1 and item['y_ratio'] > 0.55:
+                score += 12
+            if item['type'] == 'seal':
+                score += 5
+            if any(word in item['text'] for word in ('盖章', '印章', '公章')):
+                score += 4
+            if RESP_HEAD_PATTERN.search(item['text']):
+                score += 6
+            if RESP_FULL_PATTERN.search(_clean_line_text(item['text'])):
+                score += 4
+            if 4 <= len(candidate) <= 24:
+                score += 3
+            if len(candidate) > 32:
+                score -= 2
+            if _extract_doc_no_from_text(item['text']):
+                score -= 2
+            if any(word in candidate for word in ('附件', '目录', '日期')):
+                score -= 4
+            if score > best_score:
+                best_score = score
+                best_value = candidate
+    if best_value:
+        return best_value
+    if doc_no:
+        match = re.match(r'([\u4e00-\u9fa5A-Za-z]{2,20})', doc_no)
+        if match:
+            return match.group(1)
+    return ''
+
+def _extract_doc_no(items: list[dict], fallback_lines: list[str]) -> str:
+    best_value = ''
+    best_score = -10**9
+    for item in items:
+        candidate = _extract_doc_no_from_text(item['text'])
+        if not candidate:
+            continue
+        score = 0
+        if item['page_index'] == 0:
+            score += 8
+        if item['y_ratio'] < 0.35:
+            score += 10
+        elif item['y_ratio'] < 0.5:
+            score += 4
+        else:
+            score -= 4
+        if len(item['text']) <= 40:
+            score += 2
+        if item['type'] in TITLE_TYPES:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_value = candidate
+    if best_value:
+        return best_value
+    for line in fallback_lines[:12]:
+        candidate = _extract_doc_no_from_text(line)
+        if candidate:
+            return candidate
+    return ''
+
+def _extract_date(items: list[dict], fallback_lines: list[str]) -> str:
+    best_value = ''
+    best_marker = None
+    for item in items:
+        candidates = _extract_date_candidates(item['text'])
+        if not candidates:
+            continue
+        for candidate in candidates:
+            score = 0
+            if item['page_index'] == item['page_total'] - 1:
+                score += 4
+            if item['y_ratio'] > 0.6:
+                score += 10
+            elif item['page_index'] == 0 and item['y_ratio'] < 0.35:
+                score += 4
+            if len(item['text']) <= 24:
+                score += 2
+            if any(word in item['text'] for word in ('印发', '成文', '日期')):
+                score += 4
+            if any(word in item['text'] for word in ('起', '截至', '会议', '活动', '培训', '实施')):
+                score -= 4
+            marker = (score, item['page_index'], item['y1'])
+            if best_marker is None or marker > best_marker:
+                best_marker = marker
+                best_value = candidate
+    if best_value:
+        return best_value
+    for line in fallback_lines:
+        candidates = _extract_date_candidates(line)
+        if candidates:
+            return candidates[0]
+    return ''
+
+def _extract_classification(items: list[dict], full_text: str) -> str:
+    best_value = ''
+    best_score = -10**9
+    for item in items:
+        match = CLASSIFICATION_PATTERN.search(_clean_line_text(item['text']))
+        if not match:
+            continue
+        score = 0
+        if item['page_index'] == 0:
+            score += 4
+        if item['y_ratio'] < 0.2 or item['y_ratio'] > 0.75:
+            score += 6
+        if len(item['text']) <= 12:
+            score += 4
+        if score > best_score:
+            best_score = score
+            best_value = match.group(1)
+    if best_value:
+        return best_value
+    match = CLASSIFICATION_PATTERN.search(_normalize_search_text(full_text)[:600])
+    return match.group(1) if match else ''
+
+def extract_fields(filename: str, full_text: str, result_json, page_count: int) -> dict:
+    """
+    核心业务：从 OCR 结果中提取关键业务字段（用于后续的报表生成）。
+    
+    采用“探针式”和“计分卡”的多维度规则引擎，由于不同类型的机构发文在排版（如文号在左上还是居中、日期靠底部还是页眉）
+    和字体特征上有很大差异，这里使用了 `score` 加权机制来评判最可能的字段归属。
+
+    Args:
+        filename: 供兜底使用的文件名（可能包含项目编号或特征前缀）。
+        full_text: 未经排版梳理的全部提取文本流。
+        result_json: 由 ocr_engine 输出的带版面、行列和置信度坐标的富文本对象。
+        page_count: 总页数（用于确定首页和尾页位置的边界条件）。
+    """
+    fields = {h: "" for h in HEADERS}
+    fields["页数"] = str(page_count) if page_count else ""
+
+    if not full_text:
+        full_text = ""
+
+    lines = []
+    for raw in full_text.split('\n'):
+        clean = _clean_line_text(raw)
+        if not clean or re.match(r'^---\s*第\s*\d+\s*页\s*---$', clean):
+            continue
+        lines.append(clean)
+
+    # --- 档号：从文件名提取 ---
+    fields["档号"] = _extract_archive_number(filename)
+
+    # --- 文号 ---
+    items = _collect_items(result_json, full_text)
+    fields["文号"] = _extract_doc_no(items, lines)
+
+    # --- 题名 ---
+    fields["题名"] = _extract_title(items, lines)
+
+    # --- 责任者 ---
+    fields["责任者"] = _extract_responsible(items, fields["文号"])
+
+    # --- 日期 ---
+    fields["日期"] = _extract_date(items, lines)
+
+    # --- 密级 ---
+    fields["密级"] = _extract_classification(items, full_text)
+
+    return fields
+
+def resolve_excel_output_path(output_path: str) -> str:
+    raw = (output_path or '').strip()
+    p = Path(raw)
+    if raw.endswith(('\\', '/')) or (p.exists() and p.is_dir()) or not p.suffix:
+        p = p / DEFAULT_EXCEL_NAME
+    elif p.suffix.lower() == '.xls':
+        p = p.with_suffix('.xlsx')
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+def init_excel(output_path: str) -> str:
+    """创建 Excel 文件，写入表头，返回路径"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "归档文件目录"
+
+    ws.merge_cells('A1:H1')
+    ws['A1'] = '归档文件目录'
+    ws['A1'].font = Font(size=14, bold=True)
+    ws['A1'].alignment = Alignment(horizontal='center')
+
+    for col_idx, header in enumerate(HEADERS, 1):
+        cell = ws.cell(row=2, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal='center')
+
+    col_widths = {'A': 20, 'B': 25, 'C': 15, 'D': 50, 'E': 12, 'F': 6, 'G': 8, 'H': 15}
+    for col, width in col_widths.items():
+        ws.column_dimensions[col].width = width
+
+    wb.save(output_path)
+    logger.info("创建归档目录 Excel: %s", output_path)
+    return output_path
+
+def clear_excel_data(output_path: str):
+    """清空 Excel 数据行（保留标题行和表头行），用于每次批量写入前重置"""
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb.active
+    # 删除第3行及以后所有数据行
+    if ws.max_row >= 3:
+        ws.delete_rows(3, ws.max_row - 2)
+    wb.save(output_path)
+    logger.info("已清空归档目录数据行: %s", output_path)
+
+def append_to_excel(output_path: str, fields: dict):
+    """向 Excel 追加一行数据"""
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb.active
+    next_row = ws.max_row + 1
+    for col_idx, header in enumerate(HEADERS, 1):
+        ws.cell(row=next_row, column=col_idx, value=fields.get(header, ""))
+    wb.save(output_path)

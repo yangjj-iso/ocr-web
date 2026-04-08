@@ -1,0 +1,60 @@
+function trimTrailingSlash(value = '') {
+  return String(value || '').replace(/\/+$/, '')
+}
+
+const businessOrigin = trimTrailingSlash(
+  import.meta.env.VITE_BUSINESS_API_BASE_URL || import.meta.env.VITE_API_BASE_URL
+)
+const aiOrigin = trimTrailingSlash(
+  import.meta.env.VITE_AI_API_BASE_URL || import.meta.env.VITE_API_BASE_URL || businessOrigin
+)
+const businessFileOrigin = trimTrailingSlash(
+  import.meta.env.VITE_BUSINESS_FILE_BASE_URL || businessOrigin
+)
+const aiFileOrigin = trimTrailingSlash(import.meta.env.VITE_FILE_BASE_URL || import.meta.env.VITE_AI_FILE_BASE_URL || aiOrigin)
+
+export const requestDefaults = {
+  withCredentials: true,
+}
+
+function joinOrigin(origin, path) {
+  if (!origin) return path
+  if (!path.startsWith('/')) return `${origin}/${path}`
+  return `${origin}${path}`
+}
+
+export function apiUrl(path) {
+  return joinOrigin(aiOrigin || businessOrigin, path)
+}
+
+export function backendUrl(path) {
+  return joinOrigin(aiFileOrigin, path)
+}
+
+export function apiBase(path) {
+  return apiUrl(`/api${path}`)
+}
+
+export function businessApiUrl(path) {
+  return joinOrigin(businessOrigin, path)
+}
+
+export function aiApiUrl(path) {
+  return joinOrigin(aiOrigin, path)
+}
+
+export function businessBackendUrl(path) {
+  return joinOrigin(businessFileOrigin, path)
+}
+
+export function aiBackendUrl(path) {
+  return joinOrigin(aiFileOrigin, path)
+}
+
+export function businessApiBase(path) {
+  return businessApiUrl(`/api${path}`)
+}
+
+export function aiApiBase(path) {
+  return aiApiUrl(`/api${path}`)
+}

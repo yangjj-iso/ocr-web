@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+.eggs
+*.egg-info
+.pytest_cache
+.mypy_cache
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# 本地数据
+*.db
+*.sqlite3
+uploads/*
+!uploads/.gitkeep
+.cache/*
+!.cache/.gitkeep
+logs/*
+server.log
+server_err.log
+
+# 前端（后端镜像不需要）
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# 文档
+*.md
+docs/
+
+# 测试
+tests/
+test_*.py
+
+# 其他
+.env
+.env.*
+!.env.example
+*.bak
+*.tmp
+Thumbs.db
+.DS_Store

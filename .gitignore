@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Uploads & cache
+uploads/
+.cache/
+
+# Logs
+*.log
+server.log
+server_err.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Startup script
+start.bat
+
+# Environment
+.env
+
+# Database
+*.db
+
+# Temp
+*.tmp
+tmp/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+static/vue/

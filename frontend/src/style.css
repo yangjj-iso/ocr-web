@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --gov-bg: #f4f7fb;
+  --gov-surface: #ffffff;
+  --gov-surface-muted: #f7f9fc;
+  --gov-border: #d6deea;
+  --gov-border-strong: #bcc8d8;
+  --gov-text: #1f2f46;
+  --gov-text-muted: #5d6f86;
+  --gov-primary: #1f4f88;
+  --gov-primary-soft: #eaf2fd;
+  --gov-success: #2e6b53;
+  --gov-danger: #a03a3a;
+  --gov-shadow: 0 10px 24px rgba(31, 56, 91, 0.08);
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--gov-bg);
+  color: var(--gov-text);
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.gov-shell {
+  min-height: 100vh;
+  background:
+    linear-gradient(90deg, rgba(31, 79, 136, 0.03) 1px, transparent 1px) 0 0 / 30px 30px,
+    linear-gradient(rgba(31, 79, 136, 0.03) 1px, transparent 1px) 0 0 / 30px 30px,
+    radial-gradient(circle at 0% 0%, rgba(31, 79, 136, 0.05), transparent 45%),
+    var(--gov-bg);
+}
+
+.gov-header {
+  border-bottom: 1px solid var(--gov-border);
+  background: linear-gradient(180deg, #ffffff 0%, #f9fbfe 100%);
+}
+
+.gov-panel {
+  border: 1px solid var(--gov-border);
+  border-radius: 14px;
+  background: var(--gov-surface);
+  box-shadow: var(--gov-shadow);
+}
+
+.gov-section-title {
+  color: var(--gov-text);
+  letter-spacing: 0.02em;
+}
+
+.gov-muted {
+  color: var(--gov-text-muted);
+}
+
+.gov-mark {
+  border-radius: 6px;
+  background: #ffedbd;
+  color: #684700;
+  padding: 0 4px;
+}
