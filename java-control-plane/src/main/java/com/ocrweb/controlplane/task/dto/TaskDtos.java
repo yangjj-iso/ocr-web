@@ -19,6 +19,7 @@ public final class TaskDtos {
             Long id,
             String filename,
             String filePath,
+            String batchId,
             String fileType,
             String mode,
             String status,
@@ -36,6 +37,7 @@ public final class TaskDtos {
             Long id,
             String filename,
             String filePath,
+            String batchId,
             String fileType,
             String mode,
             String status,
@@ -60,6 +62,17 @@ public final class TaskDtos {
     }
 
     public record FolderSummaryResponse(String folder, long count, OffsetDateTime lastTime, Long latestTaskId) {
+    }
+
+    public record SubmissionSummaryResponse(
+            String submissionId,
+            String batchId,
+            String submissionName,
+            String submitterUsername,
+            long count,
+            OffsetDateTime lastTime,
+            Long latestTaskId
+    ) {
     }
 
     public record TaskProgressRequest(@NotEmpty List<Long> taskIds) {

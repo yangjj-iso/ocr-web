@@ -32,7 +32,7 @@ public class OcrTaskEntity {
     private String fileType;
 
     @Column(name = "storage_provider", length = 32)
-    private String storageProvider = "local";
+    private String storageProvider = "s3";
 
     @Column(name = "storage_bucket", length = 255)
     private String storageBucket;
@@ -75,6 +75,12 @@ public class OcrTaskEntity {
 
     @Column(name = "batch_id", length = 120)
     private String batchId;
+
+    @Column(name = "submitter_username", length = 120)
+    private String submitterUsername;
+
+    @Column(name = "submission_name", length = 255)
+    private String submissionName;
 
     @Column(name = "trace_id", length = 120)
     private String traceId;
@@ -247,6 +253,22 @@ public class OcrTaskEntity {
 
     public String getTraceId() {
         return traceId;
+    }
+
+    public String getSubmitterUsername() {
+        return submitterUsername;
+    }
+
+    public void setSubmitterUsername(String submitterUsername) {
+        this.submitterUsername = submitterUsername;
+    }
+
+    public String getSubmissionName() {
+        return submissionName;
+    }
+
+    public void setSubmissionName(String submissionName) {
+        this.submissionName = submissionName;
     }
 
     public void setTraceId(String traceId) {

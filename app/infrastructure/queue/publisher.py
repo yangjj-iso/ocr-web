@@ -68,11 +68,11 @@ def _hash_file(path: Path) -> str:
 
 def _guess_ocr_backend(mode: str) -> str:
     normalized_mode = (mode or "").strip().lower()
-    if normalized_mode == "layout":
+    if normalized_mode in {"layout", "ocr"}:
         return "aistudio_paddleocr_api" if OCR_LAYOUT_BACKEND == "api" else "paddleocr"
     if normalized_mode in {"vl", "baidu_vl"}:
         return "vision_local" if OCR_VL_BACKEND == "local" else f"vision_{OCR_VL_BACKEND}"
-    return "paddleocr"
+    return "aistudio_paddleocr_api" if OCR_LAYOUT_BACKEND == "api" else "paddleocr"
 
 
 def _build_command(job: OCRJob) -> OcrTaskCommand:

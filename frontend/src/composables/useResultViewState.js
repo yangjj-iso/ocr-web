@@ -5,6 +5,7 @@ import { getTask, getTaskFileUrl, getTasks, updateTask } from '../api/ocr.js'
 import { getModeLabel, getStatusClass, getStatusLabel } from '../constants/uiCopy.js'
 import { useAsyncState } from './useAsyncState.js'
 import { useTaskPolling } from './useTaskPolling.js'
+import { normalizeTaskForDisplay } from '../utils/ocrDisplay.js'
 
 /**
  * @typedef {{
@@ -14,7 +15,7 @@ import { useTaskPolling } from './useTaskPolling.js'
  *   loading: import('vue').ComputedRef<boolean>,
  *   error: import('vue').ComputedRef<string>,
  *   toast: import('vue').Ref<string>,
- *   activeTab: import('vue').Ref<'parsed'|'json'>,
+ *   activeTab: import('vue').Ref<'parsed'|'json'|'fields'|'report'>,
  *   activeKey: import('vue').Ref<string>,
  *   pageNum: import('vue').Ref<number>,
  *   folderTasks: import('vue').Ref<any[]>,
@@ -31,6 +32,9 @@ import { useTaskPolling } from './useTaskPolling.js'
  *   natH: import('vue').Ref<number>,
  *   fileUrl: import('vue').ComputedRef<string>,
  *   folderPath: import('vue').ComputedRef<string>,
+ *   folderSourcePath: import('vue').ComputedRef<string>,
+ *   materialContextKind: import('vue').ComputedRef<string>,
+ *   materialContextValue: import('vue').ComputedRef<string>,
  *   folderLabel: import('vue').ComputedRef<string>,
  *   pages: import('vue').ComputedRef<any[]>,
  *   totalPages: import('vue').ComputedRef<number>,
@@ -78,6 +82,7 @@ export function useResultViewState({ taskId, route, router }) {
   const activeTab = ref('parsed')
   const activeKey = ref('')
   const pageNum = ref(1)
+  const refreshing = ref(false)
 
   const folderTasks = ref([])
   const folderLoading = ref(false)
@@ -101,13 +106,77 @@ export function useResultViewState({ taskId, route, router }) {
     return slashIndex >= 0 ? normalized.slice(0, slashIndex) : ''
   }
 
+  const normalizePages = (value) => {
+    if (Array.isArray(value)) return value
+    if (value && typeof value === 'object' && Array.isArray(value.pages)) {
+      return value.pages
+    }
+    return []
+  }
+
+  const normalizeResultData = (data) => {
+    const rawResultData = data?.result_data && typeof data.result_data === 'object' ? data.result_data : {}
+    const pages = normalizePages(rawResultData.pages ?? data?.result_json)
+    return {
+      ...rawResultData,
+      pages,
+    }
+  }
+
+  const normalizeTaskDetail = (data) => {
+    const normalizedResultData = normalizeResultData(data)
+    return normalizeTaskForDisplay({
+      ...(data || {}),
+      result_data: normalizedResultData,
+      result_json: normalizedResultData.pages,
+    })
+  }
+
+  const normalizeString = (value) => String(value || '').trim()
   const fileUrl = computed(() => getTaskFileUrl(taskId.value))
-  const folderPath = computed(() => String(route.query.folder || '') || inferFolderPath(task.value?.file_path || ''))
-  const folderLabel = computed(() => {
-    const normalized = folderPath.value.replace(/\\/g, '/')
-    return normalized.split('/').filter(Boolean).pop() || folderPath.value
+  const routeFolderPath = computed(() => normalizeString(route.query.folder))
+  const routeSubmissionId = computed(() => normalizeString(route.query.submission_id))
+  const routeBatchId = computed(() => normalizeString(route.query.batch_id))
+  const taskFolderPath = computed(() => normalizeString(task.value?.folder || inferFolderPath(task.value?.file_path || '')))
+  const taskBatchId = computed(() => normalizeString(task.value?.batch_id))
+
+  const materialContextKind = computed(() => {
+    if (routeFolderPath.value || taskFolderPath.value) return 'folder'
+    if (routeSubmissionId.value) return 'submission'
+    if (routeBatchId.value || taskBatchId.value) return 'batch'
+    return ''
   })
-  const pages = computed(() => resultData.value?.pages || [])
+
+  const materialContextValue = computed(() => {
+    if (materialContextKind.value === 'folder') {
+      return routeFolderPath.value || taskFolderPath.value
+    }
+    if (materialContextKind.value === 'submission') {
+      return routeSubmissionId.value
+    }
+    if (materialContextKind.value === 'batch') {
+      return routeBatchId.value || taskBatchId.value
+    }
+    return ''
+  })
+
+  const folderPath = computed(() => (
+    materialContextKind.value && materialContextValue.value
+      ? `${materialContextKind.value}:${materialContextValue.value}`
+      : ''
+  ))
+  const folderSourcePath = computed(() => (materialContextKind.value === 'folder' ? materialContextValue.value : ''))
+  const folderLabel = computed(() => {
+    if (materialContextKind.value === 'submission') {
+      return '同次提交材料'
+    }
+    if (materialContextKind.value === 'batch') {
+      return '同批次材料'
+    }
+    const normalized = folderSourcePath.value.replace(/\\/g, '/')
+    return normalized.split('/').filter(Boolean).pop() || folderSourcePath.value
+  })
+  const pages = computed(() => normalizePages(resultData.value?.pages))
   const totalPages = computed(() => pages.value.length || 1)
   const isPdf = computed(() => String(task.value?.file_type || '').toLowerCase() === '.pdf')
   const jsonText = computed(() => JSON.stringify(resultData.value, null, 2))
@@ -119,17 +188,20 @@ export function useResultViewState({ taskId, route, router }) {
     ocr: 'bg-green-100 text-green-700',
   }[task.value?.mode] || 'bg-gray-100 text-gray-700'))
   const currentPage = computed(() => pages.value[pageNum.value - 1] || { regions: [], lines: [] })
+  let latestFetchToken = 0
 
   const applyTask = (data) => {
-    task.value = data
-    resultData.value = data?.result_data || { pages: [] }
+    const normalizedData = normalizeTaskDetail(data)
+    task.value = normalizedData
+    resultData.value = normalizedData.result_data || { pages: [] }
     if (pageNum.value > totalPages.value) {
       pageNum.value = 1
     }
     if (totalPages.value === 0) {
       pageNum.value = 1
     }
-    viewState.data.value = data
+    viewState.data.value = normalizedData
+    return normalizedData
   }
 
   const { polling, start: startPolling, stop: stopPolling } = useTaskPolling(
@@ -142,34 +214,60 @@ export function useResultViewState({ taskId, route, router }) {
     }
   )
 
-  const fetchTask = async () => {
-    viewState.setLoading()
+  const fetchTask = async ({ silent = false } = {}) => {
+    const fetchToken = ++latestFetchToken
+    const requestedTaskId = taskId.value
+    if (!silent || !task.value) {
+      viewState.setLoading()
+    }
+    refreshing.value = true
     stopPolling()
     try {
-      const { data } = await getTask(taskId.value)
-      applyTask(data)
-      if (!['done', 'failed', 'human_review'].includes(data?.status)) {
-        await startPolling()
+      const { data } = await getTask(requestedTaskId)
+      if (fetchToken !== latestFetchToken || String(requestedTaskId) !== String(taskId.value)) {
+        return
       }
-      if ((data?.result_data?.pages || []).length) {
-        viewState.setSuccess(data)
+      const normalizedData = applyTask(data)
+      if (pages.value.length) {
+        viewState.setSuccess(normalizedData)
       } else {
-        viewState.setEmpty(data)
+        viewState.setEmpty(normalizedData)
+      }
+      if (!['done', 'failed', 'human_review'].includes(normalizedData?.status)) {
+        startPolling()
       }
     } catch (requestError) {
-      viewState.setError(requestError.response?.data?.detail || '结果加载失败。')
+      if (fetchToken !== latestFetchToken || String(requestedTaskId) !== String(taskId.value)) {
+        return
+      }
+      const message = requestError.response?.data?.detail || '结果加载失败。'
+      if (task.value && silent) {
+        showToast(message)
+      } else {
+        viewState.setError(message)
+      }
+    } finally {
+      if (fetchToken === latestFetchToken) {
+        refreshing.value = false
+      }
     }
   }
 
   const loadFolderTasks = async () => {
-    if (!folderPath.value) {
+    if (!materialContextKind.value || !materialContextValue.value) {
       folderTasks.value = []
       return
     }
     folderLoading.value = true
     try {
-      const { data } = await getTasks(1, 500, folderPath.value)
-      folderTasks.value = data.tasks || []
+      const { data } = await getTasks(
+        1,
+        500,
+        materialContextKind.value === 'folder' ? materialContextValue.value : '',
+        materialContextKind.value === 'submission' ? materialContextValue.value : '',
+        materialContextKind.value === 'batch' ? materialContextValue.value : ''
+      )
+      folderTasks.value = (data.tasks || []).map((item) => normalizeTaskForDisplay(item))
     } catch (_) {
       folderTasks.value = []
     } finally {
@@ -194,8 +292,15 @@ export function useResultViewState({ taskId, route, router }) {
 
   const switchTask = (nextTaskId) => {
     if (String(nextTaskId) === String(taskId.value)) return
-    const folderQuery = folderPath.value ? `?folder=${encodeURIComponent(folderPath.value)}` : ''
-    router.push(`/result/${nextTaskId}${folderQuery}`)
+    const query = {}
+    if (materialContextKind.value === 'folder' && materialContextValue.value) {
+      query.folder = materialContextValue.value
+    } else if (materialContextKind.value === 'submission' && materialContextValue.value) {
+      query.submission_id = materialContextValue.value
+    } else if (materialContextKind.value === 'batch' && materialContextValue.value) {
+      query.batch_id = materialContextValue.value
+    }
+    router.push({ path: `/result/${nextTaskId}`, query })
   }
 
   const copyRegion = (item) => {
@@ -256,13 +361,13 @@ export function useResultViewState({ taskId, route, router }) {
   }
 
   const persistPages = async (successMessage) => {
-    const { data } = await updateTask(taskId.value, { result_json: resultData.value.pages })
+    const { data } = await updateTask(taskId.value, { result_json: pages.value })
     applyTask(data)
     showToast(successMessage)
   }
 
   const saveTextEdit = async (item) => {
-    const page = resultData.value.pages[item._pageIdx]
+    const page = pages.value[item._pageIdx]
     if (!page) return
 
     if (item._regionIdx !== undefined && page.regions?.[item._regionIdx]) {
@@ -282,7 +387,7 @@ export function useResultViewState({ taskId, route, router }) {
   }
 
   const saveTableEdit = async (item) => {
-    const page = resultData.value.pages[item._pageIdx]
+    const page = pages.value[item._pageIdx]
     if (!page?.regions?.[item._regionIdx]) return
     const region = page.regions[item._regionIdx]
     region.table_data = cloneTableData(tableDraft.value)
@@ -309,7 +414,7 @@ export function useResultViewState({ taskId, route, router }) {
       activeKey.value = ''
       cancelTextEdit()
       cancelTableEdit()
-      await fetchTask()
+      await fetchTask({ silent: true })
     }
   )
 
@@ -339,6 +444,9 @@ export function useResultViewState({ taskId, route, router }) {
     natH,
     fileUrl,
     folderPath,
+    folderSourcePath,
+    materialContextKind,
+    materialContextValue,
     folderLabel,
     pages,
     totalPages,
@@ -348,6 +456,7 @@ export function useResultViewState({ taskId, route, router }) {
     modeClass,
     currentPage,
     polling,
+    refreshing,
     formatTime,
     showToast,
     statusLabel,

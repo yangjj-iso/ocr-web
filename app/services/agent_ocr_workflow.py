@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
-import mimetypes
+import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -18,7 +17,7 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.ocr_engine import get_ocr_engine, pdf_to_images
+from app.core.ocr_engine import get_ocr_engine, pdf_to_images, uses_shared_layout_api_for_ocr_and_vl
 from app.core.result_validation import normalize_result_pages, serialize_pages_text
 from app.db.models import OCRTask
 from app.domains.extraction import field_service
@@ -36,8 +35,8 @@ from config import (
     LANGGRAPH_CHECKPOINTER_DSN,
     LANGGRAPH_CHECKPOINTER_REDIS_URL,
     LANGGRAPH_HITL_ENABLED,
-    LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD,
     MAX_RETRIES,
+    OCR_PREPROCESS_COMPLEXITY_THRESHOLD,
     VISION_ROUTE_COMPLEXITY_THRESHOLD,
 )
 
@@ -55,6 +54,7 @@ _WORKFLOW_DB_SESSIONS: dict[str, AsyncSession] = {}
 ARCHIVE_FIELDS = ["档号", "文号", "责任者", "题名", "日期", "页数", "密级", "备注"]
 PROCESSING_STRATEGIES = [
     "none",
+    "opencv_document",
     "enhance_contrast",
     "crop_and_zoom",
     "deskew",
@@ -67,7 +67,7 @@ class ExtractionResult(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
     confidence: float = 0.0
     issues: list[str] = Field(default_factory=list)
-    source: Literal["ocr", "vision_llm", "hybrid", "fallback"] = "fallback"
+    source: Literal["ocr", "ppocr_vl", "hybrid", "fallback"] = "fallback"
     reasoning: str = ""
     review_reason: str = ""
     human_review: bool = False
@@ -85,10 +85,12 @@ class PageAgentState(TypedDict, total=False):
     retry_count: int
     processing_strategy: str
     should_use_vision: bool
+    secondary_mode: str
     page_complexity: float
     route_reason: str
+    preprocess_reason: str
     ocr_result: dict[str, Any] | None
-    llm_result: dict[str, Any] | None
+    vl_result: dict[str, Any] | None
     final_result: dict[str, Any] | None
     page_output: dict[str, Any] | None
 
@@ -155,6 +157,162 @@ def _dedupe_issues(values: list[str]) -> list[str]:
     return result
 
 
+def _is_legibility_related_issue(value: Any) -> bool:
+    text = _clean_text(value)
+    if not text:
+        return False
+    keywords = (
+        "模糊",
+        "不清",
+        "看不清",
+        "难辨",
+        "难以辨认",
+        "无法辨认",
+        "字迹",
+        "签名",
+        "签字",
+        "盖章",
+        "印章",
+        "手写",
+        "遮挡",
+        "污损",
+        "重影",
+        "过曝",
+        "欠曝",
+        "残缺",
+        "缺角",
+        "截断",
+        "裁切",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def _is_optional_support_field_absence_issue(value: Any) -> bool:
+    text = _clean_text(value)
+    if not text or _is_legibility_related_issue(text):
+        return False
+    optional_fields = tuple(ARCHIVE_FIELDS) + ("负责人",)
+    absence_keywords = (
+        "缺失",
+        "为空",
+        "空白",
+        "留空",
+        "均缺失",
+        "未提取",
+        "未抽取",
+        "未识别",
+        "未发现",
+        "缺少",
+        "没有",
+        "无",
+    )
+    return any(field in text for field in optional_fields) and any(keyword in text for keyword in absence_keywords)
+
+
+def _is_no_text_extraction_issue(value: Any) -> bool:
+    text = _clean_text(value)
+    return text in {
+        "传统 OCR 未提取到有效文本。",
+        "PaddleOCR-VL-1.5 未提取到有效文本。",
+    }
+
+
+def _is_confidence_only_review_reason(value: Any) -> bool:
+    text = _clean_text(value)
+    if not text:
+        return False
+    return (
+        "置信度" in text
+        and "低于阈值" in text
+        and "人工复核" in text
+        and not _is_legibility_related_issue(text)
+    )
+
+
+def _is_non_blocking_operational_issue(value: Any) -> bool:
+    text = _clean_text(value)
+    if not text:
+        return False
+    lowered = text.lower()
+    if text.startswith("Vision LLM 未返回可用结果"):
+        return True
+    if text.startswith("PaddleOCR-VL-1.5 未返回可用结果"):
+        return True
+    if text.startswith("PP-OCR-VL 未返回可用结果"):
+        return True
+    if "vision llm" in lowered and ("unavailable" in lowered or "not configured" in lowered):
+        return True
+    if "pp-ocr-vl" in lowered and ("unavailable" in lowered or "not configured" in lowered):
+        return True
+    if "paddleocr-vl" in lowered and ("unavailable" in lowered or "not configured" in lowered):
+        return True
+    if "需规范化" in text or "已规范化" in text:
+        return True
+    if "无需人工复核" in text or "无需人工审核" in text:
+        return True
+    if "不视为问题" in text:
+        return True
+    if _is_no_text_extraction_issue(text):
+        return True
+    if _is_confidence_only_review_reason(text):
+        return True
+    if _is_optional_support_field_absence_issue(text):
+        return True
+    return False
+
+
+def _review_relevant_issues(values: list[str]) -> list[str]:
+    return [text for text in _dedupe_issues(values) if not _is_non_blocking_operational_issue(text)]
+
+
+def _is_review_blocking_issue(value: Any) -> bool:
+    text = _clean_text(value)
+    if not text or _is_non_blocking_operational_issue(text):
+        return False
+    if _is_legibility_related_issue(text):
+        return True
+    blocking_keywords = (
+        "冲突",
+        "不一致",
+        "矛盾",
+        "失败",
+        "错误",
+        "异常",
+        "中断",
+        "无法判断",
+        "无法确认",
+        "无法核定",
+        "需要人工",
+        "需人工",
+        "待人工",
+        "人工复核",
+        "人工审核",
+    )
+    return any(keyword in text for keyword in blocking_keywords)
+
+
+def _has_review_blocking_signal(values: list[str]) -> bool:
+    return any(_is_review_blocking_issue(value) for value in values)
+
+
+def _page_requires_human_review(page_output: dict[str, Any]) -> bool:
+    values = [str(item) for item in (page_output.get("issues") or [])]
+    reason = _clean_text(page_output.get("review_reason"))
+    if reason:
+        values.append(reason)
+    return _has_review_blocking_signal(values)
+
+
+def _collect_conflict_page_numbers(consistency: dict[str, Any] | None) -> set[int]:
+    page_numbers: set[int] = set()
+    for conflict_groups in (consistency or {}).get("conflicts", {}).values():
+        for group in conflict_groups or []:
+            for page in group.get("pages") or []:
+                page_numbers.add(int(page.get("page_num") or 0))
+    page_numbers.discard(0)
+    return page_numbers
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -180,7 +338,7 @@ def _summarize_page_outputs(page_outputs: list[dict[str, Any]]) -> tuple[list[di
 
 def _build_workflow_thread_id(task_id: int, batch_id: str) -> str:
     safe_batch = _clean_text(batch_id).replace(" ", "_") or "default"
-    return f"ocr-task-{int(task_id)}-{safe_batch}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"ocr-web-task:{int(task_id)}:{safe_batch}"))
 
 
 def _register_workflow_runtime(
@@ -450,6 +608,17 @@ def _page_from_transcript(page_num: int, transcript: str) -> dict[str, Any]:
     }
 
 
+def _read_route_confidence_meta(raw_page: dict[str, Any] | None) -> tuple[bool, str]:
+    meta = (raw_page or {}).get("_ocr_web_meta")
+    if not isinstance(meta, dict):
+        return True, "derived_from_lines"
+    available = meta.get("route_confidence_available")
+    source = _clean_text(meta.get("route_confidence_source")) or "derived_from_lines"
+    if available is None:
+        return True, source
+    return bool(available), source
+
+
 def _estimate_page_complexity(image_path: str) -> float:
     if Image is None or ImageStat is None:
         return 0.5
@@ -469,19 +638,41 @@ def _estimate_page_complexity(image_path: str) -> float:
 
 def _page_route_should_use_vision(mode: str, complexity: float, retry_count: int) -> tuple[bool, str]:
     if mode in {"vl", "baidu_vl"}:
-        return True, "当前模式要求启用 Vision LLM。"
+        return True, "当前模式要求启用 PP-OCRv5 + PaddleOCR-VL-1.5 双路识别。"
     if retry_count > 0:
-        return True, "低置信结果进入重试阶段，启用 Vision LLM 辅助仲裁。"
+        return True, "低置信结果进入重试阶段，启用 PP-OCRv5 + PaddleOCR-VL-1.5 双路复核。"
     if complexity >= VISION_ROUTE_COMPLEXITY_THRESHOLD:
-        return True, f"页面复杂度 {complexity:.2f} 超过阈值，启用双路识别。"
+        return True, f"页面复杂度 {complexity:.2f} 超过阈值，启用 PP-OCRv5 + PaddleOCR-VL-1.5 双路识别。"
     return False, f"页面复杂度 {complexity:.2f} 较低，优先仅运行传统 OCR。"
 
 
-def _image_to_data_url(image_path: str) -> str:
-    mime_type = mimetypes.guess_type(image_path)[0] or "image/png"
-    raw = Path(image_path).read_bytes()
-    encoded = base64.b64encode(raw).decode("utf-8")
-    return f"data:{mime_type};base64,{encoded}"
+def _select_processing_strategy(mode: str, complexity: float, current_strategy: Any) -> str:
+    strategy = _clean_text(current_strategy) or "none"
+    if strategy != "none":
+        return strategy
+    if mode in {"layout", "ocr"} and complexity >= OCR_PREPROCESS_COMPLEXITY_THRESHOLD:
+        return "opencv_document"
+    return strategy
+
+
+def _describe_processing_strategy(strategy: Any, complexity: float) -> str:
+    normalized = _clean_text(strategy) or "none"
+    if normalized == "opencv_document":
+        return (
+            f"已启用 OpenCV 文档预处理（对比度增强、去噪、倾斜校正），"
+            f"页面复杂度 {complexity:.2f}。"
+        )
+    if normalized == "enhance_contrast":
+        return "已启用增强对比度预处理。"
+    if normalized == "crop_and_zoom":
+        return "已启用裁边放大预处理。"
+    if normalized == "deskew":
+        return "已启用倾斜校正预处理。"
+    if normalized == "denoise":
+        return "已启用去噪预处理。"
+    if normalized == "sharpen":
+        return "已启用锐化预处理。"
+    return ""
 
 
 def _parse_json_object(payload: str) -> dict[str, Any]:
@@ -534,29 +725,29 @@ async def _chat_json(
     return _parse_json_object(response.content)
 
 
-def _heuristic_merge(ocr_result: dict[str, Any] | None, llm_result: dict[str, Any] | None) -> ExtractionResult:
+def _heuristic_merge(ocr_result: dict[str, Any] | None, vl_result: dict[str, Any] | None) -> ExtractionResult:
     rule_fields = _normalize_fields((ocr_result or {}).get("fields"))
-    llm_fields = _normalize_fields((llm_result or {}).get("fields"))
+    vl_fields = _normalize_fields((vl_result or {}).get("fields"))
     ocr_conf = _clamp_confidence((ocr_result or {}).get("confidence"))
-    llm_conf = _clamp_confidence((llm_result or {}).get("confidence"))
+    vl_conf = _clamp_confidence((vl_result or {}).get("confidence"))
 
     chosen_fields = {}
     for field in ARCHIVE_FIELDS:
         left = rule_fields.get(field, "")
-        right = llm_fields.get(field, "")
+        right = vl_fields.get(field, "")
         if left and right and _compact_text(left) != _compact_text(right):
-            chosen_fields[field] = left if ocr_conf >= llm_conf else right
+            chosen_fields[field] = left if ocr_conf >= vl_conf else right
         else:
             chosen_fields[field] = left or right
 
     issues = []
     issues.extend((ocr_result or {}).get("issues") or [])
-    issues.extend((llm_result or {}).get("issues") or [])
-    confidence = max(ocr_conf, llm_conf, 0.35)
-    source = "ocr" if ocr_conf >= llm_conf else "vision_llm"
-    if ocr_conf and llm_conf:
+    issues.extend((vl_result or {}).get("issues") or [])
+    confidence = max(ocr_conf, vl_conf, 0.35)
+    source = "ocr" if ocr_conf >= vl_conf else "ppocr_vl"
+    if ocr_conf and vl_conf:
         source = "hybrid"
-        confidence = round(min(1.0, (ocr_conf * 0.45) + (llm_conf * 0.55)), 4)
+        confidence = round(min(1.0, (ocr_conf * 0.45) + (vl_conf * 0.55)), 4)
 
     return ExtractionResult(
         fields=chosen_fields,
@@ -569,30 +760,50 @@ def _heuristic_merge(ocr_result: dict[str, Any] | None, llm_result: dict[str, An
 
 async def node_page_plan(state: PageAgentState) -> dict[str, Any]:
     complexity = _estimate_page_complexity(state["image_path"])
+    processing_strategy = _select_processing_strategy(
+        state.get("mode", "layout"),
+        complexity,
+        state.get("processing_strategy"),
+    )
+    preprocess_reason = _describe_processing_strategy(processing_strategy, complexity)
     should_use_vision, reason = _page_route_should_use_vision(
         state.get("mode", "layout"),
         complexity,
         int(state.get("retry_count") or 0),
     )
+    secondary_mode = "skip"
+    if should_use_vision and uses_shared_layout_api_for_ocr_and_vl():
+        should_use_vision = False
+        reason = (
+            f"{reason} 当前 PP-OCRv5 与 PaddleOCR-VL-1.5 在 API 配置下复用同一远端 "
+            "layout-parsing 接口，跳过重复第二路识别与仲裁以降低单页耗时。"
+        )
+    elif should_use_vision:
+        secondary_mode = "ppocr_vl"
     return {
         "page_complexity": complexity,
         "should_use_vision": should_use_vision,
+        "secondary_mode": secondary_mode,
         "route_reason": reason,
+        "processing_strategy": processing_strategy,
+        "preprocess_reason": preprocess_reason,
     }
 
 
-async def route_page_execution(state: PageAgentState) -> list[str]:
-    return ["node_ocr", "node_vision_llm"] if state.get("should_use_vision") else ["node_ocr"]
+async def route_after_ocr(state: PageAgentState) -> str:
+    return "node_ppocr_vl" if _clean_text(state.get("secondary_mode")) == "ppocr_vl" else "node_evaluate_and_merge"
 
 
 async def node_ocr(state: PageAgentState) -> dict[str, Any]:
     try:
         engine = get_ocr_engine(
             strategy=state.get("processing_strategy", "none"),
-            mode=state.get("mode", "layout"),
+            mode="ocr",
         )
-        page = await asyncio.to_thread(engine.recognize_page, state["image_path"])
-        page = normalize_result_pages([{**page, "page_num": state["page_num"]}])[0]
+        raw_page = await asyncio.to_thread(engine.recognize_page, state["image_path"])
+        confidence_available, confidence_source = _read_route_confidence_meta(raw_page)
+        page_confidence = _ocr_confidence(raw_page)
+        page = normalize_result_pages([{**raw_page, "page_num": state["page_num"]}])[0]
         full_text = _result_text(page)
         fields = field_service.extract_fields(state["filename"], full_text, [page], 1)
         issues = []
@@ -603,9 +814,12 @@ async def node_ocr(state: PageAgentState) -> dict[str, Any]:
                 "page": page,
                 "full_text": full_text,
                 "fields": fields,
-                "confidence": _ocr_confidence(page),
+                "confidence": page_confidence,
+                "confidence_available": confidence_available,
+                "confidence_source": confidence_source,
                 "issues": issues,
                 "processing_strategy": state.get("processing_strategy", "none"),
+                "preprocess_reason": _clean_text(state.get("preprocess_reason")),
             }
         }
     except Exception as exc:  # noqa: BLE001
@@ -616,73 +830,68 @@ async def node_ocr(state: PageAgentState) -> dict[str, Any]:
                 "full_text": "",
                 "fields": _blank_fields(),
                 "confidence": 0.0,
+                "confidence_available": False,
+                "confidence_source": "ocr_error",
                 "issues": [f"传统 OCR 失败：{exc}"],
                 "processing_strategy": state.get("processing_strategy", "none"),
+                "preprocess_reason": _clean_text(state.get("preprocess_reason")),
             }
         }
 
 
-async def node_vision_llm(state: PageAgentState) -> dict[str, Any]:
+async def node_ppocr_vl(state: PageAgentState) -> dict[str, Any]:
     try:
-        image_data_url = await asyncio.to_thread(_image_to_data_url, state["image_path"])
-        payload = await _chat_json(
-            vision=True,
-            timeout_seconds=90.0,
-            messages=[
-                LLMMessage(
-                    role="system",
-                    content=(
-                        "你是档案整理场景的视觉抽取代理。"
-                        "请识别当前页面中的关键信息，并只返回 JSON。"
-                        "JSON 字段固定为：fields, confidence, issues, transcript, evidence。"
-                        "fields 仅包含 档号、文号、责任者、题名、日期、页数、密级、备注。"
-                        "confidence 为 0 到 1 的小数；issues 为字符串数组；evidence 为字段到证据短句的映射。"
-                    ),
-                ),
-                LLMMessage(
-                    role="user",
-                    content=[
-                        {
-                            "type": "text",
-                            "text": f"文件名：{state['filename']}\n页码：{state['page_num']}\n请识别该页档案内容。",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": image_data_url},
-                        },
-                    ],
-                ),
-            ],
+        engine = get_ocr_engine(
+            strategy=state.get("processing_strategy", "none"),
+            mode="vl",
         )
+        raw_page = await asyncio.to_thread(engine.recognize_page, state["image_path"])
+        confidence_available, confidence_source = _read_route_confidence_meta(raw_page)
+        page_confidence = _ocr_confidence(raw_page)
+        page = normalize_result_pages([{**raw_page, "page_num": state["page_num"]}])[0]
+        full_text = _result_text(page)
+        fields = field_service.extract_fields(state["filename"], full_text, [page], 1)
+        issues = []
+        if not full_text:
+            issues.append("PaddleOCR-VL-1.5 未提取到有效文本。")
         return {
-            "llm_result": {
-                "fields": _normalize_fields(payload.get("fields") or payload),
-                "confidence": _clamp_confidence(payload.get("confidence")),
-                "issues": _dedupe_issues([str(item) for item in (payload.get("issues") or [])]),
-                "transcript": _clean_text(payload.get("transcript")),
-                "evidence": {
-                    key: _clean_text(value)
-                    for key, value in (payload.get("evidence") or {}).items()
-                    if _clean_text(value)
-                },
+            "vl_result": {
+                "page": page,
+                "fields": fields,
+                "confidence": page_confidence,
+                "confidence_available": confidence_available,
+                "confidence_source": confidence_source,
+                "issues": issues,
+                "transcript": full_text,
+                "evidence": {},
             }
         }
     except Exception as exc:  # noqa: BLE001
-        logger.info("Vision LLM unavailable for task=%s page=%s: %s", state.get("task_id"), state.get("page_num"), exc)
+        logger.info(
+            "PaddleOCR-VL unavailable for task=%s page=%s: %s",
+            state.get("task_id"),
+            state.get("page_num"),
+            exc,
+        )
         return {
-            "llm_result": {
+            "vl_result": {
                 "fields": _blank_fields(),
                 "confidence": 0.0,
-                "issues": [f"Vision LLM 未返回可用结果：{exc}"],
+                "confidence_available": False,
+                "confidence_source": "ppocr_vl_error",
+                "issues": [f"PaddleOCR-VL-1.5 未返回可用结果：{exc}"],
                 "transcript": "",
                 "evidence": {},
             }
         }
 
 
+node_vision_llm = node_ppocr_vl
+
+
 async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult:
     ocr_result = state.get("ocr_result") or {}
-    llm_result = state.get("llm_result") or {}
+    vl_result = state.get("vl_result") or {}
 
     if not state.get("should_use_vision"):
         ocr_fields = _normalize_fields(ocr_result.get("fields"))
@@ -695,10 +904,10 @@ async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult
             evidence={},
         )
 
-    llm_fields = _normalize_fields(llm_result.get("fields"))
-    if not any(_clean_text(value) for value in llm_fields.values()) and not _clean_text(llm_result.get("transcript")):
-        fallback = _heuristic_merge(ocr_result, llm_result)
-        if fallback.source == "vision_llm":
+    vl_fields = _normalize_fields(vl_result.get("fields"))
+    if not any(_clean_text(value) for value in vl_fields.values()) and not _clean_text(vl_result.get("transcript")):
+        fallback = _heuristic_merge(ocr_result, vl_result)
+        if fallback.source == "ppocr_vl":
             fallback.source = "ocr"
         return fallback
 
@@ -711,10 +920,14 @@ async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult
                     role="system",
                     content=(
                         "你是档案整理系统中的仲裁节点。"
-                        "请比较 OCR 结构化结果与 Vision LLM 结果，输出统一 ExtractionResult。"
+                        "请比较 PP-OCRv5 结构化结果与 PaddleOCR-VL-1.5 结果，输出统一 ExtractionResult。"
                         "仅返回 JSON，字段固定为：fields, confidence, issues, source, reasoning, review_reason, human_review, evidence。"
                         "fields 只能包含 档号、文号、责任者、题名、日期、页数、密级、备注。"
-                        "confidence 为 0 到 1 浮点数，source 只能是 ocr、vision_llm、hybrid、fallback。"
+                        "confidence 为 0 到 1 浮点数，source 只能是 ocr、ppocr_vl、hybrid、fallback。"
+                        "注意：并不是每一页都必须出现文号、责任者/负责人、日期。"
+                        "如果页面本身没有这些内容，请保持对应字段为空字符串，不要因此写 issues，也不要设置 human_review=true。"
+                        "不要因为字段为空、页面属于续页/正文页、或者只是置信度偏低，就建议人工复核。"
+                        "只有在字迹或签名盖章模糊、关键文字被遮挡或截断、两路结果冲突且无法判断、或结果存在明显异常错误时，才建议人工复核。"
                     ),
                 ),
                 LLMMessage(
@@ -733,12 +946,12 @@ async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult
                                 "issues": ocr_result.get("issues") or [],
                                 "excerpt": _clean_text(ocr_result.get("full_text"))[:2000],
                             },
-                            "vision": {
-                                "fields": llm_fields,
-                                "confidence": _clamp_confidence(llm_result.get("confidence")),
-                                "issues": llm_result.get("issues") or [],
-                                "transcript": _clean_text(llm_result.get("transcript"))[:2000],
-                                "evidence": llm_result.get("evidence") or {},
+                            "vl": {
+                                "fields": vl_fields,
+                                "confidence": _clamp_confidence(vl_result.get("confidence")),
+                                "issues": vl_result.get("issues") or [],
+                                "transcript": _clean_text(vl_result.get("transcript"))[:2000],
+                                "evidence": vl_result.get("evidence") or {},
                             },
                         },
                         ensure_ascii=False,
@@ -747,11 +960,11 @@ async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult
             ],
         )
         source = _clean_text(payload.get("source")) or "hybrid"
-        if source not in {"ocr", "vision_llm", "hybrid", "fallback"}:
+        if source not in {"ocr", "ppocr_vl", "hybrid", "fallback"}:
             source = "hybrid"
         issues = []
         issues.extend([str(item) for item in (ocr_result.get("issues") or [])])
-        issues.extend([str(item) for item in (llm_result.get("issues") or [])])
+        issues.extend([str(item) for item in (vl_result.get("issues") or [])])
         issues.extend([str(item) for item in (payload.get("issues") or [])])
         result = ExtractionResult(
             fields=_normalize_fields(payload.get("fields")),
@@ -761,7 +974,7 @@ async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult
                     0.98,
                     max(
                         _clamp_confidence(ocr_result.get("confidence")),
-                        _clamp_confidence(llm_result.get("confidence")),
+                        _clamp_confidence(vl_result.get("confidence")),
                     ),
                 ),
             ),
@@ -777,9 +990,7 @@ async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult
             },
         )
         if not any(_clean_text(value) for value in result.fields.values()):
-            return _heuristic_merge(ocr_result, llm_result)
-        if result.confidence < CONFIDENCE_THRESHOLD and not result.review_reason:
-            result.review_reason = "页面抽取置信度低于阈值，建议继续重试或进入人工复核。"
+            return _heuristic_merge(ocr_result, vl_result)
         return result
     except Exception:
         logger.info(
@@ -788,18 +999,18 @@ async def _arbiter_merge_page_results(state: PageAgentState) -> ExtractionResult
             state.get("page_num"),
             exc_info=True,
         )
-        return _heuristic_merge(ocr_result, llm_result)
+        return _heuristic_merge(ocr_result, vl_result)
 
 
 async def node_evaluate_and_merge(state: PageAgentState) -> dict[str, Any]:
     result = await _arbiter_merge_page_results(state)
     ocr_page = (state.get("ocr_result") or {}).get("page") or {}
-    llm_transcript = _clean_text((state.get("llm_result") or {}).get("transcript"))
+    vl_transcript = _clean_text((state.get("vl_result") or {}).get("transcript"))
 
     if ocr_page and (_result_text(ocr_page) or ocr_page.get("regions")):
         base_page = {**ocr_page, "page_num": state["page_num"]}
-    elif llm_transcript:
-        base_page = _page_from_transcript(state["page_num"], llm_transcript)
+    elif vl_transcript:
+        base_page = _page_from_transcript(state["page_num"], vl_transcript)
     else:
         base_page = _page_from_transcript(state["page_num"], "")
 
@@ -812,8 +1023,13 @@ async def node_evaluate_and_merge(state: PageAgentState) -> dict[str, Any]:
         "processing_strategy": state.get("processing_strategy", "none"),
         "page_complexity": _safe_float(state.get("page_complexity"), 0.0),
         "route_reason": _clean_text(state.get("route_reason")),
+        "preprocess_reason": _clean_text(state.get("preprocess_reason")),
         "ocr_confidence": _clamp_confidence((state.get("ocr_result") or {}).get("confidence")),
-        "llm_confidence": _clamp_confidence((state.get("llm_result") or {}).get("confidence")),
+        "ocr_confidence_available": bool((state.get("ocr_result") or {}).get("confidence_available", True)),
+        "ocr_confidence_source": _clean_text((state.get("ocr_result") or {}).get("confidence_source")) or "derived_from_lines",
+        "vl_confidence": _clamp_confidence((state.get("vl_result") or {}).get("confidence")),
+        "vl_confidence_available": bool((state.get("vl_result") or {}).get("confidence_available", True)),
+        "vl_confidence_source": _clean_text((state.get("vl_result") or {}).get("confidence_source")) or "derived_from_lines",
         "fields": result.fields,
         "human_review": bool(result.human_review),
         "review_reason": result.review_reason,
@@ -829,6 +1045,7 @@ async def node_evaluate_and_merge(state: PageAgentState) -> dict[str, Any]:
         "source": result.source,
         "retry_count": int(state.get("retry_count") or 0),
         "processing_strategy": state.get("processing_strategy", "none"),
+        "preprocess_reason": _clean_text(state.get("preprocess_reason")),
         "human_review": bool(result.human_review),
         "review_reason": result.review_reason,
     }
@@ -872,7 +1089,7 @@ async def node_adjust_strategy(state: PageAgentState) -> dict[str, Any]:
         "retry_count": retry_count + 1,
         "processing_strategy": next_strategy,
         "ocr_result": None,
-        "llm_result": None,
+        "vl_result": None,
         "final_result": None,
         "page_output": None,
     }
@@ -885,11 +1102,11 @@ async def node_finalize_page(state: PageAgentState) -> dict[str, Any]:
 
     final_result = state.get("final_result") or _heuristic_merge(
         state.get("ocr_result"),
-        state.get("llm_result"),
+        state.get("vl_result"),
     ).model_dump(mode="json")
     fallback_page = (state.get("ocr_result") or {}).get("page") or _page_from_transcript(
         state["page_num"],
-        _clean_text((state.get("llm_result") or {}).get("transcript")),
+        _clean_text((state.get("vl_result") or {}).get("transcript")),
     )
     fallback_page = normalize_result_pages(
         [
@@ -902,6 +1119,7 @@ async def node_finalize_page(state: PageAgentState) -> dict[str, Any]:
                     "source": final_result.get("source") or "fallback",
                     "retry_count": int(state.get("retry_count") or 0),
                     "processing_strategy": state.get("processing_strategy", "none"),
+                    "preprocess_reason": _clean_text(state.get("preprocess_reason")),
                 },
             }
         ]
@@ -916,6 +1134,7 @@ async def node_finalize_page(state: PageAgentState) -> dict[str, Any]:
             "source": _clean_text(final_result.get("source")) or "fallback",
             "retry_count": int(state.get("retry_count") or 0),
             "processing_strategy": state.get("processing_strategy", "none"),
+            "preprocess_reason": _clean_text(state.get("preprocess_reason")),
             "human_review": bool(final_result.get("human_review")),
             "review_reason": _clean_text(final_result.get("review_reason")),
         }
@@ -1101,8 +1320,7 @@ async def node_process_next_page(state: BatchSupervisorState) -> dict[str, Any]:
             "page_no": page_num,
             "page_confidence": _clamp_confidence(output.get("confidence")),
             "issues": list(output.get("issues") or []),
-            "human_review_required": bool(output.get("human_review"))
-            or _clamp_confidence(output.get("confidence")) <= LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD,
+            "human_review_required": _page_requires_human_review(output),
             "note": "Page agent completed",
         },
         {
@@ -1118,9 +1336,7 @@ async def node_process_next_page(state: BatchSupervisorState) -> dict[str, Any]:
     combined_pages, overall_confidence, issues = _summarize_page_outputs(page_outputs)
     pending_interrupt = None
     resume_target = "node_process_next_page"
-    page_requires_review = bool(output.get("human_review")) or (
-        _clamp_confidence(output.get("confidence")) <= LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD
-    )
+    page_requires_review = _page_requires_human_review(output)
     if (
         LANGGRAPH_HITL_ENABLED
         and page_requires_review
@@ -1245,9 +1461,12 @@ async def node_rag_retrieve(state: BatchSupervisorState) -> dict[str, Any]:
 async def node_human_router(state: BatchSupervisorState) -> dict[str, Any]:
     overall_confidence = _clamp_confidence(state.get("overall_confidence"))
     issues = _dedupe_issues([str(item) for item in (state.get("issues") or [])])
+    review_relevant_issues = _review_relevant_issues(issues)
+    blocking_issues = [issue for issue in review_relevant_issues if _is_review_blocking_issue(issue)]
     merged_fields = _normalize_fields(state.get("merged_fields"))
     consistency = state.get("consistency") or {}
     conflict_fields = list((consistency.get("conflicts") or {}).keys())
+    conflict_page_numbers = _collect_conflict_page_numbers(consistency)
 
     human_review = False
     review_status = "approved"
@@ -1258,34 +1477,22 @@ async def node_human_router(state: BatchSupervisorState) -> dict[str, Any]:
         review_status = "pending_human_review"
         reason_parts.append(f"跨页关键字段冲突：{', '.join(conflict_fields)}")
 
-    if overall_confidence < HUMAN_REVIEW_MIN_CONFIDENCE:
+    if blocking_issues:
         human_review = True
-        review_status = "required"
+        if review_status == "approved":
+            review_status = "required" if overall_confidence < HUMAN_REVIEW_MIN_CONFIDENCE else "pending_human_review"
+        reason_parts.append(blocking_issues[0])
+
+    if human_review and overall_confidence < HUMAN_REVIEW_MIN_CONFIDENCE:
+        if review_status == "approved":
+            review_status = "required"
         reason_parts.append(
             f"总体置信度 {overall_confidence:.2f} 低于 {HUMAN_REVIEW_MIN_CONFIDENCE:.2f}"
         )
-    elif HUMAN_REVIEW_MIN_CONFIDENCE <= overall_confidence <= HUMAN_REVIEW_MAX_CONFIDENCE:
-        human_review = True
+    elif human_review and HUMAN_REVIEW_MIN_CONFIDENCE <= overall_confidence <= HUMAN_REVIEW_MAX_CONFIDENCE:
         if review_status == "approved":
             review_status = "pending_human_review"
         reason_parts.append(f"总体置信度 {overall_confidence:.2f} 落在人工审核区间")
-
-    missing_core_fields = [
-        field
-        for field in ("档号", "文号", "责任者", "题名", "日期")
-        if not _clean_text(merged_fields.get(field))
-    ]
-    if len(missing_core_fields) >= 2:
-        human_review = True
-        if review_status == "approved":
-            review_status = "pending_human_review"
-        reason_parts.append(f"关键字段缺失较多：{', '.join(missing_core_fields)}")
-
-    if issues and not reason_parts:
-        human_review = True
-        if review_status == "approved":
-            review_status = "pending_human_review"
-        reason_parts.append(issues[0])
 
     review_reason = "；".join(_dedupe_issues(reason_parts))
     if human_review:
@@ -1302,11 +1509,9 @@ async def node_human_router(state: BatchSupervisorState) -> dict[str, Any]:
 
     page_outputs = []
     for output in state.get("page_outputs") or []:
-        page_confidence = _clamp_confidence(output.get("confidence"))
         page_issues = _dedupe_issues([str(item) for item in (output.get("issues") or [])])
-        page_review = bool(page_issues) or page_confidence <= HUMAN_REVIEW_MAX_CONFIDENCE
-        if human_review and not page_review and page_confidence < CONFIDENCE_THRESHOLD:
-            page_review = True
+        page_num = int(output.get("page_num") or 0)
+        page_review = _page_requires_human_review(output) or page_num in conflict_page_numbers
         page_reason = _clean_text(output.get("review_reason")) or (
             review_reason if page_review and review_reason else ""
         )
@@ -1492,15 +1697,15 @@ def get_page_agent_graph():
     graph = StateGraph(PageAgentState)
     graph.add_node("node_page_plan", node_page_plan)
     graph.add_node("node_ocr", node_ocr)
-    graph.add_node("node_vision_llm", node_vision_llm)
+    graph.add_node("node_ppocr_vl", node_ppocr_vl)
     graph.add_node("node_evaluate_and_merge", node_evaluate_and_merge)
     graph.add_node("node_adjust_strategy", node_adjust_strategy)
     graph.add_node("node_finalize_page", node_finalize_page)
 
     graph.add_edge(START, "node_page_plan")
-    graph.add_conditional_edges("node_page_plan", route_page_execution)
-    graph.add_edge("node_ocr", "node_evaluate_and_merge")
-    graph.add_edge("node_vision_llm", "node_evaluate_and_merge")
+    graph.add_edge("node_page_plan", "node_ocr")
+    graph.add_conditional_edges("node_ocr", route_after_ocr)
+    graph.add_edge("node_ppocr_vl", "node_evaluate_and_merge")
     graph.add_conditional_edges("node_evaluate_and_merge", route_after_page_merge)
     graph.add_edge("node_adjust_strategy", "node_page_plan")
     graph.add_edge("node_finalize_page", END)

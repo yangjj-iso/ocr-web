@@ -1,7 +1,10 @@
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+from PIL import Image, ImageDraw
 
 from app.services import batch_merge_extraction_service as batch_service
 
@@ -49,45 +52,83 @@ def _task(task_id: int, filename: str, *, status: str = "done", full_text: str =
     )
 
 
+def _image_task(task_id: int, filename: str, file_path: Path, *, status: str = "done", full_text: str = ""):
+    created_at = datetime(2026, 1, 1) + timedelta(minutes=task_id)
+    return SimpleNamespace(
+        id=task_id,
+        filename=filename,
+        file_path=str(file_path),
+        file_type=file_path.suffix.lower(),
+        status=status,
+        full_text=full_text,
+        result_json=[],
+        page_count=1,
+        created_at=created_at,
+    )
+
+
+def _make_image(path: Path, *, variant: str = "same"):
+    image = Image.new("RGB", (800, 1200), "white")
+    draw = ImageDraw.Draw(image)
+    if variant == "same":
+        draw.rectangle((80, 100, 720, 220), outline="black", width=8)
+        draw.text((120, 320), "连续文档", fill="black")
+        draw.text((120, 400), "甲方：测试单位", fill="black")
+    else:
+        draw.rectangle((100, 760, 700, 1100), fill="black")
+        draw.text((140, 120), "附件页", fill="black")
+    image.save(path)
+
+
 class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
     def test_filename_sequence_prefers_trailing_serial(self):
         sequence = batch_service._extract_filename_sequence("模版文件/0313/WS·2024·D10-0313-014.jpg")
         self.assertEqual(sequence, 14)
 
     async def test_same_series_neighbors_merge_without_llm(self):
-        tasks = [
-            _task(1, "模版文件/0313/WS·2024·D10-0313-001.jpg", page_count=1),
-            _task(2, "模版文件/0313/WS·2024·D10-0313-002.jpg", page_count=1),
-            _task(3, "模版文件/0313/WS·2024·D10-0313-003.jpg", page_count=1),
-        ]
-        llm_same_doc = AsyncMock()
-        with (
-            patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
-            patch.object(
-                batch_service,
-                "extract_fields",
-                side_effect=[
-                    _fields(),
-                    _fields(),
-                    _fields(),
-                ],
-            ),
-            patch.object(
-                batch_service,
-                "compare_rule_and_llm_fields_for_content",
-                AsyncMock(return_value=_comparison_payload()),
-            ) as compare_mock,
-            patch.object(batch_service, "call_minimax_same_document_judgement", llm_same_doc),
-        ):
-            result = await batch_service.batch_merge_extract_fields(
-                db=SimpleNamespace(),
-                batch_id="batch-seq",
-                include_evidence=True,
-            )
+        import tempfile
 
-        self.assertEqual(result["summary"]["groups_count"], 1)
-        llm_same_doc.assert_not_awaited()
-        compare_mock.assert_awaited_once()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            page1 = Path(temp_dir) / "WS·2024·D10-0313-001.jpg"
+            page2 = Path(temp_dir) / "WS·2024·D10-0313-002.jpg"
+            page3 = Path(temp_dir) / "WS·2024·D10-0313-003.jpg"
+            _make_image(page1, variant="same")
+            _make_image(page2, variant="same")
+            _make_image(page3, variant="same")
+            tasks = [
+                _image_task(1, page1.name, page1, full_text="2024年安全会议纪要第一页"),
+                _image_task(2, page2.name, page2, full_text="2024年安全会议纪要第二页"),
+                _image_task(3, page3.name, page3, full_text="2024年安全会议纪要第三页"),
+            ]
+            llm_same_doc = AsyncMock()
+            with (
+                patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
+                patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
+                patch.object(
+                    batch_service,
+                    "extract_fields",
+                    side_effect=[
+                        _fields(),
+                        _fields(),
+                        _fields(),
+                    ],
+                ),
+                patch.object(
+                    batch_service,
+                    "compare_rule_and_llm_fields_for_content",
+                    AsyncMock(return_value=_comparison_payload()),
+                ) as compare_mock,
+                patch.object(batch_service, "call_minimax_same_document_judgement", llm_same_doc),
+            ):
+                result = await batch_service.batch_merge_extract_fields(
+                    db=SimpleNamespace(),
+                    batch_id="batch-seq",
+                    include_evidence=True,
+                )
+
+            self.assertEqual(result["summary"]["groups_count"], 1)
+            llm_same_doc.assert_not_awaited()
+            compare_mock.assert_awaited_once()
 
     async def test_returns_none_when_no_eligible_tasks(self):
         tasks = [
@@ -110,6 +151,7 @@ class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
         llm_same_doc = AsyncMock()
         with (
             patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
+            patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
             patch.object(
                 batch_service,
                 "extract_fields",
@@ -149,6 +191,7 @@ class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
+            patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
             patch.object(
                 batch_service,
                 "extract_fields",
@@ -185,7 +228,7 @@ class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["summary"]["groups_count"], 1)
         reasons_text = " ".join(result["groups"][0]["decision_reasons"])
-        self.assertIn("LLM高置信判定同文档", reasons_text)
+        self.assertIn("LLM判定同文档", reasons_text)
 
     async def test_low_confidence_llm_keeps_tasks_separate(self):
         tasks = [
@@ -195,6 +238,7 @@ class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
         compare_mock = AsyncMock(return_value=_comparison_payload())
         with (
             patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
+            patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
             patch.object(
                 batch_service,
                 "extract_fields",
@@ -231,21 +275,22 @@ class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_weak_uncertain_pair_is_skipped_without_llm(self):
         tasks = [
-            _task(1, "alpha-report.pdf", page_count=1),
-            _task(2, "beta-report.pdf", page_count=1),
+            _task(1, "alpha-report.pdf", page_count=1, full_text="甲材料首页"),
+            _task(2, "beta-report.pdf", page_count=1, full_text="乙附件说明"),
         ]
         llm_same_doc = AsyncMock()
         compare_mock = AsyncMock(return_value=_comparison_payload())
         with (
             patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
-            patch.object(
-                batch_service,
-                "extract_fields",
-                side_effect=[
-                    _fields(日期="2026-01-01"),
-                    _fields(日期="2026-01-01"),
-                ],
-            ),
+            patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
+                patch.object(
+                    batch_service,
+                    "extract_fields",
+                    side_effect=[
+                        _fields(),
+                        _fields(),
+                    ],
+                ),
             patch.object(batch_service, "call_minimax_same_document_judgement", llm_same_doc),
             patch.object(batch_service, "compare_rule_and_llm_fields_for_content", compare_mock),
         ):
@@ -267,6 +312,7 @@ class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
         compare_mock = AsyncMock(return_value=_comparison_payload())
         with (
             patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
+            patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
             patch.object(
                 batch_service,
                 "extract_fields",
@@ -379,6 +425,77 @@ class BatchMergeExtractionTests(unittest.IsolatedAsyncioTestCase):
         cache_delete_mock.assert_called_once()
         compute_mock.assert_awaited_once()
         cache_set_mock.assert_called_once()
+
+    async def test_get_batch_boundary_analysis_result_exports_group_pdf_and_threshold_summary(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            page1 = Path(temp_dir) / "KJ-JJ-2017-02-001-001.jpg"
+            page2 = Path(temp_dir) / "KJ-JJ-2017-02-001-002.jpg"
+            _make_image(page1, variant="same")
+            _make_image(page2, variant="same")
+            tasks = [
+                _image_task(1, page1.name, page1, full_text="重庆大剧院污染新风源垃圾房改造合同"),
+                _image_task(2, page2.name, page2, full_text="重庆大剧院污染新风源垃圾房改造合同 第二页"),
+            ]
+
+            with (
+                patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
+                patch.object(batch_service, "get_batch_boundary_truth", AsyncMock(return_value={"tasks": []})),
+                patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
+                patch.object(batch_service, "load_boundary_analysis", AsyncMock(return_value=None)),
+                patch.object(batch_service, "save_boundary_analysis", AsyncMock()) as save_mock,
+                patch.object(batch_service, "extract_fields", side_effect=[_fields(), _fields()]),
+            ):
+                result = await batch_service.get_batch_boundary_analysis_result(
+                    db=SimpleNamespace(),
+                    batch_id="batch-boundary",
+                    force_refresh=True,
+                    similarity_threshold=10,
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["summary"]["applied_similarity_threshold"], 10)
+            self.assertEqual(result["summary"]["group_count"], 1)
+            self.assertEqual(result["groups"][0]["suggested_pdf_filename"], "KJ-JJ-2017-02-001-001-002.pdf")
+            self.assertTrue(result["groups"][0]["pdf_exported"])
+            self.assertTrue(Path(result["groups"][0]["pdf_output_path"]).exists())
+            save_mock.assert_not_awaited()
+
+    async def test_boundary_analysis_includes_visual_tasks_before_completion(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            page0 = Path(temp_dir) / "KJ-JJ-2017-02-001-000.jpg"
+            page1 = Path(temp_dir) / "KJ-JJ-2017-02-001-001.jpg"
+            _make_image(page0, variant="same")
+            _make_image(page1, variant="same")
+            tasks = [
+                _image_task(1, page0.name, page0, status="processing", full_text=""),
+                _image_task(2, page1.name, page1, status="human_review", full_text=""),
+            ]
+
+            with (
+                patch.object(batch_service, "_load_batch_tasks", AsyncMock(return_value=tasks)),
+                patch.object(batch_service, "get_batch_boundary_truth", AsyncMock(return_value={"tasks": []})),
+                patch.object(batch_service, "load_boundary_feedback_priors", AsyncMock(return_value=None)),
+                patch.object(batch_service, "load_boundary_analysis", AsyncMock(return_value=None)),
+                patch.object(batch_service, "save_boundary_analysis", AsyncMock()),
+                patch.object(batch_service, "extract_fields", side_effect=[_fields(), _fields()]),
+            ):
+                result = await batch_service.get_batch_boundary_analysis_result(
+                    db=SimpleNamespace(),
+                    batch_id="batch-visual-pending",
+                    force_refresh=True,
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["summary"]["group_count"], 1)
+            self.assertEqual(result["groups"][0]["task_ids"], [1, 2])
+            self.assertEqual(
+                str(result["task_to_group"].get(1) or result["task_to_group"].get("1")),
+                str(result["task_to_group"].get(2) or result["task_to_group"].get("2")),
+            )
 
 
 if __name__ == "__main__":

@@ -4,13 +4,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "ocr.storage")
 public class StorageProperties {
-    private String backend = "local";
+    private String backend = "s3";
     private String uploadDir;
     private String bucket = "ocr-source";
-    private String endpoint;
+    private String endpoint = "http://127.0.0.1:9000";
     private String region = "us-east-1";
-    private String accessKey;
-    private String secretKey;
+    private String accessKey = "admin";
+    private String secretKey = "admin123456";
     private String keyPrefix = "uploads";
     private boolean pathStyle = true;
 

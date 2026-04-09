@@ -2,6 +2,7 @@ package com.ocrweb.controlplane.task.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ocrweb.controlplane.archive.service.ArchiveRecordService;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
@@ -16,15 +17,23 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
@@ -32,6 +41,11 @@ import static org.springframework.http.HttpStatus.BAD_REQUEST;
 @Service
 public class OcrTaskService {
     private static final Logger logger = LoggerFactory.getLogger(OcrTaskService.class);
+    private static final String DEFAULT_SUBMITTER_USERNAME = "匿名用户";
+    private static final String SUBMISSION_BATCH_PREFIX = "batch:";
+    private static final String SINGLE_TASK_PREFIX = "single:";
+    private static final ZoneId SUBMISSION_ZONE_ID = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter SUBMISSION_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
     private final OcrTaskRepository taskRepository;
     private final TaskCallbackEventRepository callbackEventRepository;
     private final TaskStorageService storageService;
@@ -56,13 +70,22 @@ public class OcrTaskService {
     }
 
     @Transactional
-    public OcrTaskEntity submitUpload(MultipartFile file, String relativePath, String mode, String batchId) throws IOException {
+    public OcrTaskEntity submitUpload(
+            MultipartFile file,
+            String relativePath,
+            String mode,
+            String batchId,
+            String submitterUsername
+    ) throws IOException {
+        String resolvedBatchId = resolveBatchId(batchId);
+        SubmissionMetadata submissionMetadata = resolveSubmissionMetadata(resolvedBatchId, submitterUsername);
         logger.info(
-                "Submitting uploaded OCR task: filename={}, relativePath={}, mode={}, batchId={}",
+                "Submitting uploaded OCR task: filename={}, relativePath={}, mode={}, batchId={}, submitterUsername={}",
                 file.getOriginalFilename(),
                 relativePath,
                 mode,
-                batchId
+                resolvedBatchId,
+                submissionMetadata.submitterUsername()
         );
         TaskStorageService.StoredFileHandle storedFile = storageService.saveUpload(file, relativePath);
         OcrTaskEntity task = new OcrTaskEntity();
@@ -75,29 +98,40 @@ public class OcrTaskService {
         task.setFileSha256(storedFile.sha256());
         task.setFileSizeBytes(storedFile.sizeBytes());
         task.setMode(mode);
-        task.setBatchId(batchId);
+        task.setBatchId(resolvedBatchId);
+        task.setSubmitterUsername(submissionMetadata.submitterUsername());
+        task.setSubmissionName(submissionMetadata.submissionName());
         task.setTraceId(RequestTraceContext.getTraceId());
         task.setStatus(normalizeStatus(OcrTaskStatus.QUEUED));
         OcrTaskEntity saved = taskRepository.save(task);
         taskCommandProducer.publish(saved);
         logger.info(
-                "OCR task queued: taskId={}, filename={}, mode={}, batchId={}, traceId={}",
+                "OCR task queued: taskId={}, filename={}, mode={}, batchId={}, traceId={}, submissionName={}",
                 saved.getId(),
                 saved.getFilename(),
                 saved.getMode(),
                 saved.getBatchId(),
-                saved.getTraceId()
+                saved.getTraceId(),
+                saved.getSubmissionName()
         );
         return saved;
     }
 
     @Transactional
-    public OcrTaskEntity submitExistingPath(String filePath, String mode, String batchId) throws IOException {
+    public OcrTaskEntity submitExistingPath(
+            String filePath,
+            String mode,
+            String batchId,
+            String submitterUsername
+    ) throws IOException {
+        String resolvedBatchId = resolveBatchId(batchId);
+        SubmissionMetadata submissionMetadata = resolveSubmissionMetadata(resolvedBatchId, submitterUsername);
         logger.info(
-                "Submitting existing-path OCR task: filePath={}, mode={}, batchId={}",
+                "Submitting existing-path OCR task: filePath={}, mode={}, batchId={}, submitterUsername={}",
                 filePath,
                 mode,
-                batchId
+                resolvedBatchId,
+                submissionMetadata.submitterUsername()
         );
         TaskStorageService.StoredFileHandle storedFile = storageService.saveExistingPath(filePath);
         OcrTaskEntity task = new OcrTaskEntity();
@@ -110,24 +144,37 @@ public class OcrTaskService {
         task.setFileSha256(storedFile.sha256());
         task.setFileSizeBytes(storedFile.sizeBytes());
         task.setMode(mode);
-        task.setBatchId(batchId);
+        task.setBatchId(resolvedBatchId);
+        task.setSubmitterUsername(submissionMetadata.submitterUsername());
+        task.setSubmissionName(submissionMetadata.submissionName());
         task.setTraceId(RequestTraceContext.getTraceId());
         task.setStatus(normalizeStatus(OcrTaskStatus.QUEUED));
         OcrTaskEntity saved = taskRepository.save(task);
         taskCommandProducer.publish(saved);
         logger.info(
-                "OCR task queued from existing path: taskId={}, filename={}, mode={}, batchId={}, traceId={}",
+                "OCR task queued from existing path: taskId={}, filename={}, mode={}, batchId={}, traceId={}, submissionName={}",
                 saved.getId(),
                 saved.getFilename(),
                 saved.getMode(),
                 saved.getBatchId(),
-                saved.getTraceId()
+                saved.getTraceId(),
+                saved.getSubmissionName()
         );
         return saved;
     }
 
-    public TaskDtos.TaskListResponse listTasks(int page, int pageSize, String folder) {
-        var tasks = taskRepository.findByFolder(folder == null ? "" : folder, PageRequest.of(Math.max(0, page - 1), pageSize));
+    public TaskDtos.TaskListResponse listTasks(int page, int pageSize, String folder, String submissionId, String batchId) {
+        String safeSubmissionId = safe(submissionId);
+        if (StringUtils.hasText(safeSubmissionId)) {
+            List<OcrTaskEntity> tasks = findTasksBySubmissionId(safeSubmissionId);
+            return paginateTasks(tasks, page, pageSize);
+        }
+
+        var tasks = taskRepository.findByFolderAndBatchId(
+                safe(folder),
+                safe(batchId),
+                PageRequest.of(Math.max(0, page - 1), pageSize)
+        );
         return new TaskDtos.TaskListResponse(tasks.getTotalElements(), tasks.getContent().stream().map(this::toSummary).toList());
     }
 
@@ -159,6 +206,21 @@ public class OcrTaskService {
                 .toList();
     }
 
+    public List<TaskDtos.SubmissionSummaryResponse> listSubmissions() {
+        Map<String, SubmissionAccumulator> submissions = new LinkedHashMap<>();
+        for (OcrTaskEntity task : taskRepository.findAll()) {
+            if (task.getId() == null) {
+                continue;
+            }
+            String submissionId = submissionIdOf(task);
+            submissions.computeIfAbsent(submissionId, key -> new SubmissionAccumulator(submissionId)).accept(task);
+        }
+        return submissions.values().stream()
+                .map(SubmissionAccumulator::toResponse)
+                .sorted(Comparator.comparing(TaskDtos.SubmissionSummaryResponse::lastTime, Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+    }
+
     public TaskDtos.TaskDetailResponse getTask(Long taskId) {
         OcrTaskEntity task = taskRepository.findById(taskId).orElseThrow();
         return toDetail(task);
@@ -173,13 +235,14 @@ public class OcrTaskService {
     public TaskDtos.TaskDetailResponse updateTask(Long taskId, TaskDtos.TaskUpdateRequest request) {
         OcrTaskEntity task = taskRepository.findById(taskId).orElseThrow();
         if (request.resultJson() != null) {
-            task.setResultJson(request.resultJson());
-            task.setPageCount(request.resultJson().isArray() ? request.resultJson().size() : task.getPageCount());
+            JsonNode normalizedResultJson = normalizeResultJson(request.resultJson());
+            task.setResultJson(normalizedResultJson);
+            task.setPageCount(normalizedResultJson.isArray() ? normalizedResultJson.size() : task.getPageCount());
         }
         if (request.fullText() != null) {
             task.setFullText(request.fullText());
         } else if (request.resultJson() != null) {
-            task.setFullText(request.resultJson().toString());
+            task.setFullText(normalizeResultJson(request.resultJson()).toString());
         }
         taskRepository.save(task);
         return toDetail(task);
@@ -190,6 +253,7 @@ public class OcrTaskService {
         if (!taskRepository.existsById(taskId)) {
             return false;
         }
+        archiveRecordService.deleteRecordsByTaskId(taskId);
         taskRepository.deleteById(taskId);
         return true;
     }
@@ -197,6 +261,32 @@ public class OcrTaskService {
     @Transactional
     public long deleteTasksByFolder(String folder) {
         return taskRepository.deleteByFilePathStartingWith(folder);
+    }
+
+    @Transactional
+    public long deleteTasksBySubmission(String submissionId) {
+        String safeSubmissionId = safe(submissionId);
+        if (!StringUtils.hasText(safeSubmissionId)) {
+            return 0;
+        }
+        if (safeSubmissionId.startsWith(SUBMISSION_BATCH_PREFIX)) {
+            String batchId = safeSubmissionId.substring(SUBMISSION_BATCH_PREFIX.length());
+            if (!StringUtils.hasText(batchId)) {
+                return 0;
+            }
+            archiveRecordService.deleteRecords("", batchId);
+            return taskRepository.deleteByBatchId(batchId);
+        }
+        if (safeSubmissionId.startsWith(SINGLE_TASK_PREFIX)) {
+            Long taskId = parseLongSilently(safeSubmissionId.substring(SINGLE_TASK_PREFIX.length()));
+            if (taskId == null || !taskRepository.existsById(taskId)) {
+                return 0;
+            }
+            archiveRecordService.deleteRecordsByTaskId(taskId);
+            taskRepository.deleteById(taskId);
+            return 1;
+        }
+        return 0;
     }
 
     public TaskDtos.TaskProgressResponse getProgress(List<Long> taskIds) {
@@ -255,16 +345,17 @@ public class OcrTaskService {
         OcrTaskEntity task = taskRepository.findById(taskId).orElseThrow();
         saveCallbackEvent(taskId, request.eventId(), "COMPLETION", objectMapper.valueToTree(request));
         task.setStatus(normalizeStatus(OcrTaskStatus.COMPLETED));
-        task.setResultJson(request.result());
+        JsonNode normalizedResultJson = normalizeResultJson(request.result());
+        task.setResultJson(normalizedResultJson);
         task.setAgentMeta(request.agentMeta());
         if (task.getTraceId() == null || task.getTraceId().isBlank()) {
             task.setTraceId(request.traceId());
         }
         task.setFullText(request.fullText() == null || request.fullText().isBlank()
-                ? (request.result() == null ? null : request.result().toString())
+                ? (normalizedResultJson.isEmpty() ? null : normalizedResultJson.toString())
                 : request.fullText());
         task.setErrorMessage(null);
-        task.setPageCount(request.summary() != null && request.summary().has("total_pages") ? request.summary().get("total_pages").asInt() : 0);
+        task.setPageCount(request.summary() != null && request.summary().has("total_pages") ? request.summary().get("total_pages").asInt() : normalizedResultJson.size());
         task.setProgressPercent(100.0);
         task.setProcessedPages(task.getPageCount());
         task.setTotalPages(task.getPageCount());
@@ -319,9 +410,10 @@ public class OcrTaskService {
         task.setWorkflowThreadId(request.workflowThreadId());
         task.setHumanReviewPayload(request.interruptPayload());
         task.setAgentMeta(request.agentMeta());
-        task.setResultJson(request.result());
+        JsonNode normalizedResultJson = normalizeResultJson(request.result());
+        task.setResultJson(normalizedResultJson);
         task.setFullText(request.fullText() == null || request.fullText().isBlank()
-                ? (request.result() == null ? null : request.result().toString())
+                ? (normalizedResultJson.isEmpty() ? null : normalizedResultJson.toString())
                 : request.fullText());
         task.setReviewStatus(request.reviewStatus() == null || request.reviewStatus().isBlank()
                 ? "pending_human_review"
@@ -338,6 +430,8 @@ public class OcrTaskService {
             } else if (request.summary().has("processed_pages")) {
                 task.setPageCount(request.summary().path("processed_pages").asInt(task.getPageCount() == null ? 0 : task.getPageCount()));
             }
+        } else if (task.getPageCount() == null || task.getPageCount() == 0) {
+            task.setPageCount(normalizedResultJson.size());
         }
         taskRepository.save(task);
         return accepted(taskId, task.getStatus());
@@ -355,6 +449,95 @@ public class OcrTaskService {
         task.setReviewReason("人工复核结果已提交，等待工作流恢复执行。");
         taskRepository.save(task);
         return toDetail(task);
+    }
+
+    private TaskDtos.TaskListResponse paginateTasks(List<OcrTaskEntity> tasks, int page, int pageSize) {
+        int safePage = Math.max(1, page);
+        int safePageSize = Math.max(1, pageSize);
+        int fromIndex = Math.min(tasks.size(), (safePage - 1) * safePageSize);
+        int toIndex = Math.min(tasks.size(), fromIndex + safePageSize);
+        return new TaskDtos.TaskListResponse(
+                tasks.size(),
+                tasks.subList(fromIndex, toIndex).stream().map(this::toSummary).toList()
+        );
+    }
+
+    private List<OcrTaskEntity> findTasksBySubmissionId(String submissionId) {
+        if (submissionId.startsWith(SUBMISSION_BATCH_PREFIX)) {
+            String batchId = submissionId.substring(SUBMISSION_BATCH_PREFIX.length());
+            if (!StringUtils.hasText(batchId)) {
+                return List.of();
+            }
+            return taskRepository.findByBatchIdOrderByCreatedAtDesc(batchId);
+        }
+        if (submissionId.startsWith(SINGLE_TASK_PREFIX)) {
+            Long taskId = parseLongSilently(submissionId.substring(SINGLE_TASK_PREFIX.length()));
+            if (taskId == null) {
+                return List.of();
+            }
+            return taskRepository.findById(taskId).map(List::of).orElseGet(List::of);
+        }
+        return List.of();
+    }
+
+    private String resolveBatchId(String batchId) {
+        String safeBatchId = safe(batchId);
+        if (StringUtils.hasText(safeBatchId)) {
+            return safeBatchId;
+        }
+        return "batch_" + OffsetDateTime.now(SUBMISSION_ZONE_ID).toEpochSecond() + "_" + UUID.randomUUID().toString().substring(0, 6);
+    }
+
+    private SubmissionMetadata resolveSubmissionMetadata(String batchId, String submitterUsername) {
+        OcrTaskEntity existingTask = taskRepository.findFirstByBatchIdOrderByCreatedAtAsc(batchId).orElse(null);
+        if (existingTask != null && StringUtils.hasText(existingTask.getSubmissionName())) {
+            return new SubmissionMetadata(
+                    normalizeSubmitterUsername(existingTask.getSubmitterUsername()),
+                    existingTask.getSubmissionName()
+            );
+        }
+
+        String normalizedUsername = normalizeSubmitterUsername(
+                existingTask != null ? existingTask.getSubmitterUsername() : submitterUsername
+        );
+        OffsetDateTime now = OffsetDateTime.now(SUBMISSION_ZONE_ID);
+        int submissionIndex = countUserDailySubmissions(normalizedUsername, now) + 1;
+        return new SubmissionMetadata(normalizedUsername, buildSubmissionName(normalizedUsername, now.toLocalDate(), submissionIndex));
+    }
+
+    private int countUserDailySubmissions(String submitterUsername, OffsetDateTime now) {
+        LocalDate today = now.atZoneSameInstant(SUBMISSION_ZONE_ID).toLocalDate();
+        OffsetDateTime startOfDay = today.atStartOfDay(SUBMISSION_ZONE_ID).toOffsetDateTime();
+        OffsetDateTime startOfNextDay = today.plusDays(1).atStartOfDay(SUBMISSION_ZONE_ID).toOffsetDateTime();
+        return (int) taskRepository
+                .findBySubmitterUsernameAndCreatedAtBetweenOrderByCreatedAtAsc(submitterUsername, startOfDay, startOfNextDay)
+                .stream()
+                .map(OcrTaskService::submissionIdOf)
+                .distinct()
+                .count();
+    }
+
+    private String buildSubmissionName(String submitterUsername, LocalDate submissionDate, int submissionIndex) {
+        return truncate("%s-%s-第%d次提交".formatted(
+                submitterUsername,
+                SUBMISSION_DATE_FORMATTER.format(submissionDate),
+                Math.max(1, submissionIndex)
+        ), 255);
+    }
+
+    private String normalizeSubmitterUsername(String submitterUsername) {
+        String safeUsername = safe(submitterUsername);
+        return truncate(StringUtils.hasText(safeUsername) ? safeUsername : DEFAULT_SUBMITTER_USERNAME, 120);
+    }
+
+    private String buildFallbackSubmissionName(OcrTaskEntity task) {
+        String filename = safe(task.getFilename());
+        if (StringUtils.hasText(filename)) {
+            return filename;
+        }
+        OffsetDateTime createdAt = task.getCreatedAt() == null ? OffsetDateTime.now(SUBMISSION_ZONE_ID) : task.getCreatedAt();
+        String normalizedUsername = normalizeSubmitterUsername(task.getSubmitterUsername());
+        return normalizedUsername + "-" + SUBMISSION_DATE_FORMATTER.format(createdAt.atZoneSameInstant(SUBMISSION_ZONE_ID).toLocalDate()) + "-历史任务";
     }
 
     private void saveCallbackEvent(Long taskId, String eventId, String eventType, com.fasterxml.jackson.databind.JsonNode payload) {
@@ -375,6 +558,7 @@ public class OcrTaskService {
                 task.getId(),
                 task.getFilename(),
                 task.getFilePath(),
+                task.getBatchId(),
                 task.getFileType(),
                 task.getMode(),
                 effectiveStatus(task),
@@ -389,10 +573,12 @@ public class OcrTaskService {
     }
 
     private TaskDtos.TaskDetailResponse toDetail(OcrTaskEntity task) {
+        JsonNode normalizedResultJson = normalizeResultJson(task.getResultJson());
         return new TaskDtos.TaskDetailResponse(
                 task.getId(),
                 task.getFilename(),
                 task.getFilePath(),
+                task.getBatchId(),
                 task.getFileType(),
                 task.getMode(),
                 effectiveStatus(task),
@@ -401,7 +587,7 @@ public class OcrTaskService {
                 task.getErrorMessage(),
                 task.getProgressPercent(),
                 task.getFullText(),
-                task.getResultJson(),
+                normalizedResultJson,
                 buildResultData(task),
                 task.getAgentMeta(),
                 task.getHumanReviewPayload(),
@@ -415,11 +601,7 @@ public class OcrTaskService {
 
     private JsonNode buildResultData(OcrTaskEntity task) {
         ObjectNode payload = objectMapper.createObjectNode();
-        if (task.getResultJson() != null) {
-            payload.set("pages", task.getResultJson());
-        } else {
-            payload.putArray("pages");
-        }
+        payload.set("pages", normalizeResultJson(task.getResultJson()));
         if (task.getAgentMeta() != null) {
             payload.set("agent_meta", task.getAgentMeta());
         }
@@ -430,6 +612,28 @@ public class OcrTaskService {
             payload.put("workflow_thread_id", task.getWorkflowThreadId());
         }
         return payload;
+    }
+
+    private JsonNode normalizeResultJson(JsonNode rawResultJson) {
+        if (rawResultJson == null || rawResultJson.isNull()) {
+            return objectMapper.createArrayNode();
+        }
+        if (rawResultJson.isArray()) {
+            return rawResultJson;
+        }
+
+        JsonNode pagesNode = rawResultJson.path("pages");
+        if (pagesNode.isArray()) {
+            return pagesNode;
+        }
+
+        if (rawResultJson.isObject() && rawResultJson.has("page_num")) {
+            ArrayNode singlePageArray = objectMapper.createArrayNode();
+            singlePageArray.add(rawResultJson);
+            return singlePageArray;
+        }
+
+        return objectMapper.createArrayNode();
     }
 
     private static TaskDtos.InternalCallbackResponse accepted(Long taskId, String status) {
@@ -481,12 +685,40 @@ public class OcrTaskService {
         return index >= 0 ? filename.substring(index).toLowerCase() : "";
     }
 
+    private static String submissionIdOf(OcrTaskEntity task) {
+        String batchId = safe(task.getBatchId());
+        if (StringUtils.hasText(batchId)) {
+            return SUBMISSION_BATCH_PREFIX + batchId;
+        }
+        return SINGLE_TASK_PREFIX + task.getId();
+    }
+
     private static String folderFromFilePath(String filePath) {
         if (filePath == null || filePath.isBlank()) {
             return "";
         }
         Path parent = Path.of(filePath).getParent();
         return parent == null ? "" : parent.toString();
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static Long parseLongSilently(String value) {
+        try {
+            return Long.parseLong(safe(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static String truncate(String value, int maxLength) {
+        String safeValue = safe(value);
+        if (safeValue.length() <= maxLength) {
+            return safeValue;
+        }
+        return safeValue.substring(0, maxLength);
     }
 
     private static String buildSearchSnippet(OcrTaskEntity task, String keyword) {
@@ -522,5 +754,58 @@ public class OcrTaskService {
             snippet = snippet + "...";
         }
         return snippet;
+    }
+
+    private record SubmissionMetadata(String submitterUsername, String submissionName) {
+    }
+
+    private final class SubmissionAccumulator {
+        private final String submissionId;
+        private String batchId = "";
+        private String submissionName = "";
+        private String submitterUsername = "";
+        private long count = 0;
+        private OffsetDateTime lastTime;
+        private Long latestTaskId;
+
+        private SubmissionAccumulator(String submissionId) {
+            this.submissionId = submissionId;
+        }
+
+        private void accept(OcrTaskEntity task) {
+            count++;
+            if (!StringUtils.hasText(batchId) && StringUtils.hasText(task.getBatchId())) {
+                batchId = safe(task.getBatchId());
+            }
+            if (!StringUtils.hasText(submissionName) && StringUtils.hasText(task.getSubmissionName())) {
+                submissionName = task.getSubmissionName();
+            }
+            if (!StringUtils.hasText(submitterUsername) && StringUtils.hasText(task.getSubmitterUsername())) {
+                submitterUsername = task.getSubmitterUsername();
+            }
+            OffsetDateTime candidateTime = task.getUpdatedAt() != null ? task.getUpdatedAt() : task.getCreatedAt();
+            if (lastTime == null || (candidateTime != null && candidateTime.isAfter(lastTime))) {
+                lastTime = candidateTime;
+                latestTaskId = task.getId();
+            }
+            if (!StringUtils.hasText(submissionName)) {
+                submissionName = buildFallbackSubmissionName(task);
+            }
+            if (!StringUtils.hasText(submitterUsername)) {
+                submitterUsername = normalizeSubmitterUsername(task.getSubmitterUsername());
+            }
+        }
+
+        private TaskDtos.SubmissionSummaryResponse toResponse() {
+            return new TaskDtos.SubmissionSummaryResponse(
+                    submissionId,
+                    batchId,
+                    submissionName,
+                    normalizeSubmitterUsername(submitterUsername),
+                    count,
+                    lastTime,
+                    latestTaskId
+            );
+        }
     }
 }

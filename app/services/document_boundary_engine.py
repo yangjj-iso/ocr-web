@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.utils.image_sequence_pdf import (
+    DEFAULT_SIMILARITY_THRESHOLD,
     PageFingerprint,
     compare_page_fingerprints,
     compute_phash,
@@ -109,6 +110,14 @@ class BoundaryGroup:
     confidence: float
     reasons: list[str]
 
+    @property
+    def page_count(self) -> int:
+        return len(self.task_ids)
+
+    @property
+    def suggested_pdf_filename(self) -> str:
+        return f"{self.prefix}-{self.start_page:03d}-{self.end_page:03d}.pdf"
+
 
 @dataclass(slots=True)
 class BoundaryResult:
@@ -117,6 +126,16 @@ class BoundaryResult:
     task_to_group: dict[int, str]
     group_meta: dict[str, dict[str, Any]]
     pair_meta: dict[tuple[int, int], dict[str, Any]]
+    sequence_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _normalize_similarity_threshold(value: int | None) -> int:
+    if value is None:
+        return DEFAULT_SIMILARITY_THRESHOLD
+    try:
+        return max(1, min(64, int(value)))
+    except (TypeError, ValueError):
+        return DEFAULT_SIMILARITY_THRESHOLD
 
 
 @dataclass(slots=True)
@@ -399,6 +418,12 @@ def _score_boundary(
     field_overlap = _field_overlap_score(left_page, right_page)
     same_family = bool(left_page.document_family and left_page.document_family == right_page.document_family)
     same_continuation_family = same_family and left_page.document_family in CONTINUATION_FAMILIES
+    weak_semantic_signal = (
+        text_similarity <= 0.05
+        and title_similarity <= 0.05
+        and entity_overlap <= 0.05
+        and field_overlap <= 0.05
+    )
 
     score = (
         (visual_similarity * 0.30)
@@ -419,6 +444,14 @@ def _score_boundary(
     if entity_overlap >= 0.25:
         score += 0.10
         bonuses.append("项目/主体信息连续")
+
+    if page_gap == 1 and visual_similarity >= 0.92 and not right.starts_attachment:
+        if weak_semantic_signal:
+            score += 0.46
+            bonuses.append("相邻页视觉版式高度一致")
+        else:
+            score += 0.10
+            bonuses.append("相邻页视觉连续")
 
     if left.starts_continuation or right.starts_continuation:
         score += 0.16
@@ -659,6 +692,7 @@ def build_boundary_result(
     pages: list[SequencePage],
     *,
     feedback_priors: BoundaryFeedbackPriors | None = None,
+    similarity_threshold: int | None = None,
 ) -> BoundaryResult:
     prepared_sequences: dict[str, list[_PreparedSequencePage]] = defaultdict(list)
     pair_meta: dict[tuple[int, int], dict[str, Any]] = {}
@@ -666,6 +700,7 @@ def build_boundary_result(
     groups: list[BoundaryGroup] = []
     task_to_group: dict[int, str] = {}
     group_meta: dict[str, dict[str, Any]] = {}
+    sequence_meta: dict[str, dict[str, Any]] = {}
 
     for page in pages:
         if not page.prefix or page.page_no is None:
@@ -700,12 +735,19 @@ def build_boundary_result(
             for fingerprint in fingerprints[1:]
             if fingerprint.distance_from_previous is not None
         ]
-        similarity_threshold = 12 if not distances else max(8, min(18, sum(distances) // len(distances) + 2))
+        recommended_threshold = 12 if not distances else max(8, min(18, sum(distances) // len(distances) + 2))
         if len(fingerprints) >= 2:
             try:
-                similarity_threshold = suggest_similarity_threshold(fingerprints)
+                recommended_threshold = suggest_similarity_threshold(fingerprints)
             except Exception:  # noqa: BLE001
                 logger.debug("Failed to auto-suggest similarity threshold for %s", prefix, exc_info=True)
+        effective_threshold = _normalize_similarity_threshold(similarity_threshold)
+        sequence_meta[prefix] = {
+            "page_count": len(sequence_pages),
+            "applied_similarity_threshold": effective_threshold,
+            "recommended_similarity_threshold": recommended_threshold,
+            "distance_sample_count": len(distances),
+        }
 
         sequence_decisions: list[BoundaryDecision] = []
         for index in range(len(sequence_pages) - 1):
@@ -722,7 +764,7 @@ def build_boundary_result(
                 left,
                 right,
                 comparison=comparison,
-                similarity_threshold=similarity_threshold,
+                similarity_threshold=effective_threshold,
                 feedback_priors=feedback_priors,
             )
             sequence_decisions.append(decision)
@@ -771,6 +813,10 @@ def build_boundary_result(
                 "task_ids": task_ids,
                 "start_page": group.start_page,
                 "end_page": group.end_page,
+                "page_count": group.page_count,
+                "suggested_pdf_filename": group.suggested_pdf_filename,
+                "applied_similarity_threshold": effective_threshold,
+                "recommended_similarity_threshold": recommended_threshold,
             }
             for task_id in task_ids:
                 task_to_group[task_id] = group_id
@@ -781,6 +827,7 @@ def build_boundary_result(
         task_to_group=task_to_group,
         group_meta=group_meta,
         pair_meta=pair_meta,
+        sequence_meta=sequence_meta,
     )
 
 

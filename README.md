@@ -4,7 +4,7 @@
 
 本项目是面向人社档案、文书归档与批量材料整理场景的本地化文档识别系统。基于 **PaddleOCR 3.x**，集成三种识别能力（基础 OCR、版面解析、视觉语言模型），支持图片/PDF 识别、批量导入、结构化提取、结果核对、归档导出与全文检索。
 
-系统采用 **Vue 3 + FastAPI + PostgreSQL + Redis** 技术栈，支持内网部署，识别链路与数据存储在本地完成。
+系统采用 **Vue 3 + FastAPI + PostgreSQL + Redis** 技术栈，支持内网部署；识别计算在本地完成，源文件与任务资源默认通过 MinIO 统一存储。
 
 当前仓库已收敛为“Java 控制面 + Python AI 计算面”：
 
@@ -21,7 +21,7 @@
 - 计算面 Worker 入口位于 [`app/main_worker.py`](/D:/Code/work/OCR-WEB-main/app/main_worker.py)
 - 详细说明见 [`docs/control-plane-compute-plane.md`](/D:/Code/work/OCR-WEB-main/docs/control-plane-compute-plane.md)
 
-推荐把控制面存储层切到 MinIO / OSS / 其他 S3 兼容对象存储，避免 Worker 依赖共享本地目录。Worker 默认会额外导出 Prometheus 指标，便于监控队列深度、人工暂停量、页级耗时和 GPU 缓存清理次数。
+当前默认把控制面存储层切到 MinIO / OSS / 其他 S3 兼容对象存储，避免 Worker 依赖共享本地目录。Worker 默认会额外导出 Prometheus 指标，便于监控队列深度、人工暂停量、页级耗时和 GPU 缓存清理次数。
 
 ### LangGraph Studio 本地调试
 
@@ -30,6 +30,7 @@
 - 图导出模块：[`app/studio/langgraph_graphs.py`](/D:/Code/work/OCR-WEB-main/app/studio/langgraph_graphs.py)
 - 本地调试 WebApp：[`app/studio/webapp.py`](/D:/Code/work/OCR-WEB-main/app/studio/webapp.py)
 - Studio 配置文件：[`langgraph.json`](/D:/Code/work/OCR-WEB-main/langgraph.json)
+- 简化流转图文档：[`docs/langgraph-flow.md`](/D:/Code/work/OCR-WEB-main/docs/langgraph-flow.md)
 
 安装依赖后，可直接在仓库根目录启动：
 
@@ -44,6 +45,8 @@ cd D:\Code\work\OCR-WEB-main
 - 可用图 ID：
   - `batch_supervisor`
   - `page_agent`
+- 简化流程图页面：
+  - `http://127.0.0.1:8123/studio/flow`
 
 若要从 LangSmith Trace 页面点击 `Run in Studio` / `Clone trace locally`，也应填写同一个 Base URL。
 
@@ -89,7 +92,7 @@ VITE_AI_FILE_BASE_URL=http://localhost:8001
 
 | 组件 | 技术 |
 |------|------|
-| OCR 引擎 | PaddleOCR 3.x + PaddlePaddle GPU |
+| OCR 引擎 | PaddleOCR 3.x + PaddlePaddle（默认 CPU，可选 GPU） |
 | 视觉语言模型 | PaddleOCR-VL-1.5 |
 | 版面分析 | PP-StructureV3 (PaddleX layout_parsing) |
 | 后端框架 | FastAPI + Uvicorn (Python 3.12) |
@@ -224,18 +227,22 @@ d:\OCR\
 - Python 3.10 ~ 3.12（不支持 3.13）
 - PostgreSQL 14+
 - Redis（本地 `D:\Redis\redis-server.exe`）
+- MinIO（默认 `http://127.0.0.1:9000`，桶名 `ocr-source`）
 - Node.js 18+（前端开发）
 - NVIDIA GPU + CUDA 12.x（推荐）
 
 ### 1. 安装依赖
 
 ```bash
-# Python 后端
+# Python 后端（默认安装 CPU 版 PaddlePaddle）
 pip install -r requirements.txt
 
 # 前端
 cd frontend && npm install
 ```
+
+如果你需要本地 GPU 版 PaddlePaddle，请先按官方 CUDA/Python 组合单独安装对应 wheel，
+再安装其余依赖；不要执行 `pip install paddle`，项目依赖的是 `paddlepaddle`。
 
 ### 2. 配置数据库
 
@@ -251,7 +258,11 @@ psql -U postgres -c "CREATE DATABASE ocr_db ENCODING 'UTF8';"
 Start-Process "D:\Redis\redis-server.exe"
 ```
 
-### 4. 启动后端
+### 4. 启动 MinIO
+
+请先确保本机 MinIO 已启动，并已创建桶 `ocr-source`。如果你的 MinIO 地址、桶名或密钥不同，请先覆盖 `OCR_STORAGE_*` 环境变量。
+
+### 5. 启动后端
 
 控制面 / 计算面模式：
 
@@ -273,8 +284,9 @@ D:\Code\work\OCR-WEB-main\.venv\Scripts\python.exe app\main_worker.py
 - `main_ai.py` 仅保留 AI 预览、批次分析、QA、评测等代理/兼容接口。
 - `main_worker.py` 负责 OCR、LangGraph、Vision LLM 与人审续跑。
 - Windows 环境下默认不启用热重载，避免重载子进程引用错误 Python 解释器导致服务异常。
+- Java 控制面默认使用 `OCR_STORAGE_BACKEND=s3`，并按本机 MinIO 默认值连接 `http://127.0.0.1:9000`，默认凭据为 `admin / admin123456`；如你的 MinIO 地址、桶名或密钥不同，请覆盖 `OCR_STORAGE_*` 环境变量。
 
-### 5. 启动前端（端口 3000）
+### 6. 启动前端（端口 3000）
 
 ```powershell
 cd D:\OCR\frontend
@@ -287,7 +299,7 @@ npm run dev -- --host 0.0.0.0 --port 3000
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-### 6. 访问
+### 7. 访问
 
 - 前端开发环境：http://localhost:3000
 - 后端 API 文档：http://localhost:8000/docs

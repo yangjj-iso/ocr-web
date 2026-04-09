@@ -233,13 +233,14 @@
     {
       "name": "ocr.storage.access-key",
       "type": "java.lang.String",
-      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": "admin"
     },
     {
       "name": "ocr.storage.backend",
       "type": "java.lang.String",
       "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
-      "defaultValue": "local"
+      "defaultValue": "s3"
     },
     {
       "name": "ocr.storage.bucket",
@@ -250,7 +251,8 @@
     {
       "name": "ocr.storage.endpoint",
       "type": "java.lang.String",
-      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": "http:\/\/127.0.0.1:9000"
     },
     {
       "name": "ocr.storage.key-prefix",
@@ -273,7 +275,8 @@
     {
       "name": "ocr.storage.secret-key",
       "type": "java.lang.String",
-      "sourceType": "com.ocrweb.controlplane.config.StorageProperties"
+      "sourceType": "com.ocrweb.controlplane.config.StorageProperties",
+      "defaultValue": "admin123456"
     },
     {
       "name": "ocr.storage.upload-dir",

@@ -38,6 +38,7 @@ class AIBatchMergeExtractRequest(BaseModel):
     persist: bool = False
     include_evidence: bool = True
     force_refresh: bool = False
+    similarity_threshold: int | None = None
 
 
 class AIBatchSkippedTask(BaseModel):
@@ -53,6 +54,13 @@ class AIBatchGroup(BaseModel):
     filenames: list[str]
     same_document_confidence: float
     decision_reasons: list[str]
+    prefix: str | None = None
+    start_page: int | None = None
+    end_page: int | None = None
+    page_count: int | None = None
+    suggested_pdf_filename: str | None = None
+    pdf_output_path: str | None = None
+    pdf_exported: bool | None = None
 
 
 class AIBatchDocument(BaseModel):
@@ -112,14 +120,23 @@ class AIBoundaryGroup(BaseModel):
     filenames: list[str]
     start_page: int
     end_page: int
+    page_count: int | None = None
     confidence: float
     reasons: list[str]
+    suggested_pdf_filename: str | None = None
+    pdf_output_path: str | None = None
+    pdf_exported: bool | None = None
 
 
 class AIBoundarySummary(BaseModel):
     sequence_count: int
     decision_count: int
     group_count: int
+    grouped_pdf_count: int | None = None
+    total_pages: int | None = None
+    applied_similarity_threshold: int | None = None
+    recommended_similarity_threshold: int | None = None
+    threshold_source: str | None = None
 
 
 class AIBoundaryAnalysisResponse(BaseModel):
@@ -129,6 +146,9 @@ class AIBoundaryAnalysisResponse(BaseModel):
     groups: list[AIBoundaryGroup]
     task_to_group: dict[int, str]
     summary: AIBoundarySummary
+    sequence_meta: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    threshold_help: str | None = None
     truth_updated_at: str | None = None
 
 

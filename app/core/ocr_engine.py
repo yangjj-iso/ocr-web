@@ -199,6 +199,8 @@ def _can_use_layout_api() -> bool:
 def _should_use_layout_api(mode: str) -> bool:
     if not _can_use_layout_api():
         return False
+    if mode == "ocr":
+        return OCR_LAYOUT_BACKEND == "api"
     if mode == "layout":
         return OCR_LAYOUT_BACKEND == "api"
     if mode == "vl":
@@ -211,6 +213,11 @@ def _should_use_layout_api(mode: str) -> bool:
 
 def should_require_local_vl_runtime(mode: str) -> bool:
     return mode == "vl" and not _should_use_baidu_vl_backend(mode) and not _should_use_layout_api(mode)
+
+
+def uses_shared_layout_api_for_ocr_and_vl() -> bool:
+    """Whether OCR and VL routes currently hit the same remote layout API."""
+    return _should_use_layout_api("ocr") and _should_use_layout_api("vl")
 
 
 def _is_known_layout_runtime_error(exc: Exception) -> bool:
@@ -1017,6 +1024,11 @@ def ocr_image_basic(image_path: str) -> dict:
     
     适用场景：只关注“有哪些字”，而不需要复杂的结构化上下文，常作为 LLM 实体提取的前置输入。
     """
+    if _should_use_layout_api("ocr"):
+        document = ocr_document_layout_api(image_path, mode_label="ocr_api")
+        pages = document.get("pages") or []
+        return pages[0] if pages else {"regions": [], "lines": []}
+
     ocr = get_ocr()
     results = ocr.predict(image_path)
 
@@ -1108,8 +1120,9 @@ def ocr_image_with_vl(image_path: str) -> dict:
     """
     使用 PaddleOCR-VL-1.5 视觉语言模型进行提取（多模态架构）。
     
-    这是系统中准确率最高的提取管线，它不仅仅使用传统 OCR 识别字符，还结合了视觉大模型（Vision LLM）的能力
-    来深刻理解文档的版面和语义逻辑（例如跨页表格合并、印章主体关系等）。
+    这是系统中准确率最高的提取管线，它不仅仅使用传统 OCR 识别字符，
+    还结合 PaddleOCR-VL-1.5 的视觉语言建模能力来理解版面和语义逻辑
+    （例如复杂表格、印章主体关系等）。
     
     注意：此方法对 GPU 显存和算力要求较高，常用于高质量、结构化诉求强烈的发票、合同等复杂文档。
     
@@ -1413,7 +1426,15 @@ def _markdown_text_to_page(markdown_text: str, page_num: int) -> dict:
             }
         )
 
-    return {"page_num": page_num, "regions": regions, "lines": lines}
+    return {
+        "page_num": page_num,
+        "regions": regions,
+        "lines": lines,
+        "_ocr_web_meta": {
+            "route_confidence_available": False,
+            "route_confidence_source": "layout_api_markdown",
+        },
+    }
 
 
 def _raise_layout_api_error(response) -> None:
@@ -1815,7 +1836,12 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
         mode, OCR_LAYOUT_BACKEND, use_layout_api, OCR_VL_BACKEND, use_baidu,
     )
     if use_layout_api:
-        mode_label = "vl_api" if mode == "vl" else "layout_api"
+        if mode == "vl":
+            mode_label = "vl_api"
+        elif mode == "ocr":
+            mode_label = "ocr_api"
+        else:
+            mode_label = "layout_api"
         return ocr_document_layout_api(file_path, mode_label=mode_label)
     if use_baidu:
         return ocr_document_baidu_vl(file_path)

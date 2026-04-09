@@ -66,12 +66,12 @@ celery -A app.infrastructure.queue.celery_app:celery_app worker -l info
 - Java `TaskStorageService` 已支持：
   - `local` 本地目录
   - `s3` S3 兼容对象存储（MinIO / OSS / 其他兼容网关）
-- 推荐配置：
+- 当前默认配置：
   - `OCR_STORAGE_BACKEND=s3`
-  - `OCR_STORAGE_ENDPOINT=http://minio:9000`
+  - `OCR_STORAGE_ENDPOINT=http://127.0.0.1:9000`
   - `OCR_STORAGE_BUCKET=ocr-source`
-  - `OCR_STORAGE_ACCESS_KEY=...`
-  - `OCR_STORAGE_SECRET_KEY=...`
+  - `OCR_STORAGE_ACCESS_KEY=admin`
+  - `OCR_STORAGE_SECRET_KEY=admin123456`
   - `OCR_STORAGE_REGION=us-east-1`
   - `OCR_STORAGE_PATH_STYLE=true`
 - 控制面数据库现在保存的是：

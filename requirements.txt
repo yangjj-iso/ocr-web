@@ -1,5 +1,5 @@
-# PaddlePaddle GPU (CUDA 12.x)
-paddlepaddle-gpu>=3.2.1
+# PaddlePaddle (CPU default; install GPU wheel manually if needed)
+paddlepaddle>=3.2.1
 # PaddleOCR 3.0
 paddleocr>=3.0.0
 paddlex[ocr]>=3.4.3

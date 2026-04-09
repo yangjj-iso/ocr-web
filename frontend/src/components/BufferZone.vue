@@ -554,7 +554,10 @@ function fieldEntries(fields) {
 
 function openTask(taskId) {
   if (!taskId) return
-  emit('view-result', taskId)
+  emit('view-result', {
+    taskId,
+    batchId: String(lastBatchId.value || '').trim(),
+  })
 }
 
 function pct(value) {

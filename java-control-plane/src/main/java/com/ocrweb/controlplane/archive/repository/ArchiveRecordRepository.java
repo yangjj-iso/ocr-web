@@ -47,4 +47,6 @@ public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEnti
     long deleteByBatchFolder(String batchFolder);
 
     long deleteByBatchId(String batchId);
+
+    long deleteByTaskId(Long taskId);
 }

@@ -1,7 +1,11 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from app.core import ocr_engine
+from app.utils import image_preprocess
+from PIL import Image
 
 
 class _FakePipeline:
@@ -80,13 +84,65 @@ class OCREngineTests(unittest.TestCase):
         self.assertFalse(ocr_engine._rect_contains_point([0, 0, 10, 10], 12, 6))
 
     def test_ocr_image_basic_returns_lines(self):
-        with patch.object(ocr_engine, "get_ocr", return_value=_FakeOCR()):
+        with patch.object(ocr_engine, "_should_use_layout_api", return_value=False), patch.object(
+            ocr_engine,
+            "get_ocr",
+            return_value=_FakeOCR(),
+        ):
             result = ocr_engine.ocr_image_basic("demo.png")
 
         self.assertEqual(len(result["lines"]), 2)
         self.assertEqual(result["lines"][0]["text"], "第一行")
         self.assertEqual(result["lines"][0]["bbox"], [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
         self.assertEqual(result["lines"][1]["line_num"], 2)
+
+    def test_ocr_image_basic_routes_to_api_when_configured(self):
+        remote_payload = {
+            "page_count": 1,
+            "pages": [{"page_num": 1, "regions": [], "lines": [{"line_num": 1, "text": "远端 OCR", "confidence": 0.95, "bbox": []}]}],
+            "full_text": "远端 OCR",
+            "mode": "ocr_api",
+        }
+
+        with (
+            patch.object(ocr_engine, "_should_use_layout_api", side_effect=lambda mode: mode == "ocr"),
+            patch.object(ocr_engine, "ocr_document_layout_api", return_value=remote_payload) as api_mock,
+        ):
+            result = ocr_engine.ocr_image_basic("demo.png")
+
+        api_mock.assert_called_once_with("demo.png", mode_label="ocr_api")
+        self.assertEqual(result["lines"][0]["text"], "远端 OCR")
+
+    def test_preprocess_image_resizes_large_images_even_when_strategy_is_none(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "large-scan.jpg"
+            Image.new("RGB", (4000, 2000), "white").save(source, format="JPEG")
+
+            processed = image_preprocess.preprocess_image(source, "none")
+            self.assertNotEqual(str(source), processed)
+
+            with Image.open(processed) as resized:
+                self.assertLessEqual(max(resized.size), image_preprocess.MAX_PREPROCESS_DIM)
+                self.assertEqual(resized.size, (2500, 1250))
+
+            image_preprocess.cleanup_preprocessed_image(source, processed)
+
+    @unittest.skipIf(image_preprocess.cv2 is None or image_preprocess.np is None, "OpenCV stack unavailable")
+    def test_preprocess_image_reads_unicode_paths_with_cv_safe_loader(self):
+        with tempfile.TemporaryDirectory(prefix="中文目录-") as temp_dir:
+            source = Path(temp_dir) / "测试图片.jpg"
+            Image.new("RGB", (600, 300), "white").save(source, format="JPEG")
+
+            with (
+                patch.object(image_preprocess.np, "fromfile", wraps=image_preprocess.np.fromfile) as fromfile_mock,
+                patch.object(image_preprocess.cv2, "imdecode", wraps=image_preprocess.cv2.imdecode) as imdecode_mock,
+            ):
+                processed = image_preprocess.preprocess_image(source, "enhance_contrast")
+
+            self.assertNotEqual(str(source), processed)
+            self.assertTrue(fromfile_mock.called)
+            self.assertTrue(imdecode_mock.called)
+            image_preprocess.cleanup_preprocessed_image(source, processed)
 
     def test_predict_structured_vl_sets_device(self):
         pipeline = _FakePipeline([[{"page": 1}]])
@@ -137,6 +193,25 @@ class OCREngineTests(unittest.TestCase):
         api_mock.assert_called_once_with("demo.pdf", mode_label="layout_api")
         self.assertEqual(result["mode"], "layout_api")
         self.assertEqual(result["full_text"], "远端识别结果")
+
+    def test_ocr_document_routes_ocr_mode_to_api_when_configured(self):
+        remote_payload = {
+            "page_count": 1,
+            "pages": [{"page_num": 1, "regions": [], "lines": []}],
+            "full_text": "远端 OCR 识别结果",
+            "mode": "ocr_api",
+        }
+
+        with (
+            patch.object(ocr_engine, "_should_use_baidu_vl_backend", return_value=False),
+            patch.object(ocr_engine, "_should_use_layout_api", side_effect=lambda mode: mode == "ocr"),
+            patch.object(ocr_engine, "ocr_document_layout_api", return_value=remote_payload) as api_mock,
+        ):
+            result = ocr_engine.ocr_document("demo.png", mode="ocr")
+
+        api_mock.assert_called_once_with("demo.png", mode_label="ocr_api")
+        self.assertEqual(result["mode"], "ocr_api")
+        self.assertEqual(result["full_text"], "远端 OCR 识别结果")
 
     def test_ocr_document_routes_vl_mode_to_api_when_configured(self):
         remote_payload = {

@@ -235,6 +235,27 @@ class DocumentBoundaryEngineTests(unittest.TestCase):
             self.assertGreater(learned.adjacent_decisions[0].signals.get("feedback_bias", 0.0), 0.0)
             self.assertLessEqual(len(learned.groups), len(baseline.groups))
 
+    def test_boundary_engine_exposes_applied_similarity_threshold(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            page1 = Path(temp_dir) / "KJ-JJ-2017-02-001-001.jpg"
+            page2 = Path(temp_dir) / "KJ-JJ-2017-02-001-002.jpg"
+            self._make_image(page1, variant="same")
+            self._make_image(page2, variant="same")
+
+            result = build_boundary_result(
+                [
+                    self._make_page(task_id=1, path=page1, text="连续文档第一页", family="contract"),
+                    self._make_page(task_id=2, path=page2, text="连续文档第二页", family="contract"),
+                ],
+                similarity_threshold=9,
+            )
+
+            self.assertEqual(
+                result.sequence_meta["KJ-JJ-2017-02-001"]["applied_similarity_threshold"],
+                9,
+            )
+            self.assertEqual(result.group_meta[result.groups[0].group_id]["suggested_pdf_filename"], "KJ-JJ-2017-02-001-001-002.pdf")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -263,6 +263,10 @@ def _score_title_item(item: dict) -> int:
     text = item['text']
     if item['page_index'] != 0 or item['y_ratio'] > 0.55:
         return -100
+    if re.match(r'^[甲乙丙丁]方[:：]', text):
+        return -100
+    if re.match(r'^(第[一二三四五六七八九十百零\d]+条|[（(]?[一二三四五六七八九十百零\d]+[）).、])', text):
+        return -100
     if _looks_like_page_number(text):
         return -100
     if _extract_doc_no_from_text(text):
@@ -359,6 +363,11 @@ def _clean_org_name(text: str) -> str:
 def _extract_responsible_candidates(text: str) -> list[str]:
     clean = _clean_line_text(text)
     candidates = []
+    party_match = re.match(r'^[甲乙丙丁]方[:：]\s*([\u4e00-\u9fa5A-Za-z0-9·（）()]+(?:有限公司|集团有限公司|集团|公司|委员会|办公室|档案局|档案馆|政府|中心|银行|局|厅|部|院|馆))', clean)
+    if party_match:
+        candidate = _clean_org_name(party_match.group(1))
+        if candidate:
+            candidates.append(candidate)
     for pattern in (RESP_HEAD_PATTERN, RESP_FULL_PATTERN, RESP_FRAGMENT_PATTERN):
         for match in pattern.finditer(clean):
             candidate = _clean_org_name(match.group(1))

@@ -3,6 +3,7 @@ package com.ocrweb.controlplane.task.web;
 import com.ocrweb.controlplane.task.dto.TaskDtos;
 import com.ocrweb.controlplane.task.service.AiProxyService;
 import com.ocrweb.controlplane.task.service.OcrTaskService;
+import com.ocrweb.controlplane.auth.service.CurrentUser;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -42,11 +43,12 @@ public class OcrTaskController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public TaskDtos.TaskDetailResponse upload(
             @RequestPart("file") MultipartFile file,
-            @RequestParam(defaultValue = "") String relativePath,
+            @RequestParam(name = "relative_path", defaultValue = "") String relativePath,
             @RequestParam(defaultValue = "vl") String mode,
-            @RequestParam(defaultValue = "") String batchId
+            @RequestParam(name = "batch_id", defaultValue = "") String batchId,
+            HttpServletRequest request
     ) throws IOException {
-        return taskService.getTask(taskService.submitUpload(file, relativePath, mode, batchId).getId());
+        return taskService.getTask(taskService.submitUpload(file, relativePath, mode, batchId, currentUsername(request)).getId());
     }
 
     @PostMapping("/upload-from-path")
@@ -54,23 +56,31 @@ public class OcrTaskController {
     public TaskDtos.TaskDetailResponse uploadFromPath(
             @Valid @RequestBody TaskDtos.UploadFromPathRequest request,
             @RequestParam(defaultValue = "vl") String mode,
-            @RequestParam(defaultValue = "") String batchId
+            @RequestParam(name = "batch_id", defaultValue = "") String batchId,
+            HttpServletRequest servletRequest
     ) throws IOException {
-        return taskService.getTask(taskService.submitExistingPath(request.filePath(), mode, batchId).getId());
+        return taskService.getTask(taskService.submitExistingPath(request.filePath(), mode, batchId, currentUsername(servletRequest)).getId());
     }
 
     @GetMapping("/tasks")
     public TaskDtos.TaskListResponse listTasks(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize,
-            @RequestParam(defaultValue = "") String folder
+            @RequestParam(name = "page_size", defaultValue = "20") int pageSize,
+            @RequestParam(defaultValue = "") String folder,
+            @RequestParam(name = "submission_id", defaultValue = "") String submissionId,
+            @RequestParam(name = "batch_id", defaultValue = "") String batchId
     ) {
-        return taskService.listTasks(page, pageSize, folder);
+        return taskService.listTasks(page, pageSize, folder, submissionId, batchId);
     }
 
     @GetMapping("/tasks/folders")
     public List<TaskDtos.FolderSummaryResponse> listFolders() {
         return taskService.listFolders();
+    }
+
+    @GetMapping("/tasks/submissions")
+    public List<TaskDtos.SubmissionSummaryResponse> listSubmissions() {
+        return taskService.listSubmissions();
     }
 
     @GetMapping("/tasks/{taskId}")
@@ -118,6 +128,12 @@ public class OcrTaskController {
     public java.util.Map<String, Object> deleteByFolder(@RequestParam String folder) {
         long deleted = taskService.deleteTasksByFolder(folder);
         return java.util.Map.of("deleted", deleted, "folder", folder);
+    }
+
+    @DeleteMapping("/tasks/by-submission")
+    public java.util.Map<String, Object> deleteBySubmission(@RequestParam("submission_id") String submissionId) {
+        long deleted = taskService.deleteTasksBySubmission(submissionId);
+        return java.util.Map.of("deleted", deleted, "submission_id", submissionId);
     }
 
     @GetMapping("/tasks/{taskId}/export")
@@ -176,5 +192,13 @@ public class OcrTaskController {
             HttpServletRequest request
     ) {
         return aiProxyService.proxyJsonPost(aiProxyService.taskAiExtractFieldsPath(taskId), requestBody, request);
+    }
+
+    private static String currentUsername(HttpServletRequest request) {
+        Object currentUser = request.getAttribute(CurrentUser.REQUEST_ATTRIBUTE);
+        if (currentUser instanceof CurrentUser user && user.username() != null && !user.username().isBlank()) {
+            return user.username().trim();
+        }
+        return "";
     }
 }

@@ -432,7 +432,7 @@ export function useBatchUpload(mode, callbacks = {}) {
     clearAiMergeResult()
     updateUploadProgress(0, requestedCount)
 
-    const batchId = requestedCount > 1 ? genBatchId() : ''
+    const batchId = genBatchId()
     lastBatchId.value = batchId
 
     const submittedTaskIds = []

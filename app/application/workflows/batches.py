@@ -133,6 +133,7 @@ async def ai_merge_extract_batch(
     batch_id: str,
     include_evidence: bool,
     force_refresh: bool,
+    similarity_threshold: int | None = None,
     db,
 ):
     return await batch_ai_service.get_batch_merge_extract_result(
@@ -140,6 +141,7 @@ async def ai_merge_extract_batch(
         batch_id=batch_id,
         include_evidence=include_evidence,
         force_refresh=force_refresh,
+        similarity_threshold=similarity_threshold,
     )
 
 
@@ -147,12 +149,14 @@ async def get_batch_boundary_analysis(
     *,
     batch_id: str,
     force_refresh: bool,
+    similarity_threshold: int | None = None,
     db,
 ):
     return await get_batch_boundary_analysis_result(
         db,
         batch_id=batch_id,
         force_refresh=force_refresh,
+        similarity_threshold=similarity_threshold,
     )
 
 

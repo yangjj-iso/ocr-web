@@ -42,10 +42,20 @@ export const uploadFromPath = (filePath, mode, options = {}) =>
     }
   )
 
-export const getTasks = (page = 1, pageSize = 20, folder = '') =>
-  controlPlaneApi.get('/tasks', { params: { page, page_size: pageSize, ...(folder ? { folder } : {}) } })
+export const getTasks = (page = 1, pageSize = 20, folder = '', submissionId = '', batchId = '') =>
+  controlPlaneApi.get('/tasks', {
+    params: {
+      page,
+      page_size: pageSize,
+      ...(folder ? { folder } : {}),
+      ...(submissionId ? { submission_id: submissionId } : {}),
+      ...(batchId ? { batch_id: batchId } : {}),
+    },
+  })
 
 export const getFolders = () => controlPlaneApi.get('/tasks/folders')
+
+export const getTaskSubmissions = () => controlPlaneApi.get('/tasks/submissions')
 
 export const searchTasks = (q, page = 1, pageSize = 20) =>
   controlPlaneApi.get('/tasks/search', { params: { q, page, page_size: pageSize } })
@@ -78,9 +88,12 @@ export const getBatchEvaluationReport = (batchId, { forceRefresh = false } = {})
     params: { force_refresh: forceRefresh },
   })
 
-export const getBatchBoundaryAnalysis = (batchId, { forceRefresh = false } = {}) =>
+export const getBatchBoundaryAnalysis = (batchId, { forceRefresh = false, similarityThreshold = undefined } = {}) =>
   controlPlaneApi.get(`/batches/${encodeURIComponent(batchId)}/boundary-analysis`, {
-    params: { force_refresh: forceRefresh },
+    params: {
+      force_refresh: forceRefresh,
+      ...(similarityThreshold === undefined ? {} : { similarity_threshold: similarityThreshold }),
+    },
   })
 
 export const getBatchBoundaryTruth = (batchId) =>
@@ -107,6 +120,9 @@ export const deleteTask = (id) => controlPlaneApi.delete(`/tasks/${id}`)
 
 export const deleteTasksByFolder = (folder) =>
   controlPlaneApi.delete('/tasks/by-folder', { params: { folder } })
+
+export const deleteTasksBySubmission = (submissionId) =>
+  controlPlaneApi.delete('/tasks/by-submission', { params: { submission_id: submissionId } })
 
 export const exportArchiveRecords = (params = {}) => {
   const qs = new URLSearchParams()

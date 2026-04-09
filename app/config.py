@@ -180,7 +180,12 @@ MAX_RETRIES = max(0, int(os.getenv("MAX_RETRIES", "2")))
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.85"))
 HUMAN_REVIEW_MIN_CONFIDENCE = float(os.getenv("HUMAN_REVIEW_MIN_CONFIDENCE", "0.60"))
 HUMAN_REVIEW_MAX_CONFIDENCE = float(os.getenv("HUMAN_REVIEW_MAX_CONFIDENCE", "0.85"))
+OCR_PREPROCESS_COMPLEXITY_THRESHOLD = float(os.getenv("OCR_PREPROCESS_COMPLEXITY_THRESHOLD", "0.35"))
 VISION_ROUTE_COMPLEXITY_THRESHOLD = float(os.getenv("VISION_ROUTE_COMPLEXITY_THRESHOLD", "0.45"))
+BOUNDARY_SIMILARITY_THRESHOLD = max(1, int(os.getenv("BOUNDARY_SIMILARITY_THRESHOLD", "12")))
+BOUNDARY_GROUP_PDF_OUTPUT_DIRNAME = (
+    os.getenv("BOUNDARY_GROUP_PDF_OUTPUT_DIRNAME", "grouped_pdfs").strip() or "grouped_pdfs"
+)
 
 # Auth
 AUTH_ENABLED = _env_flag("AUTH_ENABLED", False)
@@ -200,6 +205,7 @@ CORS_ALLOW_ORIGINS = _env_csv(
 
 # MiniMax field extraction
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
+MINIMAX_API_HOST = os.getenv("MINIMAX_API_HOST", "https://api.minimaxi.com").rstrip("/")
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
 MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
 MINIMAX_TIMEOUT_SECONDS = float(os.getenv("MINIMAX_TIMEOUT_SECONDS", "60"))

@@ -89,7 +89,7 @@
             </div>
             <div class="min-w-0 flex-1">
               <span class="text-sm font-semibold text-[var(--gov-text)]">处理记录</span>
-              <p class="mt-0.5 truncate text-xs gov-muted">按目录快速回看处理记录</p>
+              <p class="mt-0.5 truncate text-xs gov-muted">按提交快速回看处理记录</p>
             </div>
           </button>
         </div>
@@ -113,7 +113,7 @@
             <div class="flex items-center justify-between">
               <div>
                 <h3 class="text-lg font-semibold text-[var(--gov-text)]">智能辅助</h3>
-                <p class="mt-1 text-sm gov-muted">{{ capabilityMessage }}</p>
+                <p class="mt-1 text-sm gov-muted">{{ assistantHeaderMessage }}</p>
               </div>
               <div class="flex items-center gap-2">
                 <span class="rounded-full px-3 py-1 text-xs font-medium" :class="capabilityBadgeClass">
@@ -141,11 +141,265 @@
                 </div>
                 <p class="text-sm font-semibold text-[var(--gov-text)]">{{ item.title }}</p>
                 <p class="mt-1 text-xs leading-5 gov-muted">{{ item.description }}</p>
+                <p class="mt-3 text-[11px] leading-5 text-[var(--gov-text-muted)]">{{ item.hint }}</p>
+                <button
+                  class="mt-4 rounded-lg px-3 py-2 text-xs font-medium transition"
+                  :class="item.buttonClass"
+                  @click.stop="item.action?.()"
+                >
+                  {{ item.ctaLabel }}
+                </button>
               </article>
             </div>
 
-            <div v-if="answerSourceLabel" class="mt-4 rounded-xl border border-[var(--gov-border)] bg-white px-4 py-3 text-xs text-[var(--gov-text-muted)]">
-              最近问答结果来源：<span class="font-medium text-[var(--gov-text)]">{{ answerSourceLabel }}</span>
+            <div
+              v-if="assistantPreviewWarning"
+              class="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700"
+            >
+              {{ assistantPreviewWarning }}
+            </div>
+
+            <div
+              v-if="assistantPreviewError"
+              class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-600"
+            >
+              {{ assistantPreviewError }}
+            </div>
+
+            <div v-if="hasBatchContext" class="mt-5 grid gap-4 xl:grid-cols-[1.15fr,0.85fr]">
+              <div class="space-y-4">
+                <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div
+                    v-for="card in assistantSummaryCards"
+                    :key="card.label"
+                    class="rounded-xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-3"
+                  >
+                    <p class="text-[11px] gov-muted">{{ card.label }}</p>
+                    <p class="mt-1 text-sm font-semibold text-[var(--gov-text)]">{{ card.value }}</p>
+                    <p class="mt-1 text-[11px] text-[var(--gov-text-muted)]">{{ card.caption }}</p>
+                  </div>
+                </div>
+
+                <section class="rounded-xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-4">
+                  <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h4 class="text-sm font-semibold text-[var(--gov-text)]">智能整合预览</h4>
+                      <p class="mt-1 text-xs gov-muted">当前页直接预览归并建议，深入校核可进入完整分析中心。</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <button
+                        class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] transition hover:bg-slate-50"
+                        :disabled="assistantPreviewLoading"
+                        @click="loadAssistantPreview({ forceRefresh: true })"
+                      >
+                        {{ assistantPreviewLoading ? '刷新中…' : '刷新预览' }}
+                      </button>
+                      <button
+                        class="rounded-lg bg-violet-600 px-3 py-2 text-xs font-medium text-white transition hover:brightness-105"
+                        @click="openBatchInsights('overview')"
+                      >
+                        查看完整整合
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="assistantPreviewLoading && !assistantHasPreview"
+                    class="mt-4 rounded-lg border border-dashed border-[var(--gov-border)] bg-white px-4 py-6 text-sm text-[var(--gov-text-muted)]"
+                  >
+                    正在加载当前批次的整合建议...
+                  </div>
+                  <div v-else-if="assistantMergedDocuments.length" class="mt-4 space-y-3">
+                    <div
+                      v-for="documentItem in assistantMergedDocuments"
+                      :key="documentItem.key"
+                      class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-3"
+                    >
+                      <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0 flex-1">
+                          <p class="text-sm font-semibold text-[var(--gov-text)]">
+                            {{ documentItem.displayName }}
+                          </p>
+                          <p v-if="documentItem.title" class="mt-1 text-xs text-[var(--gov-text-muted)]">
+                            题名建议：{{ documentItem.title }}
+                          </p>
+                          <p class="mt-2 text-[11px] text-[var(--gov-text-muted)]">
+                            {{ documentItem.sourceSummary }} · 归并页数 {{ documentItem.mergedPageCount || documentItem.sourceCount }}
+                          </p>
+                        </div>
+                        <button
+                          v-if="documentItem.primaryTaskId"
+                          class="rounded-lg border border-[var(--gov-border)] bg-white px-2 py-1 text-[11px] text-[var(--gov-primary)] transition hover:bg-[var(--gov-primary-soft)]"
+                          @click="handleViewResult(documentItem.primaryTaskId)"
+                        >
+                          查看材料
+                        </button>
+                      </div>
+                      <div class="mt-3 flex flex-wrap gap-2 text-[11px] text-[var(--gov-text-muted)]">
+                        <span class="rounded-full border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-2 py-1">
+                          归并置信度 {{ decimalText(documentItem.sameDocumentConfidence) }}
+                        </span>
+                        <span
+                          v-if="documentItem.conflictFields.length"
+                          class="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-amber-700"
+                        >
+                          待核对：{{ documentItem.conflictFields.join('、') }}
+                        </span>
+                        <span
+                          v-else
+                          class="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700"
+                        >
+                          当前无字段冲突
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <p
+                    v-else
+                    class="mt-4 rounded-lg border border-dashed border-[var(--gov-border)] bg-white px-4 py-6 text-sm text-[var(--gov-text-muted)]"
+                  >
+                    当前批次还没有可展示的整合预览，刷新后会自动尝试生成。
+                  </p>
+                </section>
+
+                <section class="rounded-xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-4">
+                  <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h4 class="text-sm font-semibold text-[var(--gov-text)]">质量摘要</h4>
+                      <p class="mt-1 text-xs gov-muted">把归并质量和字段质量先浓缩在工作台里，便于快速判断是否需要深入复核。</p>
+                    </div>
+                    <button
+                      class="rounded-lg bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] ring-1 ring-[var(--gov-border)] transition hover:bg-slate-50"
+                      @click="openBatchInsights('metrics')"
+                    >
+                      进入质量概览
+                    </button>
+                  </div>
+
+                  <div v-if="assistantMetrics" class="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-3">
+                      <p class="text-[11px] gov-muted">推荐字段完整率</p>
+                      <p class="mt-1 text-sm font-semibold text-[var(--gov-text)]">{{ pct(assistantMetrics.field_fill_rate?.recommended) }}</p>
+                      <p class="mt-1 text-[11px] text-[var(--gov-text-muted)]">越高说明推荐字段越完整。</p>
+                    </div>
+                    <div class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-3">
+                      <p class="text-[11px] gov-muted">字段冲突率</p>
+                      <p class="mt-1 text-sm font-semibold text-[var(--gov-text)]">{{ pct(assistantMetrics.conflict_rate) }}</p>
+                      <p class="mt-1 text-[11px] text-[var(--gov-text-muted)]">越低说明同一文档内字段分歧越少。</p>
+                    </div>
+                    <div class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-3">
+                      <p class="text-[11px] gov-muted">同文档平均置信度</p>
+                      <p class="mt-1 text-sm font-semibold text-[var(--gov-text)]">{{ pct(assistantMetrics.avg_same_document_confidence) }}</p>
+                      <p class="mt-1 text-[11px] text-[var(--gov-text-muted)]">衡量分页归并的稳定程度。</p>
+                    </div>
+                    <div class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-3">
+                      <p class="text-[11px] gov-muted">规则/智能一致度</p>
+                      <p class="mt-1 text-sm font-semibold text-[var(--gov-text)]">{{ pct(assistantMetrics.avg_rule_llm_agreement) }}</p>
+                      <p class="mt-1 text-[11px] text-[var(--gov-text-muted)]">越高说明推荐字段越可信。</p>
+                    </div>
+                  </div>
+                  <p
+                    v-else
+                    class="mt-4 rounded-lg border border-dashed border-[var(--gov-border)] bg-white px-4 py-6 text-sm text-[var(--gov-text-muted)]"
+                  >
+                    质量摘要会在整合预览可用后一起展示。
+                  </p>
+                </section>
+              </div>
+
+              <section class="rounded-xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h4 class="text-sm font-semibold text-[var(--gov-text)]">快捷问答</h4>
+                    <p class="mt-1 text-xs gov-muted">直接围绕当前批次提问，系统优先基于批次证据返回可追溯回答。</p>
+                  </div>
+                  <button
+                    class="rounded-lg bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] ring-1 ring-[var(--gov-border)] transition hover:bg-slate-50"
+                    @click="openBatchInsights('qa')"
+                  >
+                    进入完整问答
+                  </button>
+                </div>
+
+                <div class="mt-4">
+                  <textarea
+                    v-model="assistantQaInput"
+                    rows="3"
+                    class="w-full rounded-xl border border-[var(--gov-border)] bg-white px-3 py-3 text-sm focus:border-violet-300 focus:outline-none focus:ring-2 focus:ring-violet-200"
+                    placeholder="例如：这个批次里哪些材料需要人工复核？"
+                    @keydown.enter.exact.prevent="submitAssistantQa"
+                  />
+                  <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <p class="text-[11px] text-[var(--gov-text-muted)]">问题将只围绕当前批次材料和证据回答。</p>
+                    <button
+                      class="rounded-lg bg-violet-600 px-4 py-2 text-xs font-medium text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-violet-300"
+                      :disabled="assistantQaSubmitting"
+                      @click="submitAssistantQa"
+                    >
+                      {{ assistantQaSubmitting ? '回答中…' : '立即提问' }}
+                    </button>
+                  </div>
+                  <p v-if="assistantQaError" class="mt-2 text-xs text-red-600">{{ assistantQaError }}</p>
+                </div>
+
+                <div v-if="assistantQaAnswer" class="mt-4 rounded-lg border border-[var(--gov-border)] bg-white px-4 py-4">
+                  <div class="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span class="rounded-full bg-violet-100 px-2 py-1 text-violet-700">{{ assistantLatestSourceLabel || '智能回答' }}</span>
+                    <span class="rounded-full bg-blue-50 px-2 py-1 text-blue-700">支持度：{{ qaSupportText(assistantQaAnswer.support_level) }}</span>
+                    <span class="rounded-full bg-slate-100 px-2 py-1 text-slate-600">置信度：{{ decimalText(assistantQaAnswer.confidence, 3) }}</span>
+                  </div>
+                  <p class="rounded-lg bg-[var(--gov-surface-muted)] px-3 py-3 text-sm leading-6 text-[var(--gov-text)]">
+                    {{ assistantQaAnswer.answer }}
+                  </p>
+
+                  <div v-if="assistantQaAnswer.evidence?.length" class="mt-3 space-y-2">
+                    <div
+                      v-for="evidence in assistantQaAnswer.evidence.slice(0, 2)"
+                      :key="`${evidence.task_id}-${evidence.snippet}`"
+                      class="rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2"
+                    >
+                      <div class="flex items-center justify-between gap-2">
+                        <p class="text-[11px] text-[var(--gov-text-muted)]">#{{ evidence.task_id }} · {{ evidence.filename }}</p>
+                        <button
+                          class="rounded-lg bg-white px-2 py-1 text-[11px] text-[var(--gov-primary)] ring-1 ring-[var(--gov-border)] transition hover:bg-[var(--gov-primary-soft)]"
+                          @click="handleViewResult(evidence.task_id)"
+                        >
+                          查看材料
+                        </button>
+                      </div>
+                      <p class="mt-2 text-xs leading-5 text-[var(--gov-text)]">{{ evidence.snippet }}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mt-4">
+                  <div class="mb-2 flex items-center justify-between">
+                    <p class="text-xs font-semibold text-[var(--gov-text)]">最近问答</p>
+                    <span v-if="assistantLatestSourceLabel" class="text-[11px] text-[var(--gov-text-muted)]">
+                      最近来源：{{ assistantLatestSourceLabel }}
+                    </span>
+                  </div>
+                  <div v-if="assistantQaPreview.length" class="space-y-2">
+                    <button
+                      v-for="item in assistantQaPreview"
+                      :key="item.qa_id || item.generated_at || item.question"
+                      class="w-full rounded-lg border border-[var(--gov-border)] bg-white px-3 py-3 text-left transition hover:border-violet-200 hover:bg-violet-50/40"
+                      @click="assistantQaInput = item.question"
+                    >
+                      <p class="text-xs font-medium text-[var(--gov-text)]">Q：{{ item.question }}</p>
+                      <p class="mt-1 text-[11px] text-[var(--gov-text-muted)]">
+                        {{ qaSupportText(item.support_level) }} · {{ getAiAnswerSourceLabel(item.provider) }}
+                      </p>
+                    </button>
+                  </div>
+                  <p
+                    v-else
+                    class="rounded-lg border border-dashed border-[var(--gov-border)] bg-white px-4 py-6 text-sm text-[var(--gov-text-muted)]"
+                  >
+                    当前批次还没有问答记录，输入问题后这里会显示最近的问答历史。
+                  </p>
+                </div>
+              </section>
             </div>
 
             <div class="mt-5 flex items-center gap-3">
@@ -153,7 +407,14 @@
                 class="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-medium text-white transition hover:brightness-105"
                 @click="handleAssistantPrimaryAction"
               >
-                {{ hasBatchContext ? '进入质量概览' : '先去批量处理' }}
+                {{ hasBatchContext ? '进入完整智能分析中心' : '先去批量处理' }}
+              </button>
+              <button
+                v-if="hasBatchContext"
+                class="rounded-lg border border-[var(--gov-border)] bg-white px-5 py-2.5 text-sm font-medium text-[var(--gov-text)] transition hover:bg-slate-50"
+                @click="openBatchInsights('truth')"
+              >
+                进入人工校核
               </button>
               <button
                 v-if="hasBatchContext"
@@ -170,8 +431,8 @@
       <div v-show="selectedTab === 'history'">
         <div class="gov-panel overflow-hidden">
           <div class="border-b border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-5 py-4">
-            <h3 class="text-lg font-semibold text-[var(--gov-text)]">处理记录与目录入口</h3>
-            <p class="mt-1 text-xs gov-muted">按目录快速回看处理记录</p>
+            <h3 class="text-lg font-semibold text-[var(--gov-text)]">处理记录</h3>
+            <p class="mt-1 text-xs gov-muted">每次提交算作一次任务，按提交快速回看处理结果</p>
           </div>
           <div class="bg-white p-5">
             <HistoryList ref="historyRef" @view-result="handleViewResult" @batch-context="handleHistoryBatchContext" />
@@ -188,9 +449,16 @@ import { useRouter } from 'vue-router'
 
 import BufferZone from '@/components/BufferZone.vue'
 import HistoryList from '@/components/HistoryList.vue'
+import {
+  aiMergeExtractBatch,
+  askBatchQuestion,
+  getBatchEvaluationMetrics,
+  getBatchQaHistory,
+  getTaskSubmissions,
+} from '@/api/ocr.js'
 import { getModeMeta } from '@/constants/uiCopy.js'
-import { getAiAnswerSourceLabel, useAiCapabilityState } from '@/composables/useAiCapabilityState.js'
-import { getFolders } from '@/api/ocr.js'
+import { getAiAnswerSourceLabel, normalizeAiErrorMessage, useAiCapabilityState } from '@/composables/useAiCapabilityState.js'
+import { buildMergedDocumentViews } from '@/utils/mergeDocumentDisplay.js'
 
 const router = useRouter()
 const historyRef = ref(null)
@@ -226,29 +494,6 @@ function badgeClass(color) {
   return map[color] || 'bg-slate-100 text-slate-600'
 }
 
-const assistantItems = [
-  {
-    title: '智能整合',
-    icon: 'merge',
-    description: '对当前批次中的同一文档进行保守整合，返回可核对的分组与字段建议。',
-  },
-  {
-    title: '质量概览',
-    icon: 'chart',
-    description: '集中查看批次处理质量、冲突项和人工核对结果，便于复核。',
-    action: () => {
-      if (hasBatchContext.value && latestBatchId.value) {
-        router.push(`/batch-insights/${encodeURIComponent(latestBatchId.value)}`)
-      }
-    },
-  },
-  {
-    title: '批次问答',
-    icon: 'chat',
-    description: '围绕当前批次做证据可追溯的知识问答，优先给出可解释结论。',
-  },
-]
-
 const models = [
   {
     mode: 'vl',
@@ -278,33 +523,266 @@ const models = [
 
 const hasBatchContext = computed(() => aiCapability.hasBatchContext.value)
 const latestBatchId = computed(() => aiCapability.latestBatchId.value)
-const capabilityMessage = computed(() => aiCapability.capabilityMessage.value)
-const answerSourceLabel = computed(() =>
-  aiCapability.answerSource.value ? getAiAnswerSourceLabel(aiCapability.answerSource.value) : ''
+const assistantPreviewLoading = ref(false)
+const assistantPreviewBatchId = ref('')
+const assistantPreviewError = ref('')
+const assistantPreviewWarning = ref('')
+const assistantMergePreview = ref(null)
+const assistantMetricsPreview = ref(null)
+const assistantQaPreview = ref([])
+const assistantQaInput = ref('')
+const assistantQaSubmitting = ref(false)
+const assistantQaError = ref('')
+const assistantQaAnswer = ref(null)
+
+const assistantMergedDocuments = computed(() => buildMergedDocumentViews(assistantMergePreview.value).slice(0, 3))
+const assistantMetrics = computed(() => assistantMetricsPreview.value?.operational_metrics || null)
+const assistantHasPreview = computed(
+  () => Boolean(assistantMergedDocuments.value.length || assistantMetrics.value || assistantQaPreview.value.length || assistantQaAnswer.value)
 )
+const assistantLatestProvider = computed(
+  () => assistantQaAnswer.value?.provider || assistantQaPreview.value[0]?.provider || ''
+)
+const assistantLatestSourceLabel = computed(() =>
+  assistantLatestProvider.value ? getAiAnswerSourceLabel(assistantLatestProvider.value) : ''
+)
+const assistantHeaderMessage = computed(() => {
+  if (!hasBatchContext.value) {
+    return '需先完成一次批量处理，当前页才会显示智能整合、质量概览和批次问答。'
+  }
+  if (assistantPreviewLoading.value && !assistantHasPreview.value) {
+    return '正在加载当前批次的整合预览、质量摘要和快捷问答入口。'
+  }
+  if (assistantHasPreview.value) {
+    return '当前批次已接入智能整合、质量概览和批次问答，可直接在这里使用，也可进入完整分析中心。'
+  }
+  if (assistantPreviewError.value) {
+    return assistantPreviewError.value
+  }
+  return '已识别到当前批次，可点击上方功能卡片或下方快捷区继续处理。'
+})
 const capabilityBadgeText = computed(() => {
-  if (aiCapability.loading.value) return '状态校验中'
-  if (aiCapability.capabilityStatus.value === 'ready') return '智能辅助可用'
-  if (aiCapability.capabilityStatus.value === 'unavailable') return '智能服务待检查'
-  return '尚未形成批次'
+  if (!hasBatchContext.value) return '尚未形成批次'
+  if (assistantPreviewLoading.value) return '加载中'
+  if (assistantHasPreview.value) return '功能可用'
+  if (assistantPreviewError.value) return '待检查'
+  return '批次已识别'
 })
 const capabilityBadgeClass = computed(() => {
-  if (aiCapability.capabilityStatus.value === 'ready') {
+  if (assistantHasPreview.value) {
     return 'bg-emerald-100 text-emerald-700'
   }
-  if (aiCapability.capabilityStatus.value === 'unavailable') {
+  if (assistantPreviewLoading.value) {
+    return 'bg-blue-100 text-blue-700'
+  }
+  if (assistantPreviewError.value) {
     return 'bg-amber-100 text-amber-700'
   }
   return 'bg-slate-100 text-slate-600'
 })
+const assistantSummaryCards = computed(() => [
+  {
+    label: '归并文件数',
+    value: String(assistantMergePreview.value?.summary?.documents_count ?? 0),
+    caption: '当前批次可归并后的文档数量',
+  },
+  {
+    label: '原始材料数',
+    value: String(assistantMergePreview.value?.summary?.total_tasks ?? 0),
+    caption: '参与当前批次分析的材料数',
+  },
+  {
+    label: '推荐字段完整率',
+    value: pct(assistantMetrics.value?.field_fill_rate?.recommended),
+    caption: '推荐字段的整体填充程度',
+  },
+  {
+    label: '最近问答数',
+    value: String(assistantQaPreview.value.length),
+    caption: assistantLatestSourceLabel.value ? `最近来源：${assistantLatestSourceLabel.value}` : '点击右侧可直接提问',
+  },
+])
+const assistantItems = computed(() => [
+  {
+    title: '智能整合',
+    icon: 'merge',
+    description: '对当前批次中的同一文档进行保守整合，返回可核对的分组与字段建议。',
+    hint: hasBatchContext.value
+      ? assistantMergedDocuments.value.length
+        ? `已加载 ${assistantMergedDocuments.value.length} 条归并预览，可继续查看完整整合结果。`
+        : '点击后可进入完整分析中心查看归并建议，当前页下方也会展示预览。'
+      : '需先完成一次批量处理，系统才能生成同文档整合建议。',
+    ctaLabel: hasBatchContext.value ? '查看整合预览' : '先处理批次',
+    buttonClass: hasBatchContext.value
+      ? 'bg-violet-600 text-white hover:brightness-105'
+      : 'border border-[var(--gov-border)] bg-white text-[var(--gov-text)] hover:bg-slate-50',
+    action: () => {
+      if (!hasBatchContext.value) {
+        selectedTab.value = 'vl'
+        return
+      }
+      openBatchInsights('overview')
+    },
+  },
+  {
+    title: '质量概览',
+    icon: 'chart',
+    description: '集中查看批次处理质量、冲突项和人工核对结果，便于复核。',
+    hint: hasBatchContext.value
+      ? assistantMetrics.value
+        ? `字段完整率 ${pct(assistantMetrics.value.field_fill_rate?.recommended)}，冲突率 ${pct(assistantMetrics.value.conflict_rate)}。`
+        : '点击后可进入质量概览页查看更完整的评估指标和人工校核面板。'
+      : '需先形成批次结果，才能汇总质量指标和复核建议。',
+    ctaLabel: hasBatchContext.value ? '进入质量概览' : '先处理批次',
+    buttonClass: hasBatchContext.value
+      ? 'bg-white text-[var(--gov-text)] ring-1 ring-[var(--gov-border)] hover:bg-slate-50'
+      : 'border border-[var(--gov-border)] bg-white text-[var(--gov-text)] hover:bg-slate-50',
+    action: () => {
+      if (!hasBatchContext.value) {
+        selectedTab.value = 'vl'
+        return
+      }
+      openBatchInsights('metrics')
+    },
+  },
+  {
+    title: '批次问答',
+    icon: 'chat',
+    description: '围绕当前批次做证据可追溯的知识问答，优先给出可解释结论。',
+    hint: hasBatchContext.value
+      ? assistantQaPreview.value.length
+        ? `当前已有 ${assistantQaPreview.value.length} 条最近问答，可在右侧继续追问。`
+        : '右侧可以直接提问，也可以进入完整问答页查看证据链和反馈。'
+      : '需先完成批量处理，系统才能基于当前批次材料回答问题。',
+    ctaLabel: hasBatchContext.value ? '进入批次问答' : '先处理批次',
+    buttonClass: hasBatchContext.value
+      ? 'bg-white text-[var(--gov-text)] ring-1 ring-[var(--gov-border)] hover:bg-slate-50'
+      : 'border border-[var(--gov-border)] bg-white text-[var(--gov-text)] hover:bg-slate-50',
+    action: () => {
+      if (!hasBatchContext.value) {
+        selectedTab.value = 'vl'
+        return
+      }
+      openBatchInsights('qa')
+    },
+  },
+])
 
-function scrollToWorkbench() {
-  document.getElementById('batch-workbench')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+function pct(value, empty = '—') {
+  if (value === null || value === undefined || value === '') return empty
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? `${(numeric * 100).toFixed(1)}%` : empty
+}
+
+function decimalText(value, digits = 2, empty = '—') {
+  if (value === null || value === undefined || value === '') return empty
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric.toFixed(digits) : empty
+}
+
+function qaSupportText(level) {
+  if (level === 'supported') return '证据充分'
+  if (level === 'partial') return '部分支持'
+  return '证据不足'
+}
+
+function openBatchInsights(tab = 'overview') {
+  if (!latestBatchId.value) return
+  const query = tab && tab !== 'overview' ? { tab } : {}
+  router.push({
+    path: `/batch-insights/${encodeURIComponent(latestBatchId.value)}`,
+    query,
+  })
+}
+
+async function loadAssistantPreview(options = {}) {
+  const forceRefresh = Boolean(options.forceRefresh)
+  if (!latestBatchId.value) {
+    assistantPreviewBatchId.value = ''
+    assistantMergePreview.value = null
+    assistantMetricsPreview.value = null
+    assistantQaPreview.value = []
+    assistantQaAnswer.value = null
+    assistantPreviewError.value = ''
+    assistantPreviewWarning.value = ''
+    return
+  }
+
+  if (assistantPreviewBatchId.value !== latestBatchId.value) {
+    assistantQaAnswer.value = null
+    assistantQaInput.value = ''
+    assistantQaError.value = ''
+  }
+  assistantPreviewBatchId.value = latestBatchId.value
+
+  assistantPreviewLoading.value = true
+  assistantPreviewError.value = ''
+  assistantPreviewWarning.value = ''
+
+  const [mergeResult, metricsResult, qaHistoryResult] = await Promise.allSettled([
+    aiMergeExtractBatch(latestBatchId.value, {
+      include_evidence: false,
+      persist: false,
+      force_refresh: forceRefresh,
+    }),
+    getBatchEvaluationMetrics(latestBatchId.value, { forceRefresh }),
+    getBatchQaHistory(latestBatchId.value, { page: 1, pageSize: 3 }),
+  ])
+
+  const partialWarnings = []
+  let successCount = 0
+
+  if (mergeResult.status === 'fulfilled' && mergeResult.value?.data?.batch_id) {
+    assistantMergePreview.value = mergeResult.value.data
+    successCount += 1
+  } else {
+    assistantMergePreview.value = null
+    partialWarnings.push(
+      normalizeAiErrorMessage(
+        mergeResult.status === 'rejected' ? mergeResult.reason : null,
+        '智能整合预览暂时不可用。'
+      )
+    )
+  }
+
+  if (metricsResult.status === 'fulfilled' && metricsResult.value?.data?.batch_id) {
+    assistantMetricsPreview.value = metricsResult.value.data
+    successCount += 1
+  } else {
+    assistantMetricsPreview.value = null
+    partialWarnings.push(
+      normalizeAiErrorMessage(
+        metricsResult.status === 'rejected' ? metricsResult.reason : null,
+        '质量摘要暂时不可用。'
+      )
+    )
+  }
+
+  if (qaHistoryResult.status === 'fulfilled' && Array.isArray(qaHistoryResult.value?.data?.items)) {
+    assistantQaPreview.value = qaHistoryResult.value.data.items
+    successCount += 1
+  } else {
+    assistantQaPreview.value = []
+    partialWarnings.push(
+      normalizeAiErrorMessage(
+        qaHistoryResult.status === 'rejected' ? qaHistoryResult.reason : null,
+        '最近问答暂时不可用。'
+      )
+    )
+  }
+
+  if (!successCount) {
+    assistantPreviewError.value = partialWarnings[0] || '当前批次智能辅助暂时不可用，请稍后重试。'
+  } else if (partialWarnings.length) {
+    assistantPreviewWarning.value = partialWarnings[0]
+  }
+
+  assistantPreviewLoading.value = false
 }
 
 function handleAssistantPrimaryAction() {
   if (hasBatchContext.value && latestBatchId.value) {
-    router.push(`/batch-insights/${encodeURIComponent(latestBatchId.value)}`)
+    openBatchInsights('overview')
     return
   }
   selectedTab.value = 'vl'
@@ -317,10 +795,10 @@ async function tryResolveBatchFromHistory() {
   }
 
   try {
-    const { data } = await getFolders()
-    const folders = data || []
-    for (const folder of folders) {
-      const batchId = folder.batch_ids?.[0] || ''
+    const { data } = await getTaskSubmissions()
+    const submissions = data || []
+    for (const submission of submissions) {
+      const batchId = submission.batch_id || ''
       if (batchId) {
         await aiCapability.refreshAiCapability({ passive: false, batchId })
         return
@@ -336,6 +814,9 @@ async function onAssistantTabClick() {
   } else {
     await aiCapability.refreshAiCapability({ passive: false, batchId: latestBatchId.value })
   }
+  if (latestBatchId.value) {
+    await loadAssistantPreview()
+  }
 }
 
 function handleStartBatch() {
@@ -348,6 +829,9 @@ async function handleBatchCompleted(payload = {}) {
     return
   }
   await aiCapability.refreshAiCapability({ passive: false, batchId: payload.batchId })
+  if (selectedTab.value === 'assistant') {
+    await loadAssistantPreview({ forceRefresh: true })
+  }
 }
 
 async function handleHistoryBatchContext(payload = {}) {
@@ -355,17 +839,79 @@ async function handleHistoryBatchContext(payload = {}) {
     return
   }
   await aiCapability.refreshAiCapability({ passive: false, batchId: payload.batchId })
+  if (selectedTab.value === 'assistant') {
+    await loadAssistantPreview()
+  }
 }
 
-function handleViewResult(taskId) {
-  router.push(`/result/${taskId}`)
+async function submitAssistantQa() {
+  if (!latestBatchId.value) {
+    selectedTab.value = 'vl'
+    return
+  }
+
+  const question = String(assistantQaInput.value || '').trim()
+  if (!question) {
+    assistantQaError.value = '请输入问题后再发送。'
+    return
+  }
+
+  assistantQaSubmitting.value = true
+  assistantQaError.value = ''
+  try {
+    const { data } = await askBatchQuestion(latestBatchId.value, {
+      question,
+      top_k: 8,
+      persist: true,
+    })
+    assistantQaAnswer.value = data
+    assistantQaPreview.value = [
+      data,
+      ...assistantQaPreview.value.filter((item) => Number(item.qa_id) !== Number(data?.qa_id)),
+    ].slice(0, 3)
+    assistantQaInput.value = ''
+  } catch (error) {
+    assistantQaError.value = normalizeAiErrorMessage(error, '批次问答暂时不可用，请稍后重试。')
+  } finally {
+    assistantQaSubmitting.value = false
+  }
+}
+
+function handleViewResult(payload) {
+  const taskId = typeof payload === 'object' && payload !== null
+    ? payload.taskId || payload.id
+    : payload
+  if (!taskId) return
+
+  const query = {}
+  const folder = typeof payload === 'object' && payload !== null ? String(payload.folder || '').trim() : ''
+  const submissionId = typeof payload === 'object' && payload !== null ? String(payload.submissionId || '').trim() : ''
+  const batchId = typeof payload === 'object' && payload !== null ? String(payload.batchId || '').trim() : ''
+
+  if (folder) {
+    query.folder = folder
+  }
+  if (submissionId) {
+    query.submission_id = submissionId
+  }
+  if (batchId) {
+    query.batch_id = batchId
+  }
+
+  router.push({ path: `/result/${taskId}`, query })
 }
 
 onMounted(async () => {
   if (latestBatchId.value) {
     await aiCapability.refreshAiCapability({ passive: false, batchId: latestBatchId.value })
+    if (selectedTab.value === 'assistant') {
+      await loadAssistantPreview()
+    }
     return
   }
   await tryResolveBatchFromHistory()
+  if (selectedTab.value === 'assistant' && latestBatchId.value) {
+    await loadAssistantPreview()
+  }
 })
 </script>

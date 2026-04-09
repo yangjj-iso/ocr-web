@@ -38,16 +38,23 @@ from app.services.llm_field_extraction_service import (
     compare_rule_and_llm_fields_for_content,
 )
 from app.utils.image_sequence_pdf import (
+    DEFAULT_SIMILARITY_THRESHOLD,
     DEFAULT_TEXT_SIMILARITY_THRESHOLD,
+    PDFGroup,
     PageFingerprint,
     compare_page_fingerprints,
     compute_phash,
     group_pages_by_similarity,
     parse_page_file,
+    save_group_as_pdf,
     suggest_similarity_threshold,
 )
 from app.utils.image_sequence_pdf import _compute_layout_signature
-from config import MINIMAX_BATCH_CONCURRENCY
+from config import (
+    BOUNDARY_GROUP_PDF_OUTPUT_DIRNAME,
+    BOUNDARY_SIMILARITY_THRESHOLD,
+    MINIMAX_BATCH_CONCURRENCY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +210,12 @@ def _task_is_merge_eligible(task: OCRTask) -> bool:
     return task.status == "done" and bool(_coerce_text(task.full_text) or _is_visual_sequence_candidate(task))
 
 
+def _task_is_boundary_analysis_eligible(task: OCRTask) -> bool:
+    if _task_is_merge_eligible(task):
+        return True
+    return _is_visual_sequence_candidate(task)
+
+
 def _similarity(left: str, right: str) -> float:
     if not left or not right:
         return 0.0
@@ -230,6 +243,25 @@ def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
 
 def _merge_cache_key(batch_id: str) -> str:
     return f"{MERGE_CACHE_PREFIX}{batch_id}"
+
+
+def _normalize_similarity_threshold(value: int | None) -> int:
+    if value is None:
+        return BOUNDARY_SIMILARITY_THRESHOLD or DEFAULT_SIMILARITY_THRESHOLD
+    try:
+        return max(1, min(64, int(value)))
+    except (TypeError, ValueError):
+        return BOUNDARY_SIMILARITY_THRESHOLD or DEFAULT_SIMILARITY_THRESHOLD
+
+
+def _uses_custom_similarity_threshold(value: int | None) -> bool:
+    return value is not None and _normalize_similarity_threshold(value) != _normalize_similarity_threshold(None)
+
+
+def _merge_cache_key_for_threshold(batch_id: str, similarity_threshold: int | None) -> str:
+    if not _uses_custom_similarity_threshold(similarity_threshold):
+        return _merge_cache_key(batch_id)
+    return f"{_merge_cache_key(batch_id)}:th:{_normalize_similarity_threshold(similarity_threshold)}"
 
 
 def _extract_group_task_ids(payload: dict[str, Any]) -> set[int]:
@@ -262,6 +294,161 @@ def _strip_evidence_in_result(payload: dict[str, Any]) -> None:
         llm_fields = document.get("llm_fields")
         if isinstance(llm_fields, dict):
             llm_fields.pop("evidence", None)
+
+
+def _suggested_group_pdf_filename(prefix: str, start_page: int, end_page: int) -> str:
+    return f"{prefix}-{int(start_page):03d}-{int(end_page):03d}.pdf"
+
+
+def _overall_recommended_similarity_threshold(sequence_meta: dict[str, Any] | None) -> int | None:
+    values: list[int] = []
+    for meta in (sequence_meta or {}).values():
+        try:
+            values.append(int(meta.get("recommended_similarity_threshold")))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    if not values:
+        return None
+    return int(round(sum(values) / float(len(values))))
+
+
+def _apply_boundary_pdf_exports(
+    payload: dict[str, Any],
+    *,
+    task_by_id: dict[int, OCRTask],
+) -> tuple[list[str], int]:
+    warnings: list[str] = []
+    exported_count = 0
+    groups = payload.get("groups") or []
+    if not isinstance(groups, list):
+        return warnings, exported_count
+
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        prefix = _coerce_text(group.get("prefix"))
+        start_page = int(group.get("start_page") or 0)
+        end_page = int(group.get("end_page") or start_page)
+        task_ids = [int(task_id) for task_id in (group.get("task_ids") or []) if str(task_id).strip()]
+        group["page_count"] = len(task_ids)
+        fallback_filename = _coerce_text(group.get("suggested_pdf_filename")) or f"{_coerce_text(group.get('group_id'))}.pdf"
+        group["suggested_pdf_filename"] = (
+            _suggested_group_pdf_filename(prefix, start_page, end_page)
+            if prefix
+            else fallback_filename
+        )
+        group["pdf_output_path"] = _coerce_text(group.get("pdf_output_path"))
+        group["pdf_exported"] = bool(group.get("pdf_exported"))
+
+        pages: list[PageFingerprint] = []
+        output_root: Path | None = None
+        for task_id in task_ids:
+            task = task_by_id.get(task_id)
+            if task is None:
+                warnings.append(f"{group['suggested_pdf_filename']}: 缺少任务 {task_id}，未导出 PDF。")
+                pages = []
+                break
+
+            image_path = Path(_coerce_text(task.file_path))
+            if not image_path.exists():
+                warnings.append(f"{group['suggested_pdf_filename']}: 找不到源图片 {image_path}，未导出 PDF。")
+                pages = []
+                break
+
+            visual_sequence = _extract_visual_sequence_parts(task.filename or image_path.name)
+            if visual_sequence is None:
+                warnings.append(f"{group['suggested_pdf_filename']}: 文件名不符合连续页规则，未导出 PDF。")
+                pages = []
+                break
+
+            page_prefix, page_no = visual_sequence
+            if not prefix:
+                prefix = page_prefix
+                group["prefix"] = prefix
+                group["suggested_pdf_filename"] = _suggested_group_pdf_filename(prefix, start_page, end_page)
+
+            pages.append(
+                PageFingerprint(
+                    path=image_path,
+                    prefix=page_prefix,
+                    page_no=page_no,
+                    phash=0,
+                )
+            )
+            if output_root is None:
+                output_root = image_path.parent / BOUNDARY_GROUP_PDF_OUTPUT_DIRNAME
+
+        if not pages or output_root is None:
+            continue
+
+        pages.sort(key=lambda item: item.page_no)
+        pdf_group = PDFGroup(prefix=prefix, pages=pages)
+        try:
+            output_path = save_group_as_pdf(pdf_group, output_root)
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to export grouped PDF for batch material %s", group.get("group_id"), exc_info=True)
+            warnings.append(f"{group['suggested_pdf_filename']}: 导出 PDF 失败。")
+            continue
+
+        group["pdf_output_path"] = str(output_path)
+        group["pdf_exported"] = True
+        exported_count += 1
+
+    return list(dict.fromkeys(warnings)), exported_count
+
+
+def _finalize_boundary_payload(
+    payload: dict[str, Any],
+    *,
+    batch_id: str,
+    task_by_id: dict[int, OCRTask],
+    applied_similarity_threshold: int,
+    sequence_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    enriched = deepcopy(payload)
+    enriched["sequence_meta"] = sequence_meta or dict(enriched.get("sequence_meta") or {})
+    warnings, exported_count = _apply_boundary_pdf_exports(enriched, task_by_id=task_by_id)
+    recommended_threshold = _overall_recommended_similarity_threshold(enriched.get("sequence_meta"))
+    groups = enriched.get("groups") or []
+    total_pages = sum(int(group.get("page_count") or len(group.get("task_ids") or [])) for group in groups if isinstance(group, dict))
+    summary = dict(enriched.get("summary") or {})
+    summary.update(
+        {
+            "group_count": len(groups),
+            "grouped_pdf_count": exported_count,
+            "total_pages": total_pages,
+            "applied_similarity_threshold": applied_similarity_threshold,
+            "recommended_similarity_threshold": recommended_threshold,
+            "threshold_source": "manual_or_config",
+        }
+    )
+    enriched["summary"] = summary
+    enriched["warnings"] = warnings
+    enriched["threshold_help"] = (
+        "similarity_threshold 越大越宽松，越小越严格。推荐 8-15：版式稳定时可调到 8-10，"
+        "同类材料版面差异较大时可放宽到 12-15。"
+    )
+
+    lines = [
+        f"batch {batch_id}: 共识别出 {len(groups)} 个文件，覆盖 {total_pages} 页。",
+        f"similarity_threshold = {applied_similarity_threshold}",
+    ]
+    if recommended_threshold is not None:
+        lines.append(f"recommended_similarity_threshold = {recommended_threshold}")
+    for index, group in enumerate(groups, start=1):
+        if not isinstance(group, dict):
+            continue
+        start_page = int(group.get("start_page") or 0)
+        end_page = int(group.get("end_page") or start_page)
+        page_count = int(group.get("page_count") or len(group.get("task_ids") or []))
+        filename = _coerce_text(group.get("suggested_pdf_filename"))
+        lines.append(
+            f"{index:02d}. {filename} | 页码 {start_page:03d}-{end_page:03d} | {page_count} 页"
+        )
+    for warning in warnings:
+        lines.append(f"警告: {warning}")
+    logger.info("\n%s", "\n".join(lines))
+    return enriched
 
 
 async def _load_batch_tasks(db: AsyncSession, batch_id: str) -> list[OCRTask]:
@@ -310,7 +497,12 @@ def _build_task_candidate(task: OCRTask) -> TaskCandidate:
     )
 
 
-def _build_boundary_hints(candidates: list[TaskCandidate], *, feedback_priors=None) -> BoundaryResult:
+def _build_boundary_hints(
+    candidates: list[TaskCandidate],
+    *,
+    feedback_priors=None,
+    similarity_threshold: int | None = None,
+) -> BoundaryResult:
     sequence_pages = [
         SequencePage(
             task_id=candidate.task.id,
@@ -332,7 +524,11 @@ def _build_boundary_hints(candidates: list[TaskCandidate], *, feedback_priors=No
         for candidate in candidates
         if candidate.visual_prefix and candidate.visual_page_no is not None
     ]
-    return build_boundary_result(sequence_pages, feedback_priors=feedback_priors)
+    return build_boundary_result(
+        sequence_pages,
+        feedback_priors=feedback_priors,
+        similarity_threshold=_normalize_similarity_threshold(similarity_threshold),
+    )
 
 
 def _build_boundary_sequences_payload(candidates: list[TaskCandidate]) -> list[dict[str, Any]]:
@@ -388,12 +584,17 @@ def _build_boundary_analysis_payload(
                 "filenames": group.filenames,
                 "start_page": group.start_page,
                 "end_page": group.end_page,
+                "page_count": group.page_count,
                 "confidence": group.confidence,
                 "reasons": group.reasons,
+                "suggested_pdf_filename": group.suggested_pdf_filename,
+                "pdf_output_path": "",
+                "pdf_exported": False,
             }
             for group in boundary_result.groups
         ],
         "task_to_group": boundary_result.task_to_group,
+        "sequence_meta": boundary_result.sequence_meta,
         "summary": {
             "sequence_count": len(boundary_sequences),
             "decision_count": len(boundary_result.adjacent_decisions),
@@ -461,8 +662,12 @@ def _build_boundary_groups_from_truth(
                     "filenames": group.filenames,
                     "start_page": group.start_page,
                     "end_page": group.end_page,
+                    "page_count": group.page_count,
                     "confidence": group.confidence,
                     "reasons": group.reasons,
+                    "suggested_pdf_filename": group.suggested_pdf_filename,
+                    "pdf_output_path": "",
+                    "pdf_exported": False,
                 }
                 for group in boundary_result.groups
             ],
@@ -506,8 +711,16 @@ def _build_boundary_groups_from_truth(
                 "filenames": filenames,
                 "start_page": min(page_numbers) if page_numbers else 0,
                 "end_page": max(page_numbers) if page_numbers else 0,
+                "page_count": len(ordered_task_ids),
                 "confidence": 1.0,
                 "reasons": reasons,
+                "suggested_pdf_filename": _suggested_group_pdf_filename(
+                    prefix,
+                    min(page_numbers) if page_numbers else 0,
+                    max(page_numbers) if page_numbers else 0,
+                ),
+                "pdf_output_path": "",
+                "pdf_exported": False,
             }
         )
         for task_id in ordered_task_ids:
@@ -527,8 +740,12 @@ def _build_boundary_groups_from_truth(
                 "filenames": filenames,
                 "start_page": group.start_page,
                 "end_page": group.end_page,
+                "page_count": len(remaining_task_ids),
                 "confidence": group.confidence,
                 "reasons": group.reasons,
+                "suggested_pdf_filename": group.suggested_pdf_filename,
+                "pdf_output_path": "",
+                "pdf_exported": False,
             }
         )
         for task_id in remaining_task_ids:
@@ -924,6 +1141,7 @@ async def batch_merge_extract_fields(
     *,
     batch_id: str,
     include_evidence: bool = True,
+    similarity_threshold: int | None = None,
 ) -> dict[str, Any] | None:
     tasks = await _load_batch_tasks(db, batch_id)
     if not tasks:
@@ -963,14 +1181,27 @@ async def batch_merge_extract_fields(
     candidates = [_build_task_candidate(task) for task in eligible_tasks]
     feedback_priors = await load_boundary_feedback_priors(db)
     boundary_sequences = _build_boundary_sequences_payload(candidates)
-    boundary_result = _build_boundary_hints(candidates, feedback_priors=feedback_priors)
-    await save_boundary_analysis(
-        db,
-        batch_id=batch_id,
-        sequences=boundary_sequences,
-        boundary_result=boundary_result,
+    applied_similarity_threshold = _normalize_similarity_threshold(similarity_threshold)
+    boundary_result = _build_boundary_hints(
+        candidates,
+        feedback_priors=feedback_priors,
+        similarity_threshold=applied_similarity_threshold,
     )
-    boundary_truth = await get_batch_boundary_truth(db, batch_id=batch_id)
+    if not _uses_custom_similarity_threshold(similarity_threshold):
+        try:
+            await save_boundary_analysis(
+                db,
+                batch_id=batch_id,
+                sequences=boundary_sequences,
+                boundary_result=boundary_result,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist boundary analysis for batch %s during merge extraction.", batch_id, exc_info=True)
+    try:
+        boundary_truth = await get_batch_boundary_truth(db, batch_id=batch_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to load boundary truth for batch %s during merge extraction.", batch_id, exc_info=True)
+        boundary_truth = {"tasks": []}
     truth_task_to_doc_key = {
         int(item["task_id"]): _coerce_text(item.get("doc_key"))
         for item in boundary_truth.get("tasks", [])
@@ -1124,6 +1355,10 @@ async def batch_merge_extract_fields(
         group_members[group_id] = members
         member_task_ids = [member.task.id for member in members]
         member_filenames = [member.task.filename for member in members]
+        prefix = _coerce_text(members[0].visual_prefix if members else "")
+        page_numbers = [int(member.visual_page_no or 0) for member in members if member.visual_page_no is not None]
+        start_page = min(page_numbers) if page_numbers else 0
+        end_page = max(page_numbers) if page_numbers else 0
         if truth_doc_key:
             confidence = 1.0
             reasons = [f"人工校正：按 doc_key={truth_doc_key} 覆盖文档归并结果。"]
@@ -1139,10 +1374,17 @@ async def batch_merge_extract_fields(
         groups_payload.append(
             {
                 "group_id": group_id,
+                "prefix": prefix,
                 "task_ids": member_task_ids,
                 "filenames": member_filenames,
+                "start_page": start_page,
+                "end_page": end_page,
+                "page_count": len(member_task_ids),
                 "same_document_confidence": round(float(confidence), 4),
                 "decision_reasons": reasons,
+                "suggested_pdf_filename": _suggested_group_pdf_filename(prefix, start_page, end_page) if prefix else "",
+                "pdf_output_path": "",
+                "pdf_exported": False,
                 **({"truth_doc_key": truth_doc_key} if truth_doc_key else {}),
             }
         )
@@ -1210,7 +1452,7 @@ async def batch_merge_extract_fields(
                 }
             )
 
-    return {
+    result = {
         "batch_id": batch_id,
         "groups": groups_payload,
         "documents": documents_payload,
@@ -1226,6 +1468,13 @@ async def batch_merge_extract_fields(
             "documents_count": len(documents_payload),
         },
     }
+    return _finalize_boundary_payload(
+        result,
+        batch_id=batch_id,
+        task_by_id={int(task.id): task for task in eligible_tasks},
+        applied_similarity_threshold=applied_similarity_threshold,
+        sequence_meta=boundary_result.sequence_meta,
+    )
 
 
 async def get_batch_merge_extract_result(
@@ -1234,8 +1483,9 @@ async def get_batch_merge_extract_result(
     batch_id: str,
     include_evidence: bool = True,
     force_refresh: bool = False,
+    similarity_threshold: int | None = None,
 ) -> dict[str, Any] | None:
-    cache_key = _merge_cache_key(batch_id)
+    cache_key = _merge_cache_key_for_threshold(batch_id, similarity_threshold)
     if not force_refresh:
         cached = cache_get(cache_key)
         if isinstance(cached, dict):
@@ -1266,6 +1516,7 @@ async def get_batch_merge_extract_result(
         db,
         batch_id=batch_id,
         include_evidence=True,
+        similarity_threshold=similarity_threshold,
     )
     if not computed:
         return None
@@ -1283,22 +1534,35 @@ async def get_batch_boundary_analysis_result(
     *,
     batch_id: str,
     force_refresh: bool = False,
+    similarity_threshold: int | None = None,
 ) -> dict[str, Any] | None:
     tasks = await _load_batch_tasks(db, batch_id)
-    eligible_tasks = [task for task in tasks if _task_is_merge_eligible(task)]
+    eligible_tasks = [task for task in tasks if _task_is_boundary_analysis_eligible(task)]
     eligible_task_ids = {int(task.id) for task in eligible_tasks}
-    boundary_truth = await get_batch_boundary_truth(db, batch_id=batch_id)
+    applied_similarity_threshold = _normalize_similarity_threshold(similarity_threshold)
+    uses_custom_threshold = _uses_custom_similarity_threshold(similarity_threshold)
+    try:
+        boundary_truth = await get_batch_boundary_truth(db, batch_id=batch_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to load boundary truth for batch %s.", batch_id, exc_info=True)
+        boundary_truth = {"tasks": []}
     truth_task_to_doc_key = {
         int(item["task_id"]): _coerce_text(item.get("doc_key"))
         for item in boundary_truth.get("tasks", [])
         if _coerce_text(item.get("doc_key"))
     }
 
-    if not force_refresh:
+    if not force_refresh and not uses_custom_threshold:
         persisted = await load_boundary_analysis(db, batch_id=batch_id)
         persisted_task_ids = {int(task_id) for task_id in (persisted or {}).get("task_to_group", {}).keys()}
         if persisted and persisted_task_ids == eligible_task_ids and not truth_task_to_doc_key:
-            return persisted
+            return _finalize_boundary_payload(
+                persisted,
+                batch_id=batch_id,
+                task_by_id={int(task.id): task for task in eligible_tasks},
+                applied_similarity_threshold=applied_similarity_threshold,
+                sequence_meta=dict(persisted.get("sequence_meta") or {}),
+            )
 
     if not eligible_tasks:
         return None
@@ -1306,13 +1570,21 @@ async def get_batch_boundary_analysis_result(
     candidates = [_build_task_candidate(task) for task in eligible_tasks]
     feedback_priors = await load_boundary_feedback_priors(db)
     boundary_sequences = _build_boundary_sequences_payload(candidates)
-    boundary_result = _build_boundary_hints(candidates, feedback_priors=feedback_priors)
-    await save_boundary_analysis(
-        db,
-        batch_id=batch_id,
-        sequences=boundary_sequences,
-        boundary_result=boundary_result,
+    boundary_result = _build_boundary_hints(
+        candidates,
+        feedback_priors=feedback_priors,
+        similarity_threshold=applied_similarity_threshold,
     )
+    if not uses_custom_threshold:
+        try:
+            await save_boundary_analysis(
+                db,
+                batch_id=batch_id,
+                sequences=boundary_sequences,
+                boundary_result=boundary_result,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist boundary analysis for batch %s.", batch_id, exc_info=True)
     payload = _build_boundary_analysis_payload(
         batch_id=batch_id,
         boundary_sequences=boundary_sequences,
@@ -1328,4 +1600,10 @@ async def get_batch_boundary_analysis_result(
         payload["task_to_group"] = task_to_group
         payload["summary"]["group_count"] = len(groups_payload)
         payload["truth_updated_at"] = boundary_truth.get("truth_updated_at")
-    return payload
+    return _finalize_boundary_payload(
+        payload,
+        batch_id=batch_id,
+        task_by_id={int(task.id): task for task in eligible_tasks},
+        applied_similarity_threshold=applied_similarity_threshold,
+        sequence_meta=boundary_result.sequence_meta,
+    )

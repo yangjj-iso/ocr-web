@@ -13,6 +13,8 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -29,12 +31,24 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
 public class ArchiveRecordService {
+    private static final Logger log = LoggerFactory.getLogger(ArchiveRecordService.class);
     private static final List<String> EXPORTED_HEADERS = List.of("档号", "文号", "责任者", "题名", "日期", "页数", "密级", "备注");
     private static final List<String> SCAN_EXTENSIONS = List.of(".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pdf");
+    private static final int MAX_BATCH_ID_LENGTH = 100;
+    private static final int MAX_BATCH_FOLDER_LENGTH = 500;
+    private static final int MAX_ARCHIVE_NO_LENGTH = 200;
+    private static final int MAX_DOC_NO_LENGTH = 200;
+    private static final int MAX_RESPONSIBLE_LENGTH = 500;
+    private static final int MAX_TITLE_LENGTH = 1000;
+    private static final int MAX_DATE_LENGTH = 50;
+    private static final int MAX_PAGES_LENGTH = 20;
+    private static final int MAX_CLASSIFICATION_LENGTH = 50;
+    private static final int MAX_REMARKS_LENGTH = 1000;
 
     private final ArchiveRecordRepository archiveRecordRepository;
     private final OcrTaskRepository ocrTaskRepository;
@@ -115,6 +129,7 @@ public class ArchiveRecordService {
             entity.setPages(row.getOrDefault("页数", ""));
             entity.setClassification(row.getOrDefault("密级", ""));
             entity.setRemarks(row.getOrDefault("备注", ""));
+            applyStorageLimits(entity, "archive import batch " + resolvedBatchId);
             archiveRecordRepository.save(entity);
         }
         return rows.size();
@@ -137,6 +152,14 @@ public class ArchiveRecordService {
         long total = archiveRecordRepository.count();
         archiveRecordRepository.deleteAllInBatch();
         return total;
+    }
+
+    @Transactional
+    public long deleteRecordsByTaskId(Long taskId) {
+        if (taskId == null) {
+            return 0;
+        }
+        return archiveRecordRepository.deleteByTaskId(taskId);
     }
 
     public ArchiveDtos.FolderScanResponse scanFolder(String folderPath) {
@@ -172,42 +195,65 @@ public class ArchiveRecordService {
         String normalizedFolder = safeFolder.toString();
 
         List<String> existingBatchIds = archiveRecordRepository.findDistinctAssignedBatchIdsByFolder(normalizedFolder);
-        if (!existingBatchIds.isEmpty()) {
-            return java.util.Map.of("batch_id", existingBatchIds.get(0), "created", false);
-        }
+        String batchId = existingBatchIds.isEmpty()
+                ? "batch_" + OffsetDateTime.now().toEpochSecond() + "_" + UUID.randomUUID().toString().substring(0, 6)
+                : existingBatchIds.get(0);
+        boolean created = existingBatchIds.isEmpty();
+        int linkedTasks = 0;
 
         List<ArchiveRecordEntity> unassignedRecords = archiveRecordRepository.findUnassignedByFolder(normalizedFolder);
-        String batchId = "batch_" + OffsetDateTime.now().toEpochSecond() + "_" + UUID.randomUUID().toString().substring(0, 6);
         if (!unassignedRecords.isEmpty()) {
             for (ArchiveRecordEntity record : unassignedRecords) {
                 record.setBatchId(batchId);
+                if (!normalizedFolder.equals(safe(record.getBatchFolder()))) {
+                    record.setBatchFolder(normalizedFolder);
+                }
             }
             archiveRecordRepository.saveAll(unassignedRecords);
-            return java.util.Map.of("batch_id", batchId, "created", true);
         }
 
         List<OcrTaskEntity> tasks = ocrTaskRepository.findAll().stream()
-                .filter(task -> "done".equalsIgnoreCase(normalizeTaskStatus(task.getStatus())))
                 .filter(task -> task.getFilePath() != null && Path.of(task.getFilePath()).toAbsolutePath().normalize().startsWith(safeFolder))
                 .toList();
         if (tasks.isEmpty()) {
-            return java.util.Map.of("batch_id", "", "created", false);
+            return java.util.Map.of("batch_id", "", "created", false, "linked_tasks", 0);
         }
 
         for (OcrTaskEntity task : tasks) {
             ArchiveRecordEntity record = archiveRecordRepository.findByTaskId(task.getId()).orElseGet(ArchiveRecordEntity::new);
-            record.setTaskId(task.getId());
-            record.setBatchId(batchId);
-            record.setBatchFolder(safeFolder.toString());
+            boolean dirty = false;
+
+            if (!Objects.equals(record.getTaskId(), task.getId())) {
+                record.setTaskId(task.getId());
+                dirty = true;
+            }
+            if (!batchId.equals(safe(record.getBatchId()))) {
+                record.setBatchId(batchId);
+                dirty = true;
+            }
+            if (!normalizedFolder.equals(safe(record.getBatchFolder()))) {
+                record.setBatchFolder(normalizedFolder);
+                dirty = true;
+            }
             if (!StringUtils.hasText(record.getArchiveNo())) {
                 record.setArchiveNo(stripExtension(task.getFilename()));
+                dirty = true;
             }
             if (!StringUtils.hasText(record.getPages()) && task.getPageCount() != null) {
                 record.setPages(String.valueOf(task.getPageCount()));
+                dirty = true;
             }
-            archiveRecordRepository.save(record);
+            dirty = applyStorageLimits(record, "folder batch sync for task " + task.getId()) || dirty;
+            if (dirty) {
+                archiveRecordRepository.save(record);
+            }
+            linkedTasks++;
         }
-        return java.util.Map.of("batch_id", batchId, "created", true);
+        return java.util.Map.of(
+                "batch_id", batchId,
+                "created", created,
+                "linked_tasks", linkedTasks
+        );
     }
 
     @Transactional
@@ -229,7 +275,74 @@ public class ArchiveRecordService {
             record.setClassification(readText(archiveFields, "classification", record.getClassification()));
             record.setRemarks(readText(archiveFields, "remarks", record.getRemarks()));
         }
+        applyStorageLimits(record, "task completion " + taskId);
         archiveRecordRepository.save(record);
+    }
+
+    private boolean applyStorageLimits(ArchiveRecordEntity record, String context) {
+        boolean changed = false;
+
+        String batchId = limitField("batchId", record.getBatchId(), MAX_BATCH_ID_LENGTH, context);
+        if (!Objects.equals(batchId, record.getBatchId())) {
+            record.setBatchId(batchId);
+            changed = true;
+        }
+
+        String batchFolder = limitField("batchFolder", record.getBatchFolder(), MAX_BATCH_FOLDER_LENGTH, context);
+        if (!Objects.equals(batchFolder, record.getBatchFolder())) {
+            record.setBatchFolder(batchFolder);
+            changed = true;
+        }
+
+        String archiveNo = limitField("archiveNo", record.getArchiveNo(), MAX_ARCHIVE_NO_LENGTH, context);
+        if (!Objects.equals(archiveNo, record.getArchiveNo())) {
+            record.setArchiveNo(archiveNo);
+            changed = true;
+        }
+
+        String docNo = limitField("docNo", record.getDocNo(), MAX_DOC_NO_LENGTH, context);
+        if (!Objects.equals(docNo, record.getDocNo())) {
+            record.setDocNo(docNo);
+            changed = true;
+        }
+
+        String responsible = limitField("responsible", record.getResponsible(), MAX_RESPONSIBLE_LENGTH, context);
+        if (!Objects.equals(responsible, record.getResponsible())) {
+            record.setResponsible(responsible);
+            changed = true;
+        }
+
+        String title = limitField("title", record.getTitle(), MAX_TITLE_LENGTH, context);
+        if (!Objects.equals(title, record.getTitle())) {
+            record.setTitle(title);
+            changed = true;
+        }
+
+        String date = limitField("date", record.getDate(), MAX_DATE_LENGTH, context);
+        if (!Objects.equals(date, record.getDate())) {
+            record.setDate(date);
+            changed = true;
+        }
+
+        String pages = limitField("pages", record.getPages(), MAX_PAGES_LENGTH, context);
+        if (!Objects.equals(pages, record.getPages())) {
+            record.setPages(pages);
+            changed = true;
+        }
+
+        String classification = limitField("classification", record.getClassification(), MAX_CLASSIFICATION_LENGTH, context);
+        if (!Objects.equals(classification, record.getClassification())) {
+            record.setClassification(classification);
+            changed = true;
+        }
+
+        String remarks = limitField("remarks", record.getRemarks(), MAX_REMARKS_LENGTH, context);
+        if (!Objects.equals(remarks, record.getRemarks())) {
+            record.setRemarks(remarks);
+            changed = true;
+        }
+
+        return changed;
     }
 
     private List<Map<String, String>> readArchiveRows(Path filePath) {
@@ -328,6 +441,35 @@ public class ArchiveRecordService {
     private static String readText(JsonNode payload, String field, String fallback) {
         String value = payload.path(field).asText("");
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private static String limitField(String fieldName, String value, int maxLength, String context) {
+        String normalized = safe(value);
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        String truncated = truncate(normalized, maxLength);
+        log.warn(
+                "Truncated archive record field '{}' from {} to {} characters while saving {}.",
+                fieldName,
+                normalized.length(),
+                truncated.length(),
+                context
+        );
+        return truncated;
+    }
+
+    private static String truncate(String value, int maxLength) {
+        if (maxLength <= 0) {
+            return "";
+        }
+        if (value.length() <= maxLength) {
+            return value;
+        }
+        if (maxLength <= 3) {
+            return value.substring(0, maxLength);
+        }
+        return value.substring(0, maxLength - 3) + "...";
     }
 
     private static String normalizeTaskStatus(String status) {

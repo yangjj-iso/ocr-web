@@ -10,6 +10,7 @@ com\ocrweb\controlplane\trace\TraceContextFilter.class
 com\ocrweb\controlplane\task\web\InternalTaskCallbackController.class
 com\ocrweb\controlplane\config\AiServiceProperties.class
 com\ocrweb\controlplane\trace\RequestTraceContext.class
+com\ocrweb\controlplane\task\service\OcrTaskService$SubmissionMetadata.class
 META-INF\spring-configuration-metadata.json
 com\ocrweb\controlplane\auth\dto\AuthDtos$LoginResponse.class
 com\ocrweb\controlplane\config\WebMvcConfig.class
@@ -25,6 +26,7 @@ com\ocrweb\controlplane\task\dto\TaskDtos$TaskDetailResponse.class
 com\ocrweb\controlplane\auth\service\PasswordHashService.class
 com\ocrweb\controlplane\auth\repository\AppUserRepository.class
 com\ocrweb\controlplane\config\LocalPathProperties.class
+com\ocrweb\controlplane\task\dto\TaskDtos$SubmissionSummaryResponse.class
 com\ocrweb\controlplane\web\RequestRateLimitingInterceptor.class
 com\ocrweb\controlplane\task\dto\TaskDtos$TaskProgressResponse.class
 com\ocrweb\controlplane\archive\service\ArchiveRecordService$1.class
@@ -60,6 +62,7 @@ com\ocrweb\controlplane\task\service\TaskStorageService$StoredFileHandle.class
 com\ocrweb\controlplane\health\HealthController.class
 com\ocrweb\controlplane\auth\dto\AuthDtos.class
 com\ocrweb\controlplane\health\ControlPlaneHealthService$ReadinessReport.class
+com\ocrweb\controlplane\task\service\OcrTaskService$SubmissionAccumulator.class
 com\ocrweb\controlplane\archive\dto\ArchiveDtos$ArchiveRecordListResponse.class
 com\ocrweb\controlplane\auth\service\SessionTokenService.class
 com\ocrweb\controlplane\task\dto\TaskDtos$TaskFailureRequest.class

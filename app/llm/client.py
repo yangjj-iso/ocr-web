@@ -49,15 +49,20 @@ def _resolve_config(*, vision: bool = False) -> dict[str, str]:
     timeout = os.getenv(f"{prefix}TIMEOUT_SECONDS", "").strip()
     max_input = os.getenv("LLM_MAX_INPUT_CHARS", "").strip()
 
-    # 回退到旧配置
-    if not base_url:
-        base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1").strip()
-    if not api_key:
-        api_key = os.getenv("MINIMAX_API_KEY", "").strip()
-    if not model:
-        model = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7").strip()
-    if not timeout:
-        timeout = os.getenv("MINIMAX_TIMEOUT_SECONDS", "60").strip()
+    # 视觉模型必须显式配置，避免静默回退到纯文本模型后返回无关内容。
+    if vision:
+        if not timeout:
+            timeout = os.getenv("VISION_LLM_TIMEOUT_SECONDS", os.getenv("MINIMAX_TIMEOUT_SECONDS", "60")).strip()
+    else:
+        # 回退到旧配置
+        if not base_url:
+            base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1").strip()
+        if not api_key:
+            api_key = os.getenv("MINIMAX_API_KEY", "").strip()
+        if not model:
+            model = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7").strip()
+        if not timeout:
+            timeout = os.getenv("MINIMAX_TIMEOUT_SECONDS", "60").strip()
     if not max_input:
         max_input = os.getenv("MINIMAX_MAX_INPUT_CHARS", "12000").strip()
 
@@ -68,6 +73,22 @@ def _resolve_config(*, vision: bool = False) -> dict[str, str]:
         "timeout_seconds": timeout,
         "max_input_chars": max_input,
     }
+
+
+def vision_endpoint_supports_image_inputs() -> bool:
+    """
+    当前实现走的是 OpenAI-compatible `/chat/completions`。
+    MiniMax 官方文档明确说明其兼容 OpenAI / Anthropic 文本接口暂不支持 image input，
+    因此这里直接将该接口视为不可用于视觉节点，避免返回与图片无关的幻觉结果。
+    """
+    config = _resolve_config(vision=True)
+    base_url = config["base_url"].strip().lower()
+    model = config["model"].strip()
+    if not base_url or not model:
+        return False
+    if "minimax" in base_url or "minimaxi" in base_url:
+        return False
+    return True
 
 
 def get_llm_client(*, vision: bool = False) -> LLMProvider:

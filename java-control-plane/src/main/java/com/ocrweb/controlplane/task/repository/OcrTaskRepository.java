@@ -7,15 +7,24 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Optional;
+
 public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
 
     @Query("""
             select t
             from OcrTaskEntity t
             where (:folder = '' or t.filePath like concat(:folder, '%'))
+              and (:batchId = '' or t.batchId = :batchId)
             order by t.createdAt desc
             """)
-    Page<OcrTaskEntity> findByFolder(@Param("folder") String folder, Pageable pageable);
+    Page<OcrTaskEntity> findByFolderAndBatchId(
+            @Param("folder") String folder,
+            @Param("batchId") String batchId,
+            Pageable pageable
+    );
 
     @Query("""
             select t
@@ -25,6 +34,18 @@ public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
             order by t.createdAt desc
             """)
     Page<OcrTaskEntity> search(@Param("keyword") String keyword, Pageable pageable);
+
+    Optional<OcrTaskEntity> findFirstByBatchIdOrderByCreatedAtAsc(String batchId);
+
+    List<OcrTaskEntity> findByBatchIdOrderByCreatedAtDesc(String batchId);
+
+    List<OcrTaskEntity> findBySubmitterUsernameAndCreatedAtBetweenOrderByCreatedAtAsc(
+            String submitterUsername,
+            OffsetDateTime start,
+            OffsetDateTime end
+    );
+
+    long deleteByBatchId(String batchId);
 
     long deleteByFilePathStartingWith(String filePathPrefix);
 }

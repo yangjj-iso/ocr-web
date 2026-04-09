@@ -8,42 +8,45 @@
     </div>
 
     <div v-else-if="groups.length" class="space-y-2">
-      <div v-for="group in groups" :key="group.folder" class="rounded-xl border border-[var(--gov-border)] bg-white overflow-hidden">
+      <div v-for="group in groups" :key="group.submission_id" class="overflow-hidden rounded-xl border border-[var(--gov-border)] bg-white">
         <div
-          class="flex cursor-pointer items-center px-4 py-3 transition hover:bg-slate-50"
-          @click="toggleFolder(group.folder)"
+          class="group flex cursor-pointer items-center px-4 py-3 transition hover:bg-slate-50"
+          @click="toggleSubmission(group.submission_id)"
         >
           <svg
             class="mr-2 h-4 w-4 flex-shrink-0 text-slate-400 transition-transform duration-200"
-            :class="expandedFolders[group.folder] ? 'rotate-90' : ''"
+            :class="expandedSubmissions[group.submission_id] ? 'rotate-90' : ''"
             fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"
           ><path d="M9 5l7 7-7 7" /></svg>
 
-          <div class="mr-3 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg" :class="expandedFolders[group.folder] ? 'bg-[var(--gov-primary)] text-white' : 'bg-[var(--gov-surface-muted)] text-[var(--gov-primary)]'">
+          <div
+            class="mr-3 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
+            :class="expandedSubmissions[group.submission_id] ? 'bg-[var(--gov-primary)] text-white' : 'bg-[var(--gov-surface-muted)] text-[var(--gov-primary)]'"
+          >
             <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+              <path d="M8 6h8m-8 4h8m-8 4h5M7 3h10a2 2 0 012 2v14a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
             </svg>
           </div>
 
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
-              <span class="truncate text-sm font-semibold text-[var(--gov-text)]">{{ folderLabel(group.folder) }}</span>
+              <span class="truncate text-sm font-semibold text-[var(--gov-text)]">{{ submissionLabel(group) }}</span>
               <span class="rounded-full bg-[var(--gov-primary-soft)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--gov-primary)]">
                 {{ group.count }} 份材料
               </span>
-              <span v-if="group.batch_ids?.length" class="rounded-full bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700">
-                已批处理
+              <span v-if="group.batch_id" class="rounded-full bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700">
+                可做批次分析
               </span>
             </div>
-            <div class="mt-0.5 truncate text-xs gov-muted">{{ group.folder }}</div>
+            <div class="mt-0.5 truncate text-xs gov-muted">{{ submissionMeta(group) }}</div>
           </div>
 
           <div class="ml-3 flex flex-shrink-0 items-center gap-2">
             <span class="text-xs gov-muted">{{ formatTime(group.last_time) }}</span>
             <button
               class="flex h-6 w-6 items-center justify-center rounded opacity-0 transition hover:bg-red-50 group-hover:opacity-100"
-              :class="expandedFolders[group.folder] ? 'opacity-100' : ''"
-              title="删除该目录下全部记录"
+              :class="expandedSubmissions[group.submission_id] ? 'opacity-100' : ''"
+              title="删除本次提交记录"
               @click.stop="confirmDelete(group)"
             >
               <svg class="h-3.5 w-3.5 text-slate-400 hover:text-red-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -53,34 +56,17 @@
           </div>
         </div>
 
-        <div v-if="expandedFolders[group.folder]" class="border-t border-[var(--gov-border)]">
-          <div class="flex flex-wrap gap-2 border-b border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-2.5">
-            <button
-              class="rounded-lg bg-[var(--gov-primary)] px-3 py-1.5 text-xs font-medium text-white transition hover:brightness-105"
-              @click="doExportArchive(group)"
-            >导出归档</button>
-            <button
-              class="rounded-lg px-3 py-1.5 text-xs font-medium text-white transition"
-              :class="group.batch_ids?.length ? 'bg-violet-600 hover:brightness-105' : 'cursor-not-allowed bg-violet-300'"
-              :disabled="!group.batch_ids?.length"
-              @click="openBatchInsights(group)"
-            >质量概览</button>
-            <button
-              class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--gov-text)] transition hover:bg-slate-50"
-              @click="openLatestResult(group)"
-            >查看最新结果</button>
+        <div v-if="expandedSubmissions[group.submission_id]" class="border-t border-[var(--gov-border)]">
+          <div v-if="submissionTasks[group.submission_id]?.loading" class="px-6 py-4 text-center text-xs gov-muted">
+            加载材料列表...
           </div>
-
-          <div v-if="folderTasks[group.folder]?.loading" class="px-6 py-4 text-center text-xs gov-muted">
-            加载文件列表...
-          </div>
-          <div v-else-if="folderTasks[group.folder]?.tasks?.length" class="max-h-[360px] overflow-y-auto">
+          <div v-else-if="submissionTasks[group.submission_id]?.tasks?.length" class="max-h-[360px] overflow-y-auto">
             <div
-              v-for="task in folderTasks[group.folder].tasks"
+              v-for="task in submissionTasks[group.submission_id].tasks"
               :key="task.id"
               class="flex items-center border-b border-[var(--gov-border)] px-4 py-2.5 transition last:border-b-0"
               :class="canOpenTask(task) ? 'cursor-pointer hover:bg-[var(--gov-primary-soft)]/40' : 'cursor-not-allowed bg-slate-50/70'"
-              @click="canOpenTask(task) && emit('view-result', task.id)"
+              @click="canOpenTask(task) && emitViewResult(task.id, { folder: inferFolderPath(task.file_path), submissionId: group.submission_id, batchId: group.batch_id || task.batch_id || '' })"
             >
               <div class="ml-6 mr-3 flex h-6 w-6 flex-shrink-0 items-center justify-center">
                 <svg class="h-4 w-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -99,14 +85,14 @@
               </div>
             </div>
           </div>
-          <div v-else class="px-6 py-4 text-center text-xs gov-muted">该目录下暂无文件记录。</div>
+          <div v-else class="px-6 py-4 text-center text-xs gov-muted">本次提交暂无材料记录。</div>
         </div>
       </div>
     </div>
 
     <div v-else class="px-4 py-10 text-center text-sm gov-muted">
       <svg class="mx-auto mb-3 h-10 w-10 text-slate-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-        <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+        <path d="M8 6h8m-8 4h8m-8 4h5M7 3h10a2 2 0 012 2v14a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
       </svg>
       {{ emptyMessage }}
     </div>
@@ -115,13 +101,13 @@
       <div class="w-80 rounded-xl bg-white p-6 shadow-xl">
         <h3 class="mb-1 text-sm font-semibold text-[var(--gov-text)]">删除记录确认</h3>
         <p class="mb-1 text-xs gov-muted">
-          将删除目录
-          <span class="font-medium text-[var(--gov-text)]">"{{ folderLabel(deleteTarget.folder) }}"</span>
-          下的全部
-          <span class="font-medium text-[var(--gov-danger)]">{{ deleteTarget.count }} 条</span>
-          记录。
+          将删除提交记录
+          <span class="font-medium text-[var(--gov-text)]">"{{ submissionLabel(deleteTarget) }}"</span>
+          中的
+          <span class="font-medium text-[var(--gov-danger)]">{{ deleteTarget.count }} 份</span>
+          材料。
         </p>
-        <p class="mb-4 truncate text-xs text-slate-400">{{ deleteTarget.folder }}</p>
+        <p class="mb-4 truncate text-xs text-slate-400">{{ submissionMeta(deleteTarget) }}</p>
         <div class="flex justify-end space-x-2">
           <button class="rounded border border-[var(--gov-border)] px-3 py-1.5 text-xs text-[var(--gov-text-muted)] hover:bg-slate-50" @click="deleteTarget = null">
             取消
@@ -141,23 +127,19 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 
-import { deleteTasksByFolder, exportArchiveRecords, getFolders, getTasks } from '../api/ocr.js'
+import { deleteTasksBySubmission, getTaskSubmissions, getTasks } from '../api/ocr.js'
 
 const emit = defineEmits(['view-result', 'batch-context'])
-
-const router = useRouter()
 
 const groups = ref([])
 const loading = ref(true)
 const deleteTarget = ref(null)
 const deleting = ref(false)
-const loadState = ref('idle')
 const loadMessage = ref('')
-const expandedFolders = reactive({})
-const folderTasks = reactive({})
+const expandedSubmissions = reactive({})
+const submissionTasks = reactive({})
 
 function extractErrorText(error) {
   return `${error?.response?.data?.detail || error?.response?.data || ''} ${error?.message || ''}`.replace(/\s+/g, ' ').trim()
@@ -179,106 +161,87 @@ function isTransientNetworkError(error) {
   )
 }
 
-const emptyMessage = computed(() => {
-  if (loadMessage.value) return loadMessage.value
-  return '暂无处理记录，请先导入材料。'
-})
+const emptyMessage = computed(() => loadMessage.value || '暂无处理记录，请先提交材料。')
 
-async function loadFolders() {
+async function loadSubmissions() {
   loading.value = true
-  loadState.value = 'loading'
   loadMessage.value = ''
 
   try {
-    const { data } = await getFolders()
+    const { data } = await getTaskSubmissions()
     groups.value = data || []
-    loadState.value = 'ready'
   } catch (error) {
     groups.value = []
     if (isBackendUnavailableError(error)) {
-      loadState.value = 'backend-unavailable'
       loadMessage.value = '后端服务暂未启动或尚未就绪，处理记录将在服务恢复后显示。'
       return
     }
     if (isTransientNetworkError(error)) {
-      loadState.value = 'network-changed'
       loadMessage.value = '网络环境已变化，请稍后重试。'
       return
     }
-    loadState.value = 'error'
     loadMessage.value = '处理记录暂时无法加载，请稍后重试。'
-    console.error('Load folders failed', error)
+    console.error('Load submissions failed', error)
   } finally {
     loading.value = false
   }
 }
 
-async function toggleFolder(folder) {
-  expandedFolders[folder] = !expandedFolders[folder]
-  if (expandedFolders[folder] && !folderTasks[folder]) {
-    folderTasks[folder] = { loading: true, tasks: [] }
+async function toggleSubmission(submissionId) {
+  expandedSubmissions[submissionId] = !expandedSubmissions[submissionId]
+  if (expandedSubmissions[submissionId] && !submissionTasks[submissionId]) {
+    submissionTasks[submissionId] = { loading: true, tasks: [] }
 
-    const group = groups.value.find((g) => g.folder === folder)
-    const batchId = group?.batch_ids?.[0] || ''
-
-    if (batchId) {
-      emit('batch-context', { folder, batchId })
+    const group = groups.value.find((item) => item.submission_id === submissionId)
+    if (group?.batch_id) {
+      emit('batch-context', { submissionId, batchId: group.batch_id })
     }
 
     try {
-      const { data } = await getTasks(1, 200, folder)
-      folderTasks[folder] = { loading: false, tasks: data?.tasks || [] }
+      const { data } = await getTasks(1, 200, '', submissionId)
+      submissionTasks[submissionId] = { loading: false, tasks: data?.tasks || [] }
     } catch (error) {
-      console.error('Load folder tasks failed', error)
-      folderTasks[folder] = { loading: false, tasks: [] }
+      console.error('Load submission tasks failed', error)
+      submissionTasks[submissionId] = { loading: false, tasks: [] }
     }
   }
 }
 
-function refresh() {
-  Object.keys(expandedFolders).forEach((k) => { expandedFolders[k] = false })
-  Object.keys(folderTasks).forEach((k) => delete folderTasks[k])
-  loadFolders()
+function inferFolderPath(filePath = '') {
+  const normalized = String(filePath || '')
+  if (!normalized) return ''
+  const slashIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+  return slashIndex >= 0 ? normalized.slice(0, slashIndex) : ''
 }
 
-function getLatestBatchId(group) {
-  return group.batch_ids?.[0] || ''
-}
-
-function doExportArchive(group) {
-  const batchId = getLatestBatchId(group)
-  exportArchiveRecords({
-    folder: group.folder,
-    batch_id: batchId,
-    filename: `${folderLabel(group.folder)}_archive.xlsx`,
+function emitViewResult(taskId, options = {}) {
+  if (!taskId) return
+  emit('view-result', {
+    taskId,
+    folder: String(options.folder || '').trim(),
+    submissionId: String(options.submissionId || '').trim(),
+    batchId: String(options.batchId || '').trim(),
   })
 }
 
-function openBatchInsights(group) {
-  const batchId = getLatestBatchId(group)
-  if (batchId) {
-    router.push(`/batch-insights/${encodeURIComponent(batchId)}`)
-  }
-}
-
-function openLatestResult(group) {
-  if (group.latest_task_id) {
-    emit('view-result', group.latest_task_id)
-  }
+function refresh() {
+  Object.keys(expandedSubmissions).forEach((key) => { expandedSubmissions[key] = false })
+  Object.keys(submissionTasks).forEach((key) => delete submissionTasks[key])
+  loadSubmissions()
 }
 
 function canOpenTask(task) {
   return ['done', 'failed', 'human_review'].includes(String(task?.status || ''))
 }
 
-defineExpose({ refresh, groups })
-onMounted(() => loadFolders())
+function submissionLabel(group) {
+  return group?.submission_name || '未命名提交'
+}
 
-function folderLabel(folder) {
-  if (!folder) return '未知目录'
-  const normalized = folder.replace(/\\/g, '/')
-  const parts = normalized.split('/').filter(Boolean)
-  return parts.at(-1) || folder
+function submissionMeta(group) {
+  const username = group?.submitter_username || '匿名用户'
+  const batchSuffix = group?.batch_id ? ` · 批次 ${group.batch_id}` : ''
+  return `提交人：${username}${batchSuffix}`
 }
 
 function formatTime(value) {
@@ -290,16 +253,19 @@ function confirmDelete(group) {
 }
 
 async function doDelete() {
-  if (!deleteTarget.value) return
+  if (!deleteTarget.value?.submission_id) return
   deleting.value = true
   try {
-    await deleteTasksByFolder(deleteTarget.value.folder)
+    await deleteTasksBySubmission(deleteTarget.value.submission_id)
     deleteTarget.value = null
-    await loadFolders()
+    await loadSubmissions()
   } catch (error) {
-    console.error('Delete folder failed', error)
+    console.error('Delete submission failed', error)
   } finally {
     deleting.value = false
   }
 }
+
+defineExpose({ refresh, groups })
+onMounted(() => loadSubmissions())
 </script>

@@ -78,6 +78,7 @@ async def ai_merge_extract_batch(
             batch_id=batch_id,
             include_evidence=body.include_evidence,
             force_refresh=body.force_refresh,
+            similarity_threshold=body.similarity_threshold,
             db=db,
         )
     except Exception as error:  # noqa: BLE001
@@ -92,12 +93,14 @@ async def ai_merge_extract_batch(
 async def batch_boundary_analysis(
     batch_id: str,
     force_refresh: bool = False,
+    similarity_threshold: int | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     try:
         payload = await get_batch_boundary_analysis(
             batch_id=batch_id,
             force_refresh=force_refresh,
+            similarity_threshold=similarity_threshold,
             db=db,
         )
     except Exception as error:  # noqa: BLE001

@@ -45,6 +45,8 @@ public class TaskStorageService {
     private final PathAccessService pathAccessService;
     private final HttpClient httpClient;
     private final Path uploadRoot;
+    private final Object remoteBucketLock = new Object();
+    private volatile boolean remoteBucketEnsured = false;
 
     public TaskStorageService(StorageProperties properties, PathAccessService pathAccessService) throws IOException {
         this.properties = properties;
@@ -157,6 +159,7 @@ public class TaskStorageService {
 
     private void uploadRemoteObject(String bucket, String objectKey, String contentType, byte[] content) throws IOException {
         ensureRemoteConfigured();
+        ensureRemoteBucketExists(bucket);
         URI uri = buildObjectUri(bucket, objectKey);
         HttpRequest request = signedRequest("PUT", uri, content, contentType);
         sendExpectingSuccess(request, "Failed to upload object to MinIO/OSS.");
@@ -170,11 +173,13 @@ public class TaskStorageService {
     }
 
     private HttpRequest signedRequest(String method, URI uri, byte[] payload, String contentType) {
+        String normalizedMethod = safe(method, "GET").toUpperCase(Locale.ROOT);
         Instant now = Instant.now();
         String amzDate = AMZ_DATE_FORMAT.format(now);
         String dateStamp = DATE_STAMP_FORMAT.format(now);
         byte[] safePayload = payload == null ? EMPTY_BYTES : payload;
-        String payloadHash = "GET".equalsIgnoreCase(method) ? EMPTY_SHA256 : sha256Hex(safePayload);
+        boolean sendsPayload = "PUT".equals(normalizedMethod);
+        String payloadHash = sendsPayload ? sha256Hex(safePayload) : EMPTY_SHA256;
 
         String hostHeader = hostHeader(uri);
         String canonicalHeaders = "host:" + hostHeader + "\n"
@@ -182,7 +187,7 @@ public class TaskStorageService {
                 + "x-amz-date:" + amzDate + "\n";
         String signedHeaders = "host;x-amz-content-sha256;x-amz-date";
         String credentialScope = dateStamp + "/" + safe(properties.getRegion(), "us-east-1") + "/s3/aws4_request";
-        String canonicalRequest = method.toUpperCase(Locale.ROOT) + "\n"
+        String canonicalRequest = normalizedMethod + "\n"
                 + safe(uri.getRawPath()) + "\n"
                 + safe(uri.getRawQuery()) + "\n"
                 + canonicalHeaders + "\n"
@@ -206,10 +211,12 @@ public class TaskStorageService {
         if (StringUtils.hasText(contentType)) {
             builder.header("Content-Type", contentType);
         }
-        if ("PUT".equalsIgnoreCase(method)) {
-            return builder.PUT(HttpRequest.BodyPublishers.ofByteArray(safePayload)).build();
-        }
-        return builder.GET().build();
+        return builder.method(
+                normalizedMethod,
+                sendsPayload
+                        ? HttpRequest.BodyPublishers.ofByteArray(safePayload)
+                        : HttpRequest.BodyPublishers.noBody()
+        ).build();
     }
 
     private void sendExpectingSuccess(HttpRequest request, String message) throws IOException {
@@ -244,18 +251,24 @@ public class TaskStorageService {
     }
 
     private URI buildObjectUri(String bucket, String objectKey) {
+        URI bucketUri = buildBucketUri(bucket);
+        String encodedKey = encodeObjectKey(objectKey);
+        String separator = bucketUri.getPath().endsWith("/") ? "" : "/";
+        return URI.create(bucketUri.toString() + separator + encodedKey);
+    }
+
+    private URI buildBucketUri(String bucket) {
         String endpoint = safe(properties.getEndpoint()).replaceAll("/+$", "");
         if (!StringUtils.hasText(endpoint)) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "S3 storage endpoint is not configured.");
         }
-        String encodedKey = encodeObjectKey(objectKey);
         if (properties.isPathStyle()) {
-            return URI.create(endpoint + "/" + encodePathSegment(bucket) + "/" + encodedKey);
+            return URI.create(endpoint + "/" + encodePathSegment(bucket));
         }
         URI baseUri = URI.create(endpoint);
         String authority = encodePathSegment(bucket) + "." + baseUri.getHost()
                 + (baseUri.getPort() > 0 ? ":" + baseUri.getPort() : "");
-        return URI.create(baseUri.getScheme() + "://" + authority + "/" + encodedKey);
+        return URI.create(baseUri.getScheme() + "://" + authority + "/");
     }
 
     private void ensureRemoteConfigured() {
@@ -270,6 +283,45 @@ public class TaskStorageService {
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     "S3 storage backend is incomplete: missing " + String.join(", ", missing)
             );
+        }
+    }
+
+    private void ensureRemoteBucketExists(String bucket) throws IOException {
+        if (remoteBucketEnsured) {
+            return;
+        }
+        synchronized (remoteBucketLock) {
+            if (remoteBucketEnsured) {
+                return;
+            }
+            URI bucketUri = buildBucketUri(bucket);
+            HttpRequest headRequest = signedRequest("HEAD", bucketUri, EMPTY_BYTES, null);
+            try {
+                HttpResponse<byte[]> headResponse = httpClient.send(headRequest, HttpResponse.BodyHandlers.ofByteArray());
+                if (headResponse.statusCode() >= 200 && headResponse.statusCode() < 300) {
+                    remoteBucketEnsured = true;
+                    return;
+                }
+                if (headResponse.statusCode() != 404) {
+                    throw new ResponseStatusException(
+                            HttpStatus.BAD_GATEWAY,
+                            "Failed to verify MinIO/OSS bucket. status=" + headResponse.statusCode()
+                    );
+                }
+                HttpRequest createRequest = signedRequest("PUT", bucketUri, EMPTY_BYTES, null);
+                HttpResponse<byte[]> createResponse = httpClient.send(createRequest, HttpResponse.BodyHandlers.ofByteArray());
+                if ((createResponse.statusCode() < 200 || createResponse.statusCode() >= 300)
+                        && createResponse.statusCode() != 409) {
+                    throw new ResponseStatusException(
+                            HttpStatus.BAD_GATEWAY,
+                            "Failed to create MinIO/OSS bucket. status=" + createResponse.statusCode()
+                    );
+                }
+                remoteBucketEnsured = true;
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Failed to verify or create MinIO bucket.", error);
+            }
         }
     }
 

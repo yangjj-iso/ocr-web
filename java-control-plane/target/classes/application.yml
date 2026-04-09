@@ -46,13 +46,13 @@ ocr:
     cookie-same-site: ${AUTH_COOKIE_SAMESITE:lax}
     session-ttl: ${AUTH_SESSION_TTL:28800}
   storage:
-    backend: ${OCR_STORAGE_BACKEND:local}
+    backend: ${OCR_STORAGE_BACKEND:s3}
     upload-dir: ${OCR_STORAGE_UPLOAD_DIR:./uploads-java}
     bucket: ${OCR_STORAGE_BUCKET:ocr-source}
-    endpoint: ${OCR_STORAGE_ENDPOINT:}
+    endpoint: ${OCR_STORAGE_ENDPOINT:http://127.0.0.1:9000}
     region: ${OCR_STORAGE_REGION:us-east-1}
-    access-key: ${OCR_STORAGE_ACCESS_KEY:}
-    secret-key: ${OCR_STORAGE_SECRET_KEY:}
+    access-key: ${OCR_STORAGE_ACCESS_KEY:admin}
+    secret-key: ${OCR_STORAGE_SECRET_KEY:admin123456}
     key-prefix: ${OCR_STORAGE_KEY_PREFIX:uploads}
     path-style: ${OCR_STORAGE_PATH_STYLE:true}
   local-path:
