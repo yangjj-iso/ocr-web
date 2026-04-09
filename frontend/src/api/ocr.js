@@ -151,6 +151,9 @@ export const getTaskThumbnailUrl = (id) => controlPlaneBackendUrl(`/api/ocr/task
 
 export const getTaskPageImageUrl = (id, pageNum) => controlPlaneBackendUrl(`/api/ocr/tasks/${id}/pages/${pageNum}/image`)
 
+export const getTaskRegionImageUrl = (id, pageNum, regionIndex) =>
+  controlPlaneBackendUrl(`/api/ocr/tasks/${id}/pages/${pageNum}/regions/${regionIndex}/image`)
+
 export const getTaskFields = (id) => controlPlaneApi.get(`/tasks/${id}/extract-fields`)
 
 export const aiExtractFields = (id, options = {}) =>

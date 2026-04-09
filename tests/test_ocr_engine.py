@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from app.core import ocr_engine
 from app.utils import image_preprocess
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 class _FakePipeline:
@@ -34,6 +34,15 @@ class _FakeOCR:
                 ],
             }
         ]
+
+
+def _make_red_seal_image(target: Path) -> None:
+    image = Image.new("RGB", (420, 260), "white")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((85, 35, 275, 225), outline=(220, 20, 40), width=14)
+    draw.ellipse((150, 100, 210, 160), fill=(225, 30, 45))
+    draw.rectangle((20, 20, 70, 40), fill=(0, 0, 0))
+    image.save(target, format="PNG")
 
 
 class OCREngineTests(unittest.TestCase):
@@ -83,6 +92,18 @@ class OCREngineTests(unittest.TestCase):
         self.assertTrue(ocr_engine._rect_contains_point([0, 0, 10, 10], 6, 6))
         self.assertFalse(ocr_engine._rect_contains_point([0, 0, 10, 10], 12, 6))
 
+    def test_baidu_location_to_bbox_supports_point_dict_polygons(self):
+        bbox = ocr_engine._baidu_location_to_bbox(
+            [
+                {"x": 12, "y": 18},
+                {"x": 48, "y": 18},
+                {"x": 48, "y": 60},
+                {"x": 12, "y": 60},
+            ]
+        )
+
+        self.assertEqual(bbox, [12, 18, 48, 60])
+
     def test_ocr_image_basic_returns_lines(self):
         with patch.object(ocr_engine, "_should_use_layout_api", return_value=False), patch.object(
             ocr_engine,
@@ -112,6 +133,35 @@ class OCREngineTests(unittest.TestCase):
 
         api_mock.assert_called_once_with("demo.png", mode_label="ocr_api")
         self.assertEqual(result["lines"][0]["text"], "远端 OCR")
+
+    @unittest.skipIf(ocr_engine.cv2 is None or ocr_engine.np is None, "OpenCV stack unavailable")
+    def test_detect_red_seal_regions_finds_stamp_candidates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "seal-sample.png"
+            _make_red_seal_image(source)
+
+            regions = ocr_engine._detect_red_seal_regions(str(source))
+
+        self.assertGreaterEqual(len(regions), 1)
+        self.assertEqual(regions[0]["type"], "seal")
+        self.assertEqual(regions[0]["agent_meta"]["detected_by"], "opencv_red_seal_detector")
+        self.assertGreater(regions[0]["agent_meta"]["detector_confidence"], 0.4)
+
+    @unittest.skipIf(ocr_engine.cv2 is None or ocr_engine.np is None, "OpenCV stack unavailable")
+    def test_ocr_image_basic_appends_detected_seal_regions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "seal-sample.png"
+            _make_red_seal_image(source)
+
+            with patch.object(ocr_engine, "_should_use_layout_api", return_value=False), patch.object(
+                ocr_engine,
+                "get_ocr",
+                return_value=_FakeOCR(),
+            ):
+                result = ocr_engine.ocr_image_basic(str(source))
+
+        self.assertEqual(len(result["lines"]), 2)
+        self.assertTrue(any(region["type"] == "seal" for region in result["regions"]))
 
     def test_preprocess_image_resizes_large_images_even_when_strategy_is_none(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -248,6 +298,101 @@ class OCREngineTests(unittest.TestCase):
 
         api_mock.assert_called_once_with("demo.png", mode_label="vl_api")
         self.assertEqual(result["regions"][0]["content"], "测试")
+
+    def test_enrich_document_with_baidu_office_seals_appends_seal_region(self):
+        office_payload = {
+            "results": [
+                {
+                    "words": {
+                        "word": "重庆海凌装饰设计工程有限公司",
+                        "poly_location": [
+                            {"x": 116, "y": 120},
+                            {"x": 206, "y": 120},
+                            {"x": 206, "y": 144},
+                            {"x": 116, "y": 144},
+                        ],
+                    },
+                    "line_probability": {"average": 0.98},
+                },
+                {
+                    "words": {
+                        "word": "合同专用章",
+                        "poly_location": [
+                            {"x": 126, "y": 148},
+                            {"x": 192, "y": 148},
+                            {"x": 192, "y": 170},
+                            {"x": 126, "y": 170},
+                        ],
+                    },
+                    "line_probability": {"average": 0.96},
+                },
+            ],
+            "layouts": [
+                {
+                    "layout": "seal",
+                    "layout_location": [
+                        {"x": 100, "y": 100},
+                        {"x": 220, "y": 100},
+                        {"x": 220, "y": 220},
+                        {"x": 100, "y": 220},
+                    ],
+                    "layout_idx": [0, 1],
+                    "layout_probability": 0.93,
+                }
+            ],
+            "seal_recog_results": [
+                {
+                    "type": "circle",
+                    "probability": 0.99,
+                    "location": {"left": 100, "top": 100, "width": 120, "height": 120},
+                    "major": {"words": "重庆海凌装饰设计工程有限公司"},
+                    "minor": [{"words": "合同专用章"}],
+                }
+            ],
+        }
+
+        document = {
+            "page_count": 1,
+            "pages": [{"page_num": 1, "regions": [{"type": "text", "content": "施工说明", "bbox": []}], "lines": []}],
+            "full_text": "施工说明",
+            "mode": "baidu_vl",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "seal-office.png"
+            Image.new("RGB", (320, 240), "white").save(source, format="PNG")
+
+            with (
+                patch.object(ocr_engine, "_can_use_baidu_document_api", return_value=True),
+                patch.object(ocr_engine, "_get_baidu_access_token", return_value="token"),
+                patch.object(ocr_engine, "_call_baidu_doc_analysis_office", return_value=office_payload),
+            ):
+                result = ocr_engine._enrich_document_with_baidu_office_seals(document, str(source))
+
+        seal_regions = [region for region in result["pages"][0]["regions"] if region["type"] == "seal"]
+        self.assertEqual(len(seal_regions), 1)
+        self.assertEqual(seal_regions[0]["layout_bbox"], [100.0, 100.0, 220.0, 220.0])
+        self.assertIn("重庆海凌装饰设计工程有限公司", seal_regions[0]["content"])
+        self.assertEqual(
+            seal_regions[0]["agent_meta"]["detected_by"],
+            "baidu_doc_analysis_office_layout",
+        )
+
+    @unittest.skipIf(ocr_engine.cv2 is None or ocr_engine.np is None, "OpenCV stack unavailable")
+    def test_ocr_document_layout_api_enriches_pages_with_detected_seals(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "seal-sample.png"
+            _make_red_seal_image(source)
+
+            with patch.object(
+                ocr_engine,
+                "_call_layout_api",
+                return_value={"layoutParsingResults": [{"markdown": {"text": "合同正文"}}]},
+            ):
+                result = ocr_engine.ocr_document_layout_api(str(source), mode_label="layout_api")
+
+        self.assertEqual(result["pages"][0]["regions"][0]["type"], "text")
+        self.assertTrue(any(region["type"] == "seal" for region in result["pages"][0]["regions"]))
 
 
 if __name__ == "__main__":

@@ -310,6 +310,13 @@ def _poly_to_list(poly) -> list[list[float]]:
     def _walk(node):
         if hasattr(node, "tolist"):
             node = node.tolist()
+        if isinstance(node, dict):
+            if "x" in node and "y" in node:
+                points.append([_safe_float(node.get("x")), _safe_float(node.get("y"))])
+                return
+            for child in node.values():
+                _walk(child)
+            return
         if isinstance(node, (list, tuple)):
             if (
                 len(node) >= 2
@@ -762,6 +769,71 @@ def _overlap_on_smaller(a: list[float], b: list[float]) -> float:
     return _rect_intersection_area(a, b) / denominator
 
 
+def _merge_seal_regions(
+    page: dict[str, Any],
+    seal_regions: list[dict[str, Any]],
+    *,
+    detector_name: str | None = None,
+) -> dict[str, Any]:
+    page.setdefault("regions", [])
+    page.setdefault("lines", [])
+    if not seal_regions:
+        return page
+
+    regions = list(page.get("regions") or [])
+    added_count = 0
+    for detected in seal_regions:
+        if str(detected.get("type") or "").strip().lower() != "seal":
+            continue
+
+        detected_rect = _region_rect(detected)
+        matched_region = next(
+            (
+                region
+                for region in regions
+                if str(region.get("type") or "").strip().lower() == "seal"
+                and _overlap_on_smaller(detected_rect, _region_rect(region)) >= 0.55
+            ),
+            None,
+        )
+
+        if matched_region is None:
+            regions.append(detected)
+            added_count += 1
+            continue
+
+        detected_meta = dict(detected.get("agent_meta") or {})
+        existing_meta = dict(matched_region.get("agent_meta") or {})
+        if detected_meta:
+            existing_meta.update({key: value for key, value in detected_meta.items() if key not in existing_meta})
+            matched_region["agent_meta"] = existing_meta
+
+        best_content = _choose_best_seal_content(
+            str(matched_region.get("content") or ""),
+            str(detected.get("content") or ""),
+        )
+        if best_content:
+            matched_region["content"] = best_content
+        if not matched_region.get("bbox") and detected.get("bbox"):
+            matched_region["bbox"] = detected["bbox"]
+            matched_region["bbox_type"] = detected.get("bbox_type", "rect")
+        if not matched_region.get("layout_bbox") and detected.get("layout_bbox"):
+            matched_region["layout_bbox"] = detected["layout_bbox"]
+        if not matched_region.get("region_lines") and detected.get("region_lines"):
+            matched_region["region_lines"] = detected["region_lines"]
+
+    page["regions"] = _filter_output_regions(regions)
+    page_meta = dict(page.get("agent_meta") or {})
+    page_meta["seal_region_count"] = sum(
+        1 for region in page["regions"] if str(region.get("type") or "").strip().lower() == "seal"
+    )
+    if detector_name and added_count:
+        page_meta["seal_detector"] = detector_name
+    if page_meta:
+        page["agent_meta"] = page_meta
+    return page
+
+
 def _table_text_from_region(region: dict) -> str:
     table_data = _normalize_table_payload(region.get("table_data"))
     html = region.get("html")
@@ -874,6 +946,210 @@ def _filter_output_regions(regions: list[dict]) -> list[dict]:
         kept.append(region)
 
     return kept
+
+
+def _expand_rect(rect: list[float], width: int, height: int, padding_ratio: float = 0.08) -> list[float]:
+    if len(rect) < 4:
+        return []
+    rect_width = max(0.0, rect[2] - rect[0])
+    rect_height = max(0.0, rect[3] - rect[1])
+    padding_x = max(6.0, rect_width * padding_ratio)
+    padding_y = max(6.0, rect_height * padding_ratio)
+    return [
+        max(0.0, rect[0] - padding_x),
+        max(0.0, rect[1] - padding_y),
+        min(float(width), rect[2] + padding_x),
+        min(float(height), rect[3] + padding_y),
+    ]
+
+
+def _detect_red_seal_regions(image_path: str, *, page_lines: list[dict] | None = None) -> list[dict]:
+    if cv2 is None or np is None:
+        return []
+
+    try:
+        image = _cv_imread(image_path)
+    except Exception:
+        logger.debug("印章颜色检测跳过，图片读取失败: %s", image_path, exc_info=True)
+        return []
+
+    if image is None or not getattr(image, "size", 0):
+        return []
+
+    page_height, page_width = image.shape[:2]
+    if page_height <= 0 or page_width <= 0:
+        return []
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    red_mask_low = cv2.inRange(
+        hsv,
+        np.array([0, 35, 45], dtype=np.uint8),
+        np.array([16, 255, 255], dtype=np.uint8),
+    )
+    red_mask_high = cv2.inRange(
+        hsv,
+        np.array([150, 35, 45], dtype=np.uint8),
+        np.array([180, 255, 255], dtype=np.uint8),
+    )
+    red_mask = cv2.bitwise_or(red_mask_low, red_mask_high)
+
+    blue = image[:, :, 0]
+    green = image[:, :, 1]
+    red = image[:, :, 2]
+    red_bias = (red.astype(np.int16) - np.maximum(blue, green).astype(np.int16)) >= 24
+    bright_red = red >= 72
+    red_mask = cv2.bitwise_or(red_mask, ((red_bias & bright_red).astype(np.uint8) * 255))
+
+    if cv2.countNonZero(red_mask) == 0:
+        return []
+
+    cluster_kernel_size = max(5, int(round(min(page_width, page_height) * 0.022)))
+    if cluster_kernel_size % 2 == 0:
+        cluster_kernel_size += 1
+    cluster_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (cluster_kernel_size, cluster_kernel_size),
+    )
+
+    clustered = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, cluster_kernel, iterations=2)
+    clustered = cv2.dilate(clustered, cluster_kernel, iterations=1)
+
+    total_area = float(page_width * page_height)
+    min_short_edge = max(24, int(min(page_width, page_height) * 0.07))
+    min_bbox_area = max(900, int(total_area * 0.004))
+
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(clustered, connectivity=8)
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for label_idx in range(1, num_labels):
+        x, y, width, height, _ = stats[label_idx]
+        if width <= 0 or height <= 0:
+            continue
+
+        bbox_area = int(width * height)
+        if bbox_area < min_bbox_area:
+            continue
+
+        short_edge = min(width, height)
+        long_edge = max(width, height)
+        if short_edge < min_short_edge:
+            continue
+
+        aspect_ratio = long_edge / max(short_edge, 1)
+        if aspect_ratio > 2.3:
+            continue
+
+        bbox_area_ratio = bbox_area / total_area
+        if bbox_area_ratio > 0.45:
+            continue
+
+        raw_region_mask = red_mask[y:y + height, x:x + width]
+        red_pixels = int(cv2.countNonZero(raw_region_mask))
+        if red_pixels < max(160, int(min_bbox_area * 0.12)):
+            continue
+
+        red_fill_ratio = red_pixels / float(bbox_area)
+        if red_fill_ratio < 0.025:
+            continue
+
+        rect = _expand_rect([float(x), float(y), float(x + width), float(y + height)], page_width, page_height)
+        content = _seal_content_from_lines(rect, page_lines or [], raw_content="")
+
+        confidence = 0.35
+        if aspect_ratio <= 1.35:
+            confidence += 0.22
+        elif aspect_ratio <= 1.7:
+            confidence += 0.1
+        confidence += min(red_fill_ratio / 0.18, 1.0) * 0.22
+        confidence += min(bbox_area_ratio / 0.08, 1.0) * 0.16
+        if content:
+            confidence += 0.08
+        confidence = round(min(confidence, 0.99), 4)
+
+        candidates.append(
+            (
+                confidence,
+                {
+                    "type": "seal",
+                    "bbox": rect,
+                    "bbox_type": "rect",
+                    "layout_bbox": rect,
+                    "content": content,
+                    "agent_meta": {
+                        "detected_by": "opencv_red_seal_detector",
+                        "detector_confidence": confidence,
+                        "bbox_ratio": [
+                            round(rect[0] / page_width, 4),
+                            round(rect[1] / page_height, 4),
+                            round(rect[2] / page_width, 4),
+                            round(rect[3] / page_height, 4),
+                        ],
+                        "red_fill_ratio": round(red_fill_ratio, 4),
+                        "red_pixel_count": red_pixels,
+                        "page_size": [int(page_width), int(page_height)],
+                    },
+                },
+            )
+        )
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    detected_regions: list[dict[str, Any]] = []
+    for _, region in candidates:
+        region_rect = _region_rect(region)
+        if any(_overlap_on_smaller(region_rect, _region_rect(existing)) >= 0.7 for existing in detected_regions):
+            continue
+        detected_regions.append(region)
+    return detected_regions
+
+
+def _merge_detected_seal_regions(
+    page: dict[str, Any],
+    image_path: str,
+    *,
+    page_lines: list[dict] | None = None,
+) -> dict[str, Any]:
+    page.setdefault("regions", [])
+    page.setdefault("lines", [])
+
+    seal_regions = _detect_red_seal_regions(image_path, page_lines=page_lines or page.get("lines") or [])
+    if not seal_regions:
+        return page
+    return _merge_seal_regions(page, seal_regions, detector_name="opencv_red_seal_detector")
+
+
+def _enrich_document_with_detected_seals(document: dict[str, Any], file_path: str) -> dict[str, Any]:
+    pages = document.get("pages") or []
+    if not isinstance(pages, list) or not pages:
+        return document
+
+    file_ext = Path(file_path).suffix.lower()
+    temp_images: list[str] = []
+    image_paths: list[str] = []
+
+    try:
+        if file_ext == ".pdf":
+            image_paths = pdf_to_images(file_path)
+            temp_images.extend(image_paths)
+        else:
+            image_paths = [file_path]
+
+        for index, page in enumerate(pages):
+            if not isinstance(page, dict):
+                continue
+            if index >= len(image_paths):
+                break
+            pages[index] = _merge_detected_seal_regions(page, image_paths[index])
+    finally:
+        for tmp in temp_images:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    document["pages"] = pages
+    return document
 
 
 def _extract_page_lines(res, line_num_start: int = 0) -> tuple[list[dict], int]:
@@ -1011,6 +1287,7 @@ def get_vl_pipeline():
 def ocr_document_layout_api(file_path: str, *, mode_label: str = "layout_api") -> dict:
     """Call the remote PaddleOCR layout API and normalize its result."""
     document = _map_layout_api_result_to_document(_call_layout_api(file_path))
+    document = _enrich_document_with_detected_seals(document, file_path)
     document["mode"] = mode_label
     return document
 
@@ -1049,7 +1326,7 @@ def ocr_image_basic(image_path: str) -> dict:
                         "bbox": bbox,
                     }
                 )
-    return {"lines": lines}
+    return _merge_detected_seal_regions({"regions": [], "lines": lines}, image_path, page_lines=lines)
 
 
 def ocr_image_with_layout(image_path: str) -> dict:
@@ -1113,7 +1390,11 @@ def ocr_image_with_layout(image_path: str) -> dict:
                 region["region_lines"] = region_lines
             regions.append(region)
 
-    return {"regions": _filter_output_regions(regions), "lines": lines}
+    return _merge_detected_seal_regions(
+        {"regions": _filter_output_regions(regions), "lines": lines},
+        image_path,
+        page_lines=lines,
+    )
 
 
 def ocr_image_with_vl(image_path: str) -> dict:
@@ -1175,7 +1456,11 @@ def ocr_image_with_vl(image_path: str) -> dict:
                 region["region_lines"] = region_lines
             regions.append(region)
 
-    return {"regions": _filter_output_regions(regions), "lines": []}
+    return _merge_detected_seal_regions(
+        {"regions": _filter_output_regions(regions), "lines": []},
+        image_path,
+        page_lines=page_lines,
+    )
 
 
 def pdf_to_images(pdf_path: str) -> list[str]:
@@ -1610,6 +1895,9 @@ def _baidu_location_to_bbox(raw_location: Any) -> list[float]:
         return []
 
     first_item = raw_location[0]
+    if isinstance(first_item, dict):
+        poly = _poly_to_list(raw_location)
+        return _rect_from_polys([poly]) if poly else []
     if isinstance(first_item, (list, tuple)):
         poly = _poly_to_list(raw_location)
         return _rect_from_polys([poly]) if poly else []
@@ -1630,6 +1918,326 @@ def _baidu_location_to_bbox(raw_location: Any) -> list[float]:
         return [x, y, x + width, y + height]
 
     return []
+
+
+def _rect_to_poly(rect: list[float]) -> list[list[float]]:
+    if len(rect) < 4:
+        return []
+    x1, y1, x2, y2 = rect
+    return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+
+def _baidu_location_to_poly(raw_location: Any) -> list[list[float]]:
+    poly = _poly_to_list(raw_location)
+    if poly:
+        return poly
+    return _rect_to_poly(_baidu_location_to_bbox(raw_location))
+
+
+def _baidu_probability_value(value: Any) -> float:
+    if isinstance(value, dict):
+        for key in ("probability", "average", "score", "confidence"):
+            if key in value:
+                return _safe_float(value.get(key))
+        return 0.0
+    if isinstance(value, (list, tuple)):
+        scores = [_baidu_probability_value(item) for item in value]
+        scores = [score for score in scores if score > 0]
+        return round(sum(scores) / len(scores), 4) if scores else 0.0
+    return _safe_float(value)
+
+
+def _baidu_office_word_text(word_payload: Any) -> str:
+    if isinstance(word_payload, dict):
+        return str(word_payload.get("word") or word_payload.get("words") or "").strip()
+    return str(word_payload or "").strip()
+
+
+def _extract_baidu_office_page_lines(raw_result: dict[str, Any]) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    for line_num, result in enumerate(raw_result.get("results") or [], start=1):
+        words_payload = result.get("words")
+        line_text = ""
+        line_poly: list[list[float]] = []
+
+        if isinstance(words_payload, list):
+            texts = [_baidu_office_word_text(item) for item in words_payload]
+            line_text = "".join(text for text in texts if text)
+            polys = [
+                _baidu_location_to_poly(
+                    item.get("poly_location")
+                    or item.get("words_location")
+                    or item.get("location")
+                    or []
+                )
+                for item in words_payload
+                if isinstance(item, dict)
+            ]
+            polys = [poly for poly in polys if poly]
+            if polys:
+                line_poly = _rect_to_poly(_rect_from_polys(polys))
+        elif isinstance(words_payload, dict):
+            line_text = _baidu_office_word_text(words_payload)
+            line_poly = _baidu_location_to_poly(
+                words_payload.get("poly_location")
+                or words_payload.get("words_location")
+                or words_payload.get("location")
+                or []
+            )
+        else:
+            line_text = str(result.get("word") or result.get("words") or "").strip()
+
+        if not line_poly:
+            line_poly = _baidu_location_to_poly(
+                result.get("poly_location")
+                or result.get("words_location")
+                or result.get("location")
+                or []
+            )
+        if not line_text:
+            continue
+
+        lines.append(
+            {
+                "line_num": line_num,
+                "text": line_text,
+                "confidence": round(
+                    _baidu_probability_value(result.get("line_probability") or result.get("probability") or 0.0),
+                    4,
+                ),
+                "bbox": line_poly,
+                "bbox_type": "poly" if line_poly else "rect",
+            }
+        )
+    return lines
+
+
+def _baidu_office_layout_indices(layout: dict[str, Any]) -> list[int]:
+    raw_indices = layout.get("layout_idx") or []
+    if not isinstance(raw_indices, (list, tuple)):
+        raw_indices = [raw_indices]
+
+    indices: list[int] = []
+    for raw_value in raw_indices:
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            indices.append(value)
+    return indices
+
+
+def _baidu_office_layout_lines(layout: dict[str, Any], page_lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for index in _baidu_office_layout_indices(layout):
+        if index in seen or index < 0 or index >= len(page_lines):
+            continue
+        seen.add(index)
+        selected.append(_copy_line_payload(page_lines[index]))
+    return selected
+
+
+def _baidu_office_seal_text(seal_result: dict[str, Any]) -> str:
+    segments: list[str] = []
+    major = seal_result.get("major")
+    if isinstance(major, dict):
+        major_text = str(major.get("words") or major.get("word") or "").strip()
+        if major_text:
+            segments.append(major_text)
+
+    for minor in seal_result.get("minor") or []:
+        if not isinstance(minor, dict):
+            continue
+        minor_text = str(minor.get("words") or minor.get("word") or "").strip()
+        if minor_text:
+            segments.append(minor_text)
+
+    return _normalize_seal_content("\n".join(segments))
+
+
+def _extract_baidu_office_seal_regions(raw_result: dict[str, Any]) -> list[dict[str, Any]]:
+    page_lines = _extract_baidu_office_page_lines(raw_result)
+    seal_regions: list[dict[str, Any]] = []
+
+    for layout in raw_result.get("layouts") or []:
+        raw_type = str(layout.get("layout") or layout.get("type") or "").strip().lower()
+        if raw_type not in {"seal", "stamp"}:
+            continue
+
+        bbox = _baidu_location_to_bbox(
+            layout.get("layout_location")
+            or layout.get("position")
+            or layout.get("location")
+            or []
+        )
+        if len(bbox) < 4:
+            continue
+
+        region_lines = _baidu_office_layout_lines(layout, page_lines)
+        raw_content = "\n".join(
+            str(line.get("text") or "").strip()
+            for line in region_lines
+            if str(line.get("text") or "").strip()
+        )
+        content = _seal_content_from_lines(bbox, page_lines, raw_content=raw_content)
+
+        region: dict[str, Any] = {
+            "type": "seal",
+            "bbox": bbox,
+            "bbox_type": "rect",
+            "layout_bbox": bbox,
+            "content": content,
+            "agent_meta": {
+                "detected_by": "baidu_doc_analysis_office_layout",
+                "detector_confidence": round(
+                    _baidu_probability_value(layout.get("layout_probability") or layout.get("probability") or 0.0),
+                    4,
+                ),
+            },
+        }
+        if region_lines:
+            region["region_lines"] = region_lines
+        seal_regions.append(region)
+
+    for seal_result in raw_result.get("seal_recog_results") or []:
+        if not isinstance(seal_result, dict):
+            continue
+
+        bbox = _baidu_location_to_bbox(
+            seal_result.get("location")
+            or seal_result.get("seal_location")
+            or []
+        )
+        if len(bbox) < 4:
+            continue
+
+        raw_content = _baidu_office_seal_text(seal_result)
+        content = _seal_content_from_lines(bbox, page_lines, raw_content=raw_content)
+        region: dict[str, Any] = {
+            "type": "seal",
+            "bbox": bbox,
+            "bbox_type": "rect",
+            "layout_bbox": bbox,
+            "content": content,
+            "agent_meta": {
+                "detected_by": "baidu_doc_analysis_office_seal",
+                "detector_confidence": round(_baidu_probability_value(seal_result.get("probability") or 0.0), 4),
+            },
+        }
+
+        seal_type = str(seal_result.get("type") or "").strip()
+        if seal_type:
+            region["agent_meta"]["seal_type"] = seal_type
+        seal_regions.append(region)
+
+    return seal_regions
+
+
+def _call_baidu_doc_analysis_office(
+    file_path: str,
+    *,
+    page_num: int | None = None,
+    token: str | None = None,
+    encoded_file: str | None = None,
+) -> dict[str, Any]:
+    import requests as _requests
+
+    access_token = token or _get_baidu_access_token()
+    payload_file = encoded_file
+    if payload_file is None:
+        payload_file = base64.b64encode(Path(file_path).read_bytes()).decode("utf-8")
+
+    suffix = Path(file_path).suffix.lower()
+    data: dict[str, Any] = {
+        "layout_analysis": "true",
+        "recog_seal": "true",
+        "disp_line_poly": "true",
+        "line_probability": "true",
+    }
+    if suffix == ".pdf":
+        data["pdf_file"] = payload_file
+        if page_num is not None:
+            data["pdf_file_num"] = str(page_num)
+    elif suffix == ".ofd":
+        data["ofd_file"] = payload_file
+        if page_num is not None:
+            data["ofd_file_num"] = str(page_num)
+    else:
+        data["image"] = payload_file
+
+    response = _requests.post(
+        f"https://aip.baidubce.com/rest/2.0/ocr/v1/doc_analysis_office?access_token={access_token}",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data=data,
+        timeout=120,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    error_code = payload.get("error_code")
+    if error_code not in (0, "0", None, ""):
+        raise RuntimeError(
+            f"百度办公文档识别失败 ({error_code}): {payload.get('error_msg', '')}"
+        )
+    return payload
+
+
+def _page_requires_baidu_office_seal_enrichment(page: dict[str, Any]) -> bool:
+    seal_regions = [
+        region
+        for region in (page.get("regions") or [])
+        if str(region.get("type") or "").strip().lower() == "seal"
+    ]
+    if not seal_regions:
+        return True
+    return all(len(_region_rect(region)) < 4 for region in seal_regions)
+
+
+def _enrich_document_with_baidu_office_seals(document: dict[str, Any], file_path: str) -> dict[str, Any]:
+    pages = document.get("pages") or []
+    if not isinstance(pages, list) or not pages or not _can_use_baidu_document_api():
+        return document
+
+    suffix = Path(file_path).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", ".pdf", ".ofd"}:
+        return document
+
+    try:
+        token = _get_baidu_access_token()
+        encoded_file = base64.b64encode(Path(file_path).read_bytes()).decode("utf-8")
+    except Exception as exc:
+        logger.warning("百度办公文档印章增强初始化失败，跳过该步骤：%s", exc)
+        return document
+
+    office_cache: dict[int, dict[str, Any]] = {}
+    for index, page in enumerate(pages, start=1):
+        if not isinstance(page, dict) or not _page_requires_baidu_office_seal_enrichment(page):
+            continue
+
+        office_page_num = index if suffix in {".pdf", ".ofd"} else 1
+        try:
+            if office_page_num not in office_cache:
+                office_cache[office_page_num] = _call_baidu_doc_analysis_office(
+                    file_path,
+                    page_num=office_page_num if suffix in {".pdf", ".ofd"} else None,
+                    token=token,
+                    encoded_file=encoded_file,
+                )
+            seal_regions = _extract_baidu_office_seal_regions(office_cache[office_page_num])
+        except Exception as exc:
+            logger.warning("百度办公文档印章增强失败（page=%s），已跳过：%s", office_page_num, exc)
+            continue
+
+        if seal_regions:
+            pages[index - 1] = _merge_seal_regions(
+                page,
+                seal_regions,
+                detector_name="baidu_doc_analysis_office",
+            )
+
+    document["pages"] = pages
+    return document
 
 
 def _map_baidu_page(baidu_page: dict) -> dict:
@@ -1807,7 +2415,9 @@ def ocr_document_baidu_vl(file_path: str) -> dict:
                 raise RuntimeError("百度任务成功但未返回 parse_result_url")
             raw_resp = _requests.get(parse_result_url, timeout=60)
             raw_resp.raise_for_status()
-            return _map_baidu_result_to_document(raw_resp.json())
+            document = _map_baidu_result_to_document(raw_resp.json())
+            document = _enrich_document_with_baidu_office_seals(document, file_path)
+            return _enrich_document_with_detected_seals(document, file_path)
 
         if status == "failed":
             raise RuntimeError(

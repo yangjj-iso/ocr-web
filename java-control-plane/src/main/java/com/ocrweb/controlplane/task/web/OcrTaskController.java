@@ -3,6 +3,7 @@ package com.ocrweb.controlplane.task.web;
 import com.ocrweb.controlplane.task.dto.TaskDtos;
 import com.ocrweb.controlplane.task.service.AiProxyService;
 import com.ocrweb.controlplane.task.service.OcrTaskService;
+import com.ocrweb.controlplane.task.service.TaskRegionImageService;
 import com.ocrweb.controlplane.auth.service.CurrentUser;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
@@ -33,10 +34,16 @@ import java.util.List;
 public class OcrTaskController {
     private final OcrTaskService taskService;
     private final AiProxyService aiProxyService;
+    private final TaskRegionImageService taskRegionImageService;
 
-    public OcrTaskController(OcrTaskService taskService, AiProxyService aiProxyService) {
+    public OcrTaskController(
+            OcrTaskService taskService,
+            AiProxyService aiProxyService,
+            TaskRegionImageService taskRegionImageService
+    ) {
         this.taskService = taskService;
         this.aiProxyService = aiProxyService;
+        this.taskRegionImageService = taskRegionImageService;
     }
 
     @PostMapping("/upload")
@@ -178,6 +185,18 @@ public class OcrTaskController {
             HttpServletRequest request
     ) {
         return aiProxyService.proxyBinaryGet(aiProxyService.taskPageImagePath(taskId, pageNum), request);
+    }
+
+    @GetMapping("/tasks/{taskId}/pages/{pageNum}/regions/{regionIndex}/image")
+    public ResponseEntity<byte[]> getTaskRegionImage(
+            @PathVariable Long taskId,
+            @PathVariable Integer pageNum,
+            @PathVariable Integer regionIndex
+    ) throws IOException {
+        var payload = taskRegionImageService.buildRegionImage(taskId, pageNum, regionIndex);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(payload.mediaType()))
+                .body(payload.content());
     }
 
     @GetMapping("/tasks/{taskId}/extract-fields")

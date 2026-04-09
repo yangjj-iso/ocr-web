@@ -2,6 +2,7 @@ com\ocrweb\controlplane\task\dto\TaskDtos$TaskResponse.class
 com\ocrweb\controlplane\archive\service\ArchiveRecordService.class
 com\ocrweb\controlplane\task\service\AiProxyCircuitBreaker.class
 com\ocrweb\controlplane\task\dto\TaskDtos$TaskCompletionRequest.class
+com\ocrweb\controlplane\task\service\TaskRegionImageService.class
 com\ocrweb\controlplane\archive\repository\ArchiveRecordRepository.class
 com\ocrweb\controlplane\task\dto\TaskDtos$CallbackProgress.class
 com\ocrweb\controlplane\auth\domain\AppUserEntity.class
@@ -24,6 +25,7 @@ com\ocrweb\controlplane\archive\service\PathAccessService.class
 com\ocrweb\controlplane\auth\service\CurrentUser.class
 com\ocrweb\controlplane\task\dto\TaskDtos$TaskDetailResponse.class
 com\ocrweb\controlplane\auth\service\PasswordHashService.class
+com\ocrweb\controlplane\task\service\TaskRegionImageService$RegionImagePayload.class
 com\ocrweb\controlplane\auth\repository\AppUserRepository.class
 com\ocrweb\controlplane\config\LocalPathProperties.class
 com\ocrweb\controlplane\task\dto\TaskDtos$SubmissionSummaryResponse.class

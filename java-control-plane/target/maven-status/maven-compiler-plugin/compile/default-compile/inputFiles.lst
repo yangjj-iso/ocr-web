@@ -38,6 +38,7 @@ D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlpla
 D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlplane\task\service\AiProxyTimeoutException.java
 D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlplane\task\service\OcrTaskService.java
 D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlplane\task\service\TaskCommandProducer.java
+D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlplane\task\service\TaskRegionImageService.java
 D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlplane\task\service\TaskStorageService.java
 D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlplane\task\web\BatchAiProxyController.java
 D:\Code\work\OCR-WEB-main\java-control-plane\src\main\java\com\ocrweb\controlplane\task\web\InternalTaskCallbackController.java

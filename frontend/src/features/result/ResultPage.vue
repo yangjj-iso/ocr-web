@@ -453,7 +453,18 @@
 
                 <template v-else>
                   <div
-                    v-if="showRegionPreview(item)"
+                    v-if="item.type === 'seal' && hasStandaloneSealImage(item)"
+                    class="mb-3 flex items-center justify-center overflow-hidden rounded-lg border border-red-100 bg-white p-3"
+                  >
+                    <img
+                      :src="standaloneSealImageUrl(item)"
+                      class="max-h-56 w-auto object-contain"
+                      alt="印章抠图"
+                      @error="markStandaloneSealImageFailed(item)"
+                    />
+                  </div>
+                  <div
+                    v-else-if="showRegionPreview(item)"
                     class="mb-3 overflow-hidden rounded-lg border border-gray-200 bg-slate-50"
                     :style="cropFrameStyle(item)"
                   >
@@ -762,6 +773,7 @@ import {
   getTaskFields,
   getTaskFileUrl,
   getTaskPageImageUrl,
+  getTaskRegionImageUrl,
   getTaskThumbnailUrl,
 } from '@/api/ocr.js'
 import EditableTable from '@/components/EditableTable.vue'
@@ -1839,6 +1851,7 @@ const fileUrl = computed(() => {
 })
 
 const pendingActiveKey = ref('')
+const sealImageFailures = ref({})
 const pdfImgFailed = ref(false)
 const previewImageUrl = computed(() => {
   if (isMergedMaterialView.value) {
@@ -2361,6 +2374,8 @@ function mergeDisplayRegions(regions) {
 function buildPageItems(page, pageIndex) {
   if (page?.regions?.length) {
     const indexedRegions = page.regions.map((region, index) => ({ ...region, __sourceIndex: index }))
+    const sourceTaskId = Number(page?._material_source_task_id || 0) || null
+    const sourcePageNum = Number(page?._material_source_page_num || pageIndex + 1)
     return mergeDisplayRegions(filterDisplayRegions(indexedRegions)).map((region, regionIndex) => {
       const { __sourceIndex, __sourceIndices, ...rawRegion } = region
       const sourceIndices = Array.isArray(__sourceIndices) && __sourceIndices.length
@@ -2401,6 +2416,8 @@ function buildPageItems(page, pageIndex) {
         _key: `page-${pageIndex}-region-${sourceIndices.join('-') || regionIndex}`,
         _pageIdx: pageIndex,
         _regionIdx: primaryRegionIndex,
+        _sourceTaskId: sourceTaskId,
+        _sourcePageNum: sourcePageNum,
         _editable: sourceIndices.length <= 1 && displayType === String(rawRegion.type || 'text'),
       }
     })
@@ -2475,6 +2492,9 @@ function hasTableContent(tableData) {
 
 const HTML_IMAGE_TAG_RE = /<img\b[^>]*>/gi
 const MARKDOWN_IMAGE_RE = /!\[[^\]]*]\([^)]+\)/g
+const HTML_IMAGE_INLINE_RE = /<img\b[^>]*>/i
+const MARKDOWN_IMAGE_INLINE_RE = /!\[[^\]]*]\([^)]+\)/i
+const SEAL_BOX_PATH_RE = /img_in_(?:seal|stamp)_box_(\d+)_(\d+)_(\d+)_(\d+)\.(?:png|jpe?g|bmp|webp|tiff?)/i
 
 function sanitizeTableCell(cell) {
   return String(cell || '')
@@ -2519,6 +2539,46 @@ function looksLikeHtmlText(value) {
   if (typeof value !== 'string') return false
   if (looksLikeHtmlTable(value)) return false
   return HTML_TEXT_TAG_RE.test(value) && HTML_TEXT_END_TAG_RE.test(value)
+}
+
+function looksLikeSealSnippet(value) {
+  if (typeof value !== 'string') return false
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return false
+  const hasInlineImage = HTML_IMAGE_INLINE_RE.test(normalized) || MARKDOWN_IMAGE_INLINE_RE.test(normalized)
+  if (!hasInlineImage) return false
+  return ['img_in_seal_box', 'seal_box', 'seal', 'stamp'].some((hint) => normalized.includes(hint))
+}
+
+function looksLikeSealRegion(region) {
+  const regionType = String(region?.type || '').trim().toLowerCase()
+  if (['seal', 'stamp'].includes(regionType)) return true
+
+  const candidates = [
+    String(region?.html || '').trim(),
+    String(region?.content || '').trim(),
+    ...(Array.isArray(region?.region_lines)
+      ? region.region_lines.map((line) => String(line?.text || '').trim()).filter(Boolean)
+      : []),
+  ]
+  return candidates.some((value) => looksLikeSealSnippet(value))
+}
+
+function snippetSealRect(value) {
+  const matched = String(value || '').match(SEAL_BOX_PATH_RE)
+  if (!matched) return []
+  return matched.slice(1, 5).map((item) => Number(item) || 0)
+}
+
+function sealSnippetRect(item) {
+  const candidates = [
+    String(item?.content || '').trim(),
+    String(item?.html || '').trim(),
+    ...(Array.isArray(item?.region_lines)
+      ? item.region_lines.map((line) => String(line?.text || '').trim()).filter(Boolean)
+      : []),
+  ]
+  return candidates.map((value) => snippetSealRect(value)).find((rect) => rect.length >= 4) || []
 }
 
 function normalizeHtmlTextContent(value) {
@@ -2623,6 +2683,9 @@ function renderableRegionType(region, html = '', tableData = null) {
   if (String(region?.type || '') === 'table' || looksLikeHtmlTable(resolvedHtml) || hasTableContent(resolvedTableData)) {
     return 'table'
   }
+  if (looksLikeSealRegion(region)) {
+    return 'seal'
+  }
   return displayRegionType(region?.type)
 }
 
@@ -2690,7 +2753,12 @@ function regionDisplayRect(region) {
 }
 
 function normalizeSealDisplayContent(content) {
-  const lines = String(content || '')
+  const normalized = String(content || '').trim()
+  if (!normalized) return ''
+  if (looksLikeSealSnippet(normalized)) return ''
+  if (looksLikeHtmlText(normalized)) return ''
+
+  const lines = normalized
     .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean)
@@ -3036,7 +3104,36 @@ function regionRect(item) {
     const ys = item.bbox.map((point) => Number(point?.[1]) || 0)
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
   }
+  const snippetRect = sealSnippetRect(item)
+  if (snippetRect.length >= 4) return snippetRect
   return []
+}
+
+function standaloneSealImageUrl(item) {
+  if (item?.type !== 'seal') return ''
+  const regionIndex = Number(item?._regionIdx)
+  if (!Number.isInteger(regionIndex) || regionIndex < 0) return ''
+
+  const sourceTaskId = Number(item?._sourceTaskId || props.id)
+  const sourcePageNum = Number(item?._sourcePageNum || ((Number(item?._pageIdx) || 0) + 1))
+  if (!Number.isInteger(sourceTaskId) || sourceTaskId <= 0) return ''
+  if (!Number.isInteger(sourcePageNum) || sourcePageNum <= 0) return ''
+
+  return getTaskRegionImageUrl(sourceTaskId, sourcePageNum, regionIndex)
+}
+
+function hasStandaloneSealImage(item) {
+  const key = String(item?._key || '')
+  return Boolean(standaloneSealImageUrl(item)) && !sealImageFailures.value[key]
+}
+
+function markStandaloneSealImageFailed(item) {
+  const key = String(item?._key || '')
+  if (!key) return
+  sealImageFailures.value = {
+    ...sealImageFailures.value,
+    [key]: true,
+  }
 }
 
 function showRegionPreview(item) {
@@ -3125,6 +3222,14 @@ watch(previewImageUrl, () => {
   natH.value = 0
   pdfImgFailed.value = false
 })
+
+watch(
+  () => `${props.id}:${task.value?.updated_at || ''}:${isMergedMaterialView.value}:${pages.value.length}`,
+  () => {
+    sealImageFailures.value = {}
+  },
+  { immediate: true }
+)
 
 watch(pageNum, async () => {
   await nextTick()
