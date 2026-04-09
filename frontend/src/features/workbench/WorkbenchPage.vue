@@ -462,9 +462,31 @@ import { buildMergedDocumentViews } from '@/utils/mergeDocumentDisplay.js'
 
 const router = useRouter()
 const historyRef = ref(null)
+const models = [
+  {
+    mode: 'vl',
+    name: getModeMeta('vl').title,
+    desc: getModeMeta('vl').description,
+    icon: 'brain',
+    color: 'indigo',
+    badge: getModeMeta('vl').badge,
+  },
+]
+const availableModelModes = new Set(models.map((model) => model.mode))
+const AUXILIARY_TABS = new Set(['assistant', 'history'])
 const _storedTab = sessionStorage.getItem('ocr:selectedTab')
-const selectedTab = ref(_storedTab || 'vl')
-watch(selectedTab, (v) => sessionStorage.setItem('ocr:selectedTab', v))
+const selectedTab = ref(
+  availableModelModes.has(_storedTab) || AUXILIARY_TABS.has(_storedTab)
+    ? _storedTab
+    : models[0].mode
+)
+watch(selectedTab, (v) => {
+  if (!availableModelModes.has(v) && !AUXILIARY_TABS.has(v)) {
+    selectedTab.value = models[0].mode
+    return
+  }
+  sessionStorage.setItem('ocr:selectedTab', v)
+})
 const aiCapability = useAiCapabilityState()
 
 function sidebarActiveClass(color) {
@@ -493,33 +515,6 @@ function badgeClass(color) {
   }
   return map[color] || 'bg-slate-100 text-slate-600'
 }
-
-const models = [
-  {
-    mode: 'vl',
-    name: getModeMeta('vl').title,
-    desc: getModeMeta('vl').description,
-    icon: 'brain',
-    color: 'indigo',
-    badge: getModeMeta('vl').badge,
-  },
-  {
-    mode: 'layout',
-    name: getModeMeta('layout').title,
-    desc: getModeMeta('layout').description,
-    icon: 'layout',
-    color: 'blue',
-    badge: getModeMeta('layout').badge,
-  },
-  {
-    mode: 'ocr',
-    name: getModeMeta('ocr').title,
-    desc: getModeMeta('ocr').description,
-    icon: 'type',
-    color: 'green',
-    badge: getModeMeta('ocr').badge,
-  },
-]
 
 const hasBatchContext = computed(() => aiCapability.hasBatchContext.value)
 const latestBatchId = computed(() => aiCapability.latestBatchId.value)
