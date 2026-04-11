@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - import guard for incomplete environmen
 
 ARCHIVE_FIELDS = ["档号", "文号", "责任者", "题名", "日期", "页数", "密级", "备注"]
 _LLM_PREFERRED_FIELDS: frozenset[str] = frozenset({"题名", "备注"})
-_MANUAL_REVIEW_FIELDS: frozenset[str] = frozenset({"责任者"})
+_MANUAL_REVIEW_FIELDS: frozenset[str] = frozenset()
 TITLE_TYPES = {"title", "doc_title", "paragraph_title", "content_title", "abstract_title", "reference_title"}
 DOC_NO_PATTERN = re.compile(
     r"[\u4e00-\u9fa5A-Za-z]{2,20}(?:[\[\(（]?\d{4}[\]\)）]?)\s*(?:第\s*)?\d+\s*号"

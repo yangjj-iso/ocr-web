@@ -48,7 +48,71 @@ def _extract_archive_number(filename: str) -> str:
     return ""
 
 
-def extract_fields(filename: str, full_text: str, result_json, page_count: int) -> dict:
+# 通用归档页表格标签 → 标准字段映射
+# 归档页（公文处理单/发文处理单/收文登记等）可能出现在文件首页或末页
+_TABLE_LABEL_MAP: dict[str, str] = {
+    # 题名
+    "文件标题": "题名", "标题": "题名", "题名": "题名", "事由": "题名",
+    "文件名称": "题名", "公文标题": "题名",
+    # 文号
+    "原文号": "文号", "文号": "文号", "发文字号": "文号", "发文号": "文号",
+    "来文文号": "文号", "来文字号": "文号",
+    # 责任者
+    "来文单位": "责任者", "发文单位": "责任者", "发文机关": "责任者",
+    "主送单位": "责任者", "责任者": "责任者", "来文机关": "责任者",
+    "印发单位": "责任者", "制发单位": "责任者",
+    # 日期
+    "收文日期": "日期", "成文日期": "日期", "发文日期": "日期",
+    "印发日期": "日期", "签发日期": "日期",
+    # 密级
+    "密级": "密级", "秘密等级": "密级", "机密等级": "密级",
+    # 备注
+    "备注": "备注",
+}
+
+
+def _extract_from_table_data(result_json) -> dict[str, str]:
+    """从 result_json 中的表格区域提取归档页结构化字段。
+
+    扫描所有页面的 table 类型 region，根据 _TABLE_LABEL_MAP
+    将表格单元格中的标签映射为标准归档字段。
+    支持多列表格布局（如 [标签, 值, 标签, 值]）。
+    """
+    table_fields: dict[str, str] = {}
+    if not result_json:
+        return table_fields
+
+    pages = result_json if isinstance(result_json, list) else [result_json]
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for region in page.get("regions", []):
+            if region.get("type") != "table":
+                continue
+            table_data = region.get("table_data")
+            if not isinstance(table_data, list):
+                continue
+            for row in table_data:
+                if not isinstance(row, list) or len(row) < 2:
+                    continue
+                # 遍历行中的标签-值对（支持 [label, val, label, val, ...] 布局）
+                i = 0
+                while i < len(row) - 1:
+                    cell_label = str(row[i]).strip()
+                    cell_value = str(row[i + 1]).strip()
+                    # 尝试精确匹配标签
+                    target_field = _TABLE_LABEL_MAP.get(cell_label)
+                    if target_field and cell_value and cell_value != "-":
+                        # 优先保留第一个非空匹配（归档页通常只有一组值）
+                        if target_field not in table_fields:
+                            table_fields[target_field] = cell_value
+                        i += 2
+                    else:
+                        i += 1
+    return table_fields
+
+
+def extract_fields(filename: str, full_text: str, result_json, page_count: int, *, file_path: str = "") -> dict:
     """从 OCR 结果中提取关键字段"""
     fields = {
         "档号": "",
@@ -64,30 +128,36 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int) 
     if not full_text:
         full_text = ""
 
+    # ===== 第一优先级：从结构化表格提取（归档页/公文处理单） =====
+    table_fields = _extract_from_table_data(result_json)
+    for field_name, value in table_fields.items():
+        if value and field_name in fields:
+            fields[field_name] = value
+
     # 所有文本（去除多余空格）
     text_clean = re.sub(r'\s+', ' ', full_text).strip()
     lines = [l.strip() for l in full_text.split('\n') if l.strip()]
 
     # --- 档号：从文件名提取 ---
     # 文件名格式如 WS·2024·D10-0311-001.jpg 或 KJ-JJ-2017-02-001-025.jpg
-    fields["档号"] = _extract_archive_number(filename)
+    if not fields["档号"]:
+        fields["档号"] = _extract_archive_number(filename)
 
-    # --- 文号：正则匹配常见公文文号格式 ---
-    # 如：渝人社发〔2015〕188号、XX字〔2024〕XX号
-    wh_patterns = [
-        r'[\u4e00-\u9fa5]+[\[〔\(（]?\d{4}[\]〕\)）]?\s*(?:第\s*)?\d+\s*号',
-        r'[\u4e00-\u9fa5]{2,10}发[\[〔\(（]\d{4}[\]〕\)）]\d+号',
-        r'[\u4e00-\u9fa5]{2,10}[\[〔\(（]\d{4}[\]〕\)）]\s*\d+\s*号',
-    ]
-    for pat in wh_patterns:
-        m = re.search(pat, text_clean)
-        if m:
-            fields["文号"] = m.group(0).strip()
-            break
+    # --- 文号：正则匹配常见公文文号格式（仅当表格未提取到时） ---
+    if not fields["文号"]:
+        wh_patterns = [
+            r'[\u4e00-\u9fa5]+[\[〔\(（]?\d{4}[\]〕\)）]?\s*(?:第\s*)?\d+\s*号',
+            r'[\u4e00-\u9fa5]{2,10}发[\[〔\(（]\d{4}[\]〕\)）]\d+号',
+            r'[\u4e00-\u9fa5]{2,10}[\[〔\(（]\d{4}[\]〕\)）]\s*\d+\s*号',
+        ]
+        for pat in wh_patterns:
+            m = re.search(pat, text_clean)
+            if m:
+                fields["文号"] = m.group(0).strip()
+                break
 
-    # --- 题名：提取文档标题 ---
-    # 优先从 regions 的 doc_title/title 类型提取
-    if result_json:
+    # --- 题名：提取文档标题（仅当表格未提取到时） ---
+    if not fields["题名"] and result_json:
         pages = result_json if isinstance(result_json, list) else [result_json]
         for page in pages:
             if not isinstance(page, dict):
@@ -115,45 +185,48 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int) 
         if candidates:
             fields["题名"] = candidates[0][:100]
 
-    # --- 责任者：发文单位 ---
-    # 常见模式：XX局、XX部、XX委员会等
-    resp_patterns = [
-        r'([\u4e00-\u9fa5]{2,20}(?:局|部|委员会|委|办|厅|院|会|中心|处|科|室))\s*(?:关于|发布|印发)',
-        # 页脚格式: "XX综合部  2024年6月18日印发" — 实体和印发之间有日期
-        r'([\u4e00-\u9fa5]{4,30}(?:局|部|委员会|委|办|厅|院|会|中心|处|科|室))\s+\d{4}\s*年.*?印发',
-        # 公司/集团+部门后缀
-        r'([\u4e00-\u9fa5]{4,30}(?:公司|集团)[\u4e00-\u9fa5]{0,6}(?:局|部|委|办|厅|院|会|中心|处|科|室))',
-        r'([\u4e00-\u9fa5]{4,20}(?:人民政府|人力资源|档案馆|档案局))',
-    ]
-    for pat in resp_patterns:
-        m = re.search(pat, text_clean)
-        if m:
-            fields["责任者"] = m.group(1).strip()
-            break
+    # --- 责任者：发文单位（仅当表格未提取到时） ---
+    if not fields["责任者"]:
+        resp_patterns = [
+            # 页脚格式: "XX综合部  2024年6月18日印发" — 最可靠
+            r'([\u4e00-\u9fa5]{4,30}(?:局|部|委员会|委|办|厅|院|会|中心|处|科|室))\s+\d{4}\s*年.*?印发',
+            # 公司/集团+部门后缀 — 高可信度
+            r'([\u4e00-\u9fa5]{4,30}(?:公司|集团)[\u4e00-\u9fa5]{0,6}(?:局|部|委|办|厅|院|会|中心|处|科|室))',
+            # 通用实体+关于/发布/印发
+            r'([\u4e00-\u9fa5]{2,20}(?:局|部|委员会|委|办|厅|院|会|中心|处|科|室))\s*(?:关于|发布|印发)',
+            r'([\u4e00-\u9fa5]{4,20}(?:人民政府|人力资源|档案馆|档案局))',
+        ]
+        for pat in resp_patterns:
+            m = re.search(pat, text_clean)
+            if m:
+                fields["责任者"] = m.group(1).strip()
+                break
 
-    # 从文号前缀推断责任者
-    if not fields["责任者"] and fields["文号"]:
-        m = re.match(r'([\u4e00-\u9fa5]+)', fields["文号"])
-        if m:
-            fields["责任者"] = m.group(1)
+        # 从文号前缀推断责任者
+        if not fields["责任者"] and fields["文号"]:
+            m = re.match(r'([\u4e00-\u9fa5]+)', fields["文号"])
+            if m:
+                fields["责任者"] = m.group(1)
 
-    # --- 日期 ---
-    date_patterns = [
-        r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日',
-        r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})',
-        r'(\d{4})(\d{2})(\d{2})',
-    ]
-    for pat in date_patterns:
-        m = re.search(pat, text_clean)
-        if m:
-            y, mo, d = m.group(1), m.group(2), m.group(3)
-            fields["日期"] = f"{y}-{int(mo):02d}-{int(d):02d}"
-            break
+    # --- 日期（仅当表格未提取到时） ---
+    if not fields["日期"]:
+        date_patterns = [
+            r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日',
+            r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})',
+            r'(\d{4})(\d{2})(\d{2})',
+        ]
+        for pat in date_patterns:
+            m = re.search(pat, text_clean)
+            if m:
+                y, mo, d = m.group(1), m.group(2), m.group(3)
+                fields["日期"] = f"{y}-{int(mo):02d}-{int(d):02d}"
+                break
 
-    # --- 密级 ---
-    mj_match = re.search(r'(绝密|机密|秘密|内部|公开)', text_clean[:200])
-    if mj_match:
-        fields["密级"] = mj_match.group(1)
+    # --- 密级（仅当表格未提取到时） ---
+    if not fields["密级"]:
+        mj_match = re.search(r'(绝密|机密|秘密|内部|公开)', text_clean[:200])
+        if mj_match:
+            fields["密级"] = mj_match.group(1)
 
     return fields
 

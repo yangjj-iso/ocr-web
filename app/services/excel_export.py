@@ -499,6 +499,26 @@ def _extract_responsible_candidates(text: str) -> list[tuple[str, str]]:
             seen.add(candidate)
     return candidates
 
+def _has_adjacent_issued_footer(item: dict, items: list[dict]) -> bool:
+    """Check if there's a nearby footer/line item on the same page containing '年...印发'.
+
+    Handles the common case where OCR splits the org name and '印发' date
+    into separate items, e.g.:
+      footer y=0.92: "重庆XX公司综合部"
+      footer y=0.93: "2024年6月18日印发"
+    """
+    for other in items:
+        if other is item:
+            continue
+        if other['page_index'] != item['page_index']:
+            continue
+        if abs(other['y_ratio'] - item['y_ratio']) > 0.06:
+            continue
+        if re.search(r'\d{4}\s*年.*?(?:印发|发布|下发)', other['text']):
+            return True
+    return False
+
+
 def _extract_responsible(items: list[dict], doc_no: str) -> str:
     best_value = ''
     best_score = -10**9
@@ -518,6 +538,9 @@ def _extract_responsible(items: list[dict], doc_no: str) -> str:
                 score += 15
             if any(word in item['text'] for word in ('印发', '发布', '下发')):
                 score += 10
+            # ── Adjacent footer "印发" detection (split footer) ──
+            if item['type'] in ('footer', 'line') and item['y_ratio'] > 0.8 and _has_adjacent_issued_footer(item, items):
+                score += 22
             # ── Position signals ──
             if item['page_index'] == item['page_total'] - 1 and item['y_ratio'] > 0.55:
                 score += 12
@@ -670,6 +693,84 @@ def _extract_classification(items: list[dict], full_text: str) -> str:
     match = CLASSIFICATION_PATTERN.search(_normalize_search_text(full_text)[:600])
     return match.group(1) if match else ''
 
+# 通用归档页表格标签 → 标准字段映射
+# 归档页（公文处理单/发文处理单/收文登记等）可能出现在文件首页或末页
+_TABLE_LABEL_MAP: dict[str, str] = {
+    # 题名
+    "文件标题": "题名", "标题": "题名", "题名": "题名", "事由": "题名",
+    "文件名称": "题名", "公文标题": "题名",
+    # 文号
+    "原文号": "文号", "文号": "文号", "发文字号": "文号", "发文号": "文号",
+    "来文文号": "文号", "来文字号": "文号",
+    # 责任者
+    "来文单位": "责任者", "发文单位": "责任者", "发文机关": "责任者",
+    "主送单位": "责任者", "责任者": "责任者", "来文机关": "责任者",
+    "印发单位": "责任者", "制发单位": "责任者",
+    # 日期
+    "收文日期": "日期", "成文日期": "日期", "发文日期": "日期",
+    "印发日期": "日期", "签发日期": "日期",
+    # 密级
+    "密级": "密级", "秘密等级": "密级", "机密等级": "密级",
+    # 备注
+    "备注": "备注",
+}
+
+# 用于从合并单元格（标签与值连写）中提取值的前缀列表
+_TABLE_LABEL_PREFIXES = sorted(_TABLE_LABEL_MAP.keys(), key=len, reverse=True)
+
+
+def _extract_from_table_data(result_json) -> dict[str, str]:
+    """从 result_json 中的表格区域提取归档页结构化字段（fallback 用）。
+
+    扫描所有页面的 table 类型 region，根据 _TABLE_LABEL_MAP
+    将表格单元格中的标签映射为标准归档字段。
+    支持多列表格布局（如 [标签, 值, 标签, 值]）和标签值合并单元格。
+    """
+    table_fields: dict[str, str] = {}
+    if not result_json:
+        return table_fields
+
+    pages = result_json if isinstance(result_json, list) else [result_json]
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for region in page.get("regions", []):
+            if region.get("type") != "table":
+                continue
+            table_data = region.get("table_data")
+            if not isinstance(table_data, list):
+                continue
+            for row in table_data:
+                if not isinstance(row, list) or len(row) < 2:
+                    continue
+                # 遍历行中的标签-值对（支持 [label, val, label, val, ...] 布局）
+                i = 0
+                while i < len(row):
+                    cell_text = str(row[i]).strip()
+                    # Case 1: cell is a known label, next cell is the value
+                    if i + 1 < len(row):
+                        target_field = _TABLE_LABEL_MAP.get(cell_text)
+                        if target_field:
+                            cell_value = str(row[i + 1]).strip()
+                            if cell_value and cell_value != "-":
+                                if target_field not in table_fields:
+                                    table_fields[target_field] = cell_value
+                            i += 2
+                            continue
+                    # Case 2: cell starts with a known label (merged label+value)
+                    matched_prefix = False
+                    for prefix in _TABLE_LABEL_PREFIXES:
+                        if cell_text.startswith(prefix) and len(cell_text) > len(prefix):
+                            target_field = _TABLE_LABEL_MAP[prefix]
+                            cell_value = cell_text[len(prefix):].strip()
+                            if cell_value and target_field not in table_fields:
+                                table_fields[target_field] = cell_value
+                            matched_prefix = True
+                            break
+                    i += 1
+    return table_fields
+
+
 def extract_fields(filename: str, full_text: str, result_json, page_count: int, *, file_path: str = "") -> dict:
     """
     核心业务：从 OCR 结果中提取关键业务字段（用于后续的报表生成）。
@@ -715,6 +816,23 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int, 
 
     # --- 密级 ---
     fields["密级"] = _extract_classification(items, full_text)
+
+    # --- 表格数据（归档页/公文处理单的结构化字段） ---
+    # 策略：如果表格提取到 3+ 个字段 → 该页是归档表单，表格值可信度高，可覆盖噪声
+    #       否则仅作为 fallback 补充空字段（源文件内容优先）
+    table_fields = _extract_from_table_data(result_json)
+    is_archive_form = len(table_fields) >= 3
+    for field_name, value in table_fields.items():
+        if not value or field_name not in fields:
+            continue
+        if is_archive_form:
+            # 归档表单：表格数据覆盖（但保留档号等非表格字段）
+            if field_name != "档号":
+                fields[field_name] = value
+        else:
+            # 非归档表单：仅补充空字段
+            if not fields[field_name]:
+                fields[field_name] = value
 
     return fields
 
