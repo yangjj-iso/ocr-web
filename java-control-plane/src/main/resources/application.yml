@@ -7,9 +7,9 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
   datasource:
-    url: jdbc:postgresql://127.0.0.1:5432/ocr_db
-    username: postgres
-    password: 123456
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5433}/ocr_db}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:123456}
   jpa:
     hibernate:
       ddl-auto: update
@@ -37,7 +37,7 @@ ocr:
     cors-allow-credentials: ${OCR_CORS_ALLOW_CREDENTIALS:true}
     cors-max-age-seconds: ${OCR_CORS_MAX_AGE_SECONDS:3600}
   auth:
-    enabled: ${AUTH_ENABLED:false}
+    enabled: ${AUTH_ENABLED:true}
     username: ${AUTH_USERNAME:admin}
     password: ${AUTH_PASSWORD:change-me}
     secret: ${AUTH_SECRET:change-this-secret}

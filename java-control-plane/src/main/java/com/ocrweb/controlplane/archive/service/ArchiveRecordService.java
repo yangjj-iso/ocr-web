@@ -162,6 +162,13 @@ public class ArchiveRecordService {
         return archiveRecordRepository.deleteByTaskId(taskId);
     }
 
+    public List<ArchiveRecordEntity> findByTaskIds(List<Long> taskIds) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            return List.of();
+        }
+        return archiveRecordRepository.findByTaskIdIn(taskIds);
+    }
+
     public ArchiveDtos.FolderScanResponse scanFolder(String folderPath) {
         Path folder = pathAccessService.ensureAllowedPath(folderPath, false, true);
         List<ArchiveDtos.FolderScanFile> files = new ArrayList<>();
@@ -434,6 +441,7 @@ public class ArchiveRecordService {
                 entity.getPages(),
                 entity.getClassification(),
                 entity.getRemarks(),
+                entity.getStoragePath(),
                 entity.getCreatedAt()
         );
     }

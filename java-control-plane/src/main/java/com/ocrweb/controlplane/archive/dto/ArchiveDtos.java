@@ -23,6 +23,7 @@ public final class ArchiveDtos {
             String pages,
             String classification,
             String remarks,
+            String storagePath,
             OffsetDateTime createdAt
     ) {
     }

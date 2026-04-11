@@ -115,11 +115,12 @@ def write_auth_cookie_for_user(response, user: AppUser) -> None:
         user_id=user.id,
         is_admin=bool(user.is_admin),
         user_status=user.status,
+        role=user.role or "operator",
     )
 
 
 def write_auth_cookie_for_admin(response, username: str) -> None:
-    set_auth_cookie(response, username, is_admin=True, user_status="active")
+    set_auth_cookie(response, username, is_admin=True, user_status="active", role="admin")
 
 
 async def list_pending_users(db: AsyncSession) -> list[AppUser]:

@@ -35,6 +35,20 @@ public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
             """)
     Page<OcrTaskEntity> search(@Param("keyword") String keyword, Pageable pageable);
 
+    @Query("""
+            select distinct t
+            from OcrTaskEntity t
+            left join ArchiveRecordEntity a on a.taskId = t.id
+            where lower(t.filename) like lower(concat('%', :keyword, '%'))
+               or lower(coalesce(t.fullText, '')) like lower(concat('%', :keyword, '%'))
+               or lower(coalesce(a.archiveNo, '')) like lower(concat('%', :keyword, '%'))
+               or lower(coalesce(a.docNo, '')) like lower(concat('%', :keyword, '%'))
+               or lower(coalesce(a.responsible, '')) like lower(concat('%', :keyword, '%'))
+               or lower(coalesce(a.title, '')) like lower(concat('%', :keyword, '%'))
+            order by t.createdAt desc
+            """)
+    Page<OcrTaskEntity> searchWithArchive(@Param("keyword") String keyword, Pageable pageable);
+
     Optional<OcrTaskEntity> findFirstByBatchIdOrderByCreatedAtAsc(String batchId);
 
     List<OcrTaskEntity> findByBatchIdOrderByCreatedAtDesc(String batchId);

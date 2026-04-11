@@ -39,6 +39,45 @@ public final class TaskDtos {
     ) {
     }
 
+    public record SearchResultResponse(
+            Long id,
+            String filename,
+            String filePath,
+            String batchId,
+            String fileType,
+            String mode,
+            String status,
+            Integer pageCount,
+            String snippet,
+            OffsetDateTime createdAt,
+            // archive fields
+            String archiveNo,
+            String docNo,
+            String responsible,
+            String title,
+            String date,
+            String classification,
+            String storagePath
+    ) {
+    }
+
+    public record SearchResponse(long total, List<SearchResultResponse> items) {
+    }
+
+    public record DashboardStatsResponse(
+            long totalTasks,
+            long doneTasks,
+            long processingTasks,
+            long failedTasks,
+            long pendingTasks,
+            long totalPages,
+            List<DailyCount> dailyCounts
+    ) {
+    }
+
+    public record DailyCount(String date, long created, long completed) {
+    }
+
     public record TaskDetailResponse(
             Long id,
             String filename,

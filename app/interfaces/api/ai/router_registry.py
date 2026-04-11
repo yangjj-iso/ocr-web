@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 
+from app.api.admin_users import operator_router, router as admin_router
 from app.api.ai_batches import router as ai_batches_router
 from app.api.evaluation import router as evaluation_router
 from app.api.files import router as files_router
@@ -15,6 +16,8 @@ AI_ROUTERS = (
     qa_router,
     evaluation_router,
     files_router,
+    admin_router,
+    operator_router,
 )
 
 

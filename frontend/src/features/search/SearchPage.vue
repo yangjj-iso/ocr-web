@@ -54,37 +54,49 @@
         <div
           v-for="item in results"
           :key="item.id"
-          class="group flex overflow-hidden rounded-xl border border-[var(--gov-border)] bg-white transition-all"
+          class="group overflow-hidden rounded-xl border border-[var(--gov-border)] bg-white transition-all"
           :class="canOpenResult(item) ? 'cursor-pointer hover:border-[var(--gov-border-strong)] hover:shadow-sm' : 'cursor-not-allowed opacity-90'"
           @click="openResult(item)"
         >
-          <div class="relative h-28 w-32 flex-shrink-0 overflow-hidden bg-slate-100">
-            <img :src="getTaskThumbnailUrl(item.id)" class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-102" />
-          </div>
-
-          <div class="min-w-0 flex-1 px-4 py-3">
-            <div class="mb-1 flex items-center space-x-2">
-              <h3 class="truncate text-sm font-semibold text-[var(--gov-text)]">{{ item.filename }}</h3>
-              <span class="flex-shrink-0 rounded px-1.5 py-0.5 text-xs font-medium" :class="modeClass(item.mode)">
-                {{ modeLabel(item.mode) }}
-              </span>
+          <div class="flex">
+            <div class="relative h-28 w-32 flex-shrink-0 overflow-hidden bg-slate-100">
+              <img :src="getTaskThumbnailUrl(item.id)" class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-102" />
             </div>
 
-            <p v-if="item.snippet" class="mb-2 line-clamp-2 text-xs leading-relaxed gov-muted" v-html="highlightSnippet(item.snippet)"></p>
+            <div class="min-w-0 flex-1 px-4 py-3">
+              <div class="mb-1 flex items-center space-x-2">
+                <h3 class="truncate text-sm font-semibold text-[var(--gov-text)]">{{ item.filename }}</h3>
+                <span class="flex-shrink-0 rounded px-1.5 py-0.5 text-xs font-medium" :class="modeClass(item.mode)">
+                  {{ modeLabel(item.mode) }}
+                </span>
+              </div>
 
-            <div class="flex items-center space-x-3 text-xs gov-muted">
-              <span>{{ item.page_count || 0 }} 页</span>
-              <span>{{ formatTime(item.created_at) }}</span>
-              <span class="flex items-center space-x-1">
-                <span class="h-1.5 w-1.5 rounded-full" :class="statusDot(item.status)"></span>
-                <span>{{ statusLabel(item.status) }}</span>
-              </span>
+              <p v-if="item.title" class="mb-1 truncate text-xs text-[var(--gov-text)]">{{ item.title }}</p>
+              <p v-if="item.snippet" class="mb-2 line-clamp-2 text-xs leading-relaxed gov-muted" v-html="highlightSnippet(item.snippet)"></p>
+
+              <div class="flex items-center space-x-3 text-xs gov-muted">
+                <span>{{ item.page_count || 0 }} 页</span>
+                <span>{{ formatTime(item.created_at) }}</span>
+                <span class="flex items-center space-x-1">
+                  <span class="h-1.5 w-1.5 rounded-full" :class="statusDot(item.status)"></span>
+                  <span>{{ statusLabel(item.status) }}</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="flex items-center px-3 text-slate-300 transition group-hover:text-[var(--gov-primary)]">
+              <svg v-if="canOpenResult(item)" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+              <svg v-else class="h-5 w-5 text-slate-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8v4l2 2" /><circle cx="12" cy="12" r="9" /></svg>
             </div>
           </div>
 
-          <div class="flex items-center px-3 text-slate-300 transition group-hover:text-[var(--gov-primary)]">
-            <svg v-if="canOpenResult(item)" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
-            <svg v-else class="h-5 w-5 text-slate-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8v4l2 2" /><circle cx="12" cy="12" r="9" /></svg>
+          <div v-if="hasArchiveFields(item)" class="flex flex-wrap gap-x-4 gap-y-1 border-t border-[var(--gov-border)] bg-slate-50/80 px-4 py-2 text-[11px] text-[var(--gov-text-muted)]">
+            <span v-if="item.archive_no"><b class="text-[var(--gov-text)]">档号</b> {{ item.archive_no }}</span>
+            <span v-if="item.doc_no"><b class="text-[var(--gov-text)]">文号</b> {{ item.doc_no }}</span>
+            <span v-if="item.responsible"><b class="text-[var(--gov-text)]">责任者</b> {{ item.responsible }}</span>
+            <span v-if="item.date"><b class="text-[var(--gov-text)]">日期</b> {{ item.date }}</span>
+            <span v-if="item.classification"><b class="text-[var(--gov-text)]">密级</b> {{ item.classification }}</span>
+            <span v-if="item.storage_path"><b class="text-[var(--gov-text)]">存放路径</b> {{ item.storage_path }}</span>
           </div>
         </div>
 
@@ -149,7 +161,7 @@ async function doSearch(resetPage = true) {
 
   try {
     const { data } = await searchTasks(keyword, page.value, pageSize)
-    results.value = data.tasks || []
+    results.value = data.items || data.tasks || []
     total.value = data.total || 0
   } catch (_) {
     results.value = []
@@ -213,6 +225,10 @@ function canOpenResult(item) {
 function openResult(item) {
   if (!canOpenResult(item)) return
   router.push(`/result/${item.id}`)
+}
+
+function hasArchiveFields(item) {
+  return item.archive_no || item.doc_no || item.responsible || item.date || item.classification || item.storage_path
 }
 </script>
 

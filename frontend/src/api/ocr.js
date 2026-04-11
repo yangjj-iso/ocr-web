@@ -172,6 +172,8 @@ export const importArchiveFromExcel = (filePath, batchId = '') =>
 
 export const deleteArchiveRecords = (params = {}) => controlPlaneApi.delete('/archive-records', { params: normalizeArchiveRecordParams(params) })
 
+export const getDashboardStats = (days = 7) => controlPlaneApi.get('/dashboard/stats', { params: { days } })
+
 export const ensureFolderBatch = (folder) => controlPlaneApi.post('/folders/ensure-batch', { folder })
 
 export const getTaskFileUrl = (id) => controlPlaneBackendUrl(`/api/ocr/tasks/${id}/file`)

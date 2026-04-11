@@ -3,6 +3,7 @@ package com.ocrweb.controlplane.task.web;
 import com.ocrweb.controlplane.task.dto.TaskDtos;
 import com.ocrweb.controlplane.task.service.AiProxyService;
 import com.ocrweb.controlplane.task.service.OcrTaskService;
+import com.ocrweb.controlplane.auth.service.AuthService;
 import com.ocrweb.controlplane.auth.service.CurrentUser;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
@@ -33,10 +34,12 @@ import java.util.List;
 public class OcrTaskController {
     private final OcrTaskService taskService;
     private final AiProxyService aiProxyService;
+    private final AuthService authService;
 
-    public OcrTaskController(OcrTaskService taskService, AiProxyService aiProxyService) {
+    public OcrTaskController(OcrTaskService taskService, AiProxyService aiProxyService, AuthService authService) {
         this.taskService = taskService;
         this.aiProxyService = aiProxyService;
+        this.authService = authService;
     }
 
     @PostMapping("/upload")
@@ -48,7 +51,8 @@ public class OcrTaskController {
             @RequestParam(name = "batch_id", defaultValue = "") String batchId,
             HttpServletRequest request
     ) throws IOException {
-        return taskService.getTask(taskService.submitUpload(file, relativePath, mode, batchId, currentUsername(request)).getId());
+        CurrentUser currentUser = authService.requireOperatorOrAdmin(request);
+        return taskService.getTask(taskService.submitUpload(file, relativePath, mode, batchId, currentUser).getId());
     }
 
     @PostMapping("/upload-from-path")
@@ -59,7 +63,8 @@ public class OcrTaskController {
             @RequestParam(name = "batch_id", defaultValue = "") String batchId,
             HttpServletRequest servletRequest
     ) throws IOException {
-        return taskService.getTask(taskService.submitExistingPath(request.filePath(), mode, batchId, currentUsername(servletRequest)).getId());
+        CurrentUser currentUser = authService.requireOperatorOrAdmin(servletRequest);
+        return taskService.getTask(taskService.submitExistingPath(request.filePath(), mode, batchId, currentUser).getId());
     }
 
     @GetMapping("/tasks")
@@ -96,26 +101,39 @@ public class OcrTaskController {
     @org.springframework.web.bind.annotation.PutMapping("/tasks/{taskId}")
     public TaskDtos.TaskDetailResponse updateTask(
             @PathVariable Long taskId,
-            @RequestBody TaskDtos.TaskUpdateRequest request
+            @RequestBody TaskDtos.TaskUpdateRequest request,
+            HttpServletRequest servletRequest
     ) {
+        authService.requireOperatorOrAdmin(servletRequest);
         return taskService.updateTask(taskId, request);
     }
 
     @PostMapping("/tasks/{taskId}/human-review/resume")
     public TaskDtos.TaskDetailResponse resumeHumanReview(
             @PathVariable Long taskId,
-            @RequestBody TaskDtos.HumanReviewResumeRequest request
+            @RequestBody TaskDtos.HumanReviewResumeRequest request,
+            HttpServletRequest servletRequest
     ) {
+        authService.requireOperatorOrAdmin(servletRequest);
         return taskService.resumeFromHumanReview(taskId, request);
     }
 
     @GetMapping("/tasks/search")
-    public TaskDtos.TaskListResponse searchTasks(
+    public TaskDtos.SearchResponse searchTasks(
             @RequestParam String q,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize
     ) {
         return taskService.searchTasks(q, page, pageSize);
+    }
+
+    @GetMapping("/dashboard/stats")
+    public TaskDtos.DashboardStatsResponse dashboardStats(
+            @RequestParam(defaultValue = "7") int days,
+            HttpServletRequest request
+    ) {
+        authService.requireAdmin(request);
+        return taskService.getDashboardStats(Math.min(days, 90));
     }
 
     @PostMapping("/tasks/progress")
@@ -124,19 +142,25 @@ public class OcrTaskController {
     }
 
     @DeleteMapping("/tasks/{taskId}")
-    public java.util.Map<String, Object> deleteTask(@PathVariable Long taskId) {
+    public java.util.Map<String, Object> deleteTask(@PathVariable Long taskId, HttpServletRequest request) {
+        authService.requireAdmin(request);
         boolean deleted = taskService.deleteTask(taskId);
         return java.util.Map.of("deleted", deleted, "taskId", taskId);
     }
 
     @DeleteMapping("/tasks/by-folder")
-    public java.util.Map<String, Object> deleteByFolder(@RequestParam String folder) {
+    public java.util.Map<String, Object> deleteByFolder(@RequestParam String folder, HttpServletRequest request) {
+        authService.requireAdmin(request);
         long deleted = taskService.deleteTasksByFolder(folder);
         return java.util.Map.of("deleted", deleted, "folder", folder);
     }
 
     @DeleteMapping("/tasks/by-submission")
-    public java.util.Map<String, Object> deleteBySubmission(@RequestParam("submission_id") String submissionId) {
+    public java.util.Map<String, Object> deleteBySubmission(
+            @RequestParam("submission_id") String submissionId,
+            HttpServletRequest request
+    ) {
+        authService.requireAdmin(request);
         long deleted = taskService.deleteTasksBySubmission(submissionId);
         return java.util.Map.of("deleted", deleted, "submission_id", submissionId);
     }
@@ -144,8 +168,10 @@ public class OcrTaskController {
     @GetMapping("/tasks/{taskId}/export")
     public ResponseEntity<?> exportTask(
             @PathVariable Long taskId,
-            @RequestParam(defaultValue = "txt") String fmt
+            @RequestParam(defaultValue = "txt") String fmt,
+            HttpServletRequest request
     ) {
+        authService.requireOperatorOrAdmin(request);
         TaskDtos.TaskDetailResponse task = taskService.getTask(taskId);
         if ("json".equalsIgnoreCase(fmt)) {
             LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
@@ -196,14 +222,7 @@ public class OcrTaskController {
             @RequestBody(required = false) JsonNode requestBody,
             HttpServletRequest request
     ) {
+        authService.requireOperatorOrAdmin(request);
         return aiProxyService.proxyJsonPost(aiProxyService.taskAiExtractFieldsPath(taskId), requestBody, request);
-    }
-
-    private static String currentUsername(HttpServletRequest request) {
-        Object currentUser = request.getAttribute(CurrentUser.REQUEST_ATTRIBUTE);
-        if (currentUser instanceof CurrentUser user && user.username() != null && !user.username().isBlank()) {
-            return user.username().trim();
-        }
-        return "";
     }
 }

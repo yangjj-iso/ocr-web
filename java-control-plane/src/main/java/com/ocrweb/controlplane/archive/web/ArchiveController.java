@@ -2,6 +2,8 @@ package com.ocrweb.controlplane.archive.web;
 
 import com.ocrweb.controlplane.archive.dto.ArchiveDtos;
 import com.ocrweb.controlplane.archive.service.ArchiveRecordService;
+import com.ocrweb.controlplane.auth.service.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -23,13 +25,16 @@ import java.util.Map;
 @RequestMapping("/api/ocr")
 public class ArchiveController {
     private final ArchiveRecordService archiveRecordService;
+    private final AuthService authService;
 
-    public ArchiveController(ArchiveRecordService archiveRecordService) {
+    public ArchiveController(ArchiveRecordService archiveRecordService, AuthService authService) {
         this.archiveRecordService = archiveRecordService;
+        this.authService = authService;
     }
 
     @GetMapping("/scan-folder")
-    public ArchiveDtos.FolderScanResponse scanFolder(@RequestParam String path) {
+    public ArchiveDtos.FolderScanResponse scanFolder(@RequestParam String path, HttpServletRequest request) {
+        authService.requireOperatorOrAdmin(request);
         return archiveRecordService.scanFolder(path);
     }
 
@@ -54,8 +59,10 @@ public class ArchiveController {
     public ResponseEntity<Resource> exportArchiveRecords(
             @RequestParam(defaultValue = "") String folder,
             @RequestParam(required = false) String batchId,
-            @RequestParam(name = "batch_id", required = false) String legacyBatchId
+            @RequestParam(name = "batch_id", required = false) String legacyBatchId,
+            HttpServletRequest request
     ) {
+        authService.requireOperatorOrAdmin(request);
         Path filePath = archiveRecordService.exportRecords(folder, firstText(batchId, legacyBatchId));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
@@ -63,7 +70,11 @@ public class ArchiveController {
     }
 
     @PostMapping("/archive-records/import-excel")
-    public Map<String, Object> importArchiveRecords(@RequestBody ArchiveDtos.ImportArchiveRequest request) {
+    public Map<String, Object> importArchiveRecords(
+            @RequestBody ArchiveDtos.ImportArchiveRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        authService.requireOperatorOrAdmin(servletRequest);
         int imported = archiveRecordService.importRecords(request.filePath(), request.batchId());
         return Map.of("imported", imported, "file_path", request.filePath());
     }
@@ -72,13 +83,19 @@ public class ArchiveController {
     public Map<String, Object> deleteArchiveRecords(
             @RequestParam(defaultValue = "") String folder,
             @RequestParam(required = false) String batchId,
-            @RequestParam(name = "batch_id", required = false) String legacyBatchId
+            @RequestParam(name = "batch_id", required = false) String legacyBatchId,
+            HttpServletRequest request
     ) {
+        authService.requireOperatorOrAdmin(request);
         return Map.of("deleted", archiveRecordService.deleteRecords(folder, firstText(batchId, legacyBatchId)));
     }
 
     @PostMapping("/folders/ensure-batch")
-    public Map<String, Object> ensureFolderBatch(@Valid @RequestBody ArchiveDtos.EnsureFolderBatchRequest request) {
+    public Map<String, Object> ensureFolderBatch(
+            @Valid @RequestBody ArchiveDtos.EnsureFolderBatchRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        authService.requireOperatorOrAdmin(servletRequest);
         return archiveRecordService.ensureBatchForFolder(request.folder());
     }
 

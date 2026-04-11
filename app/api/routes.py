@@ -9,6 +9,7 @@ responsibilities have moved to the Java control plane.
 
 from fastapi import APIRouter
 
+from app.api.admin_users import operator_router, router as admin_router
 from app.api.ai_batches import router as ai_batches_router
 from app.api.evaluation import router as evaluation_router
 from app.api.files import router as files_router
@@ -21,12 +22,19 @@ from app.services.batch_evaluation_service import (
     get_batch_evaluation_truth,
     save_batch_evaluation_truth,
 )
-from app.services.batch_merge_extraction_service import get_batch_merge_extract_result
+from app.services.batch_merge_extraction_service import (
+    get_batch_boundary_analysis_result,
+    get_batch_merge_extract_result,
+)
 from app.services.batch_qa_service import (
     answer_batch_question,
     get_batch_qa_history,
     get_batch_qa_metrics,
     submit_batch_qa_feedback,
+)
+from app.services.document_boundary_feedback_service import (
+    get_batch_boundary_truth,
+    save_batch_boundary_truth,
 )
 from app.services.llm_field_extraction_service import compare_rule_and_llm_fields
 from app.services.ocr_service import get_task_detail
@@ -37,6 +45,8 @@ router.include_router(ai_batches_router)
 router.include_router(qa_router)
 router.include_router(evaluation_router)
 router.include_router(files_router)
+router.include_router(admin_router)
+router.include_router(operator_router)
 
 __all__ = [
     "answer_batch_question",
@@ -44,12 +54,15 @@ __all__ = [
     "get_batch_evaluation_ai_report",
     "get_batch_evaluation_metrics",
     "get_batch_evaluation_truth",
+    "get_batch_boundary_analysis_result",
+    "get_batch_boundary_truth",
     "get_batch_merge_extract_result",
     "get_batch_qa_history",
     "get_batch_qa_metrics",
     "get_task_detail",
     "router",
     "save_archive_record",
+    "save_batch_boundary_truth",
     "save_batch_evaluation_truth",
     "submit_batch_qa_feedback",
 ]

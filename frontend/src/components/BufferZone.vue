@@ -162,36 +162,91 @@
     <div v-if="hasQueueItems && !processing" class="px-4 pb-2">
       <div class="mb-2 flex items-center justify-between">
         <div>
-          <span class="text-xs font-medium gov-muted">待处理明细（{{ queue.length + pathQueue.length }}）</span>
-          <p class="mt-1 text-[11px] gov-muted">默认仅展示部分预览，避免大批次材料直接铺满页面。</p>
+          <span class="text-xs font-medium gov-muted">
+            待处理明细（{{ queue.length + pathQueue.length }} 份 / {{ dirGroupedFiles.length + dirGroupedPathFiles.length }} 个目录）
+          </span>
+          <p class="mt-1 text-[11px] gov-muted">点击目录名展开文件列表；可整个目录删除。</p>
         </div>
         <div class="flex items-center gap-2">
-          <button v-if="showQueueToggle" class="text-xs text-[var(--gov-primary)] hover:brightness-95" @click="toggleQueueExpanded">
-            {{ queueExpanded ? '收起明细' : `展开全部（${queue.length + pathQueue.length}）` }}
-          </button>
-          <button class="text-xs text-[var(--gov-danger)] hover:brightness-95" @click="clearQueue">清空</button>
+          <button class="text-xs text-[var(--gov-danger)] hover:brightness-95" @click="clearQueue">清空全部</button>
         </div>
       </div>
 
-      <div class="max-h-52 space-y-1.5 overflow-y-auto">
-        <div v-for="(file, index) in previewQueueFiles" :key="`file-${index}`" class="flex items-center justify-between rounded-lg border border-[var(--gov-border)] bg-slate-50 px-3 py-2 text-xs">
-          <div class="min-w-0 flex-1 truncate text-[var(--gov-text)]">
-            {{ file.webkitRelativePath || file._relativePath || file.name }}
-            <span class="ml-2 gov-muted">{{ formatSize(file.size) }}</span>
+      <div class="max-h-64 space-y-1.5 overflow-y-auto pr-0.5">
+        <!-- Browser-selected files grouped by directory -->
+        <div
+          v-for="group in dirGroupedFiles"
+          :key="group.dir"
+          class="overflow-hidden rounded-lg border border-[var(--gov-border)]"
+        >
+          <!-- Directory header row -->
+          <div class="flex items-center bg-slate-50 px-3 py-2">
+            <button class="flex min-w-0 flex-1 items-center gap-1.5 text-left" @click="toggleDirExpand(group.dir)">
+              <svg
+                class="h-3 w-3 flex-shrink-0 text-[var(--gov-primary)] transition-transform duration-150"
+                :class="expandedDirs.has(group.dir) ? 'rotate-90' : ''"
+                fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"
+              ><path d="M9 18l6-6-6-6"/></svg>
+              <svg class="h-3.5 w-3.5 flex-shrink-0 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+              </svg>
+              <span class="min-w-0 flex-1 truncate text-xs font-medium text-[var(--gov-text)]">{{ group.dir }}</span>
+              <span class="ml-1.5 shrink-0 text-[11px] text-[var(--gov-text-muted)]">{{ group.files.length }} 份 · {{ formatSize(group.totalSize) }}</span>
+            </button>
+            <button
+              class="ml-2 shrink-0 rounded px-2 py-0.5 text-[11px] text-red-500 hover:bg-red-50 hover:text-red-600"
+              @click.stop="removeDirFiles(group.dir)"
+            >删除目录</button>
           </div>
-          <button class="gov-muted hover:text-[var(--gov-danger)]" @click="removeFile(index)">移除</button>
+          <!-- Files within directory (only when expanded) -->
+          <div v-if="expandedDirs.has(group.dir)" class="divide-y divide-[var(--gov-border)]">
+            <div
+              v-for="item in group.files"
+              :key="item.idx"
+              class="flex items-center bg-white px-3 py-1.5 text-xs"
+            >
+              <div class="min-w-0 flex-1 truncate pl-5 text-[var(--gov-text)]">
+                {{ item.file.name }}
+                <span class="ml-1.5 text-[var(--gov-text-muted)]">{{ formatSize(item.file.size) }}</span>
+              </div>
+              <button class="ml-2 shrink-0 text-[var(--gov-text-muted)] hover:text-red-500" @click="removeFile(item.idx)">移除</button>
+            </div>
+          </div>
         </div>
 
-        <div v-for="(file, index) in previewPathFiles" :key="`path-${index}`" class="flex items-center justify-between rounded-lg border border-[var(--gov-border)] bg-[var(--gov-primary-soft)] px-3 py-2 text-xs">
-          <div class="min-w-0 flex-1 truncate text-[var(--gov-text)]">
-            {{ file.rel_path }}
-            <span class="ml-2 gov-muted">{{ formatSize(file.size) }}</span>
+        <!-- Server-side path files grouped by directory -->
+        <div
+          v-for="group in dirGroupedPathFiles"
+          :key="'p_' + group.dir"
+          class="overflow-hidden rounded-lg border border-[var(--gov-border)]"
+        >
+          <div class="flex items-center bg-[var(--gov-primary-soft)] px-3 py-2">
+            <button class="flex min-w-0 flex-1 items-center gap-1.5 text-left" @click="toggleDirExpand('p_'+group.dir)">
+              <svg
+                class="h-3 w-3 flex-shrink-0 text-[var(--gov-primary)] transition-transform duration-150"
+                :class="expandedDirs.has('p_'+group.dir) ? 'rotate-90' : ''"
+                fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"
+              ><path d="M9 18l6-6-6-6"/></svg>
+              <svg class="h-3.5 w-3.5 flex-shrink-0 text-[var(--gov-primary)]" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
+              </svg>
+              <span class="min-w-0 flex-1 truncate text-xs font-medium text-[var(--gov-text)]">{{ group.dir }}</span>
+              <span class="ml-1.5 shrink-0 text-[11px] text-[var(--gov-text-muted)]">{{ group.files.length }} 份 · {{ formatSize(group.totalSize) }}（路径导入）</span>
+            </button>
           </div>
-          <button class="gov-muted hover:text-[var(--gov-danger)]" @click="removePathFile(previewPathBaseIndex + index)">移除</button>
-        </div>
-
-        <div v-if="hiddenQueueCount > 0" class="rounded-lg border border-dashed border-[var(--gov-border)] bg-white px-3 py-2 text-xs gov-muted">
-          还有 {{ hiddenQueueCount }} 份材料未展开，点击“展开全部”可查看完整清单。
+          <div v-if="expandedDirs.has('p_'+group.dir)" class="divide-y divide-[var(--gov-border)]">
+            <div
+              v-for="item in group.files"
+              :key="item.idx"
+              class="flex items-center bg-white px-3 py-1.5 text-xs"
+            >
+              <div class="min-w-0 flex-1 truncate pl-5 text-[var(--gov-text)]">
+                {{ item.file.rel_path }}
+                <span class="ml-1.5 text-[var(--gov-text-muted)]">{{ formatSize(item.file.size) }}</span>
+              </div>
+              <button class="ml-2 shrink-0 text-[var(--gov-text-muted)] hover:text-red-500" @click="removePathFile(item.idx)">移除</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -521,6 +576,57 @@ const hiddenQueueCount = computed(() => {
   return Math.max(0, queue.value.length + pathQueue.value.length - shownCount)
 })
 const showQueueToggle = computed(() => queue.value.length + pathQueue.value.length > 5)
+
+// ── Directory-grouped preview ──────────────────────────────────────────────
+const expandedDirs = ref(new Set())
+
+function toggleDirExpand(dir) {
+  const s = new Set(expandedDirs.value)
+  s.has(dir) ? s.delete(dir) : s.add(dir)
+  expandedDirs.value = s
+}
+
+const dirGroupedFiles = computed(() => {
+  const groups = {}
+  queue.value.forEach((file, idx) => {
+    const relPath = file.webkitRelativePath || file._relativePath || file.name
+    const parts = relPath.split('/')
+    const key = parts.length > 1 ? parts.slice(0, -1).join('/') : '（独立文件）'
+    if (!groups[key]) groups[key] = []
+    groups[key].push({ file, idx })
+  })
+  return Object.entries(groups).map(([dir, files]) => ({
+    dir,
+    files,
+    totalSize: files.reduce((s, f) => s + (f.file.size || 0), 0),
+  }))
+})
+
+const dirGroupedPathFiles = computed(() => {
+  const groups = {}
+  pathQueue.value.forEach((file, idx) => {
+    const parts = (file.rel_path || '').split('/')
+    const key = parts.length > 1 ? parts.slice(0, -1).join('/') : '（根目录）'
+    if (!groups[key]) groups[key] = []
+    groups[key].push({ file, idx })
+  })
+  return Object.entries(groups).map(([dir, files]) => ({
+    dir,
+    files,
+    totalSize: files.reduce((s, f) => s + (f.file.size || 0), 0),
+  }))
+})
+
+function removeDirFiles(dir) {
+  const group = dirGroupedFiles.value.find(g => g.dir === dir)
+  if (!group) return
+  // Remove highest index first so lower indices stay valid
+  const indices = group.files.map(f => f.idx).sort((a, b) => b - a)
+  indices.forEach(idx => removeFile(idx))
+  const s = new Set(expandedDirs.value)
+  s.delete(dir)
+  expandedDirs.value = s
+}
 const activeProcessingCount = computed(() => processingCount.value + pendingCount.value)
 
 const stageMeta = computed(() => {

@@ -463,55 +463,92 @@ def _clean_org_name(text: str) -> str:
         return clean
     return ''
 
-def _extract_responsible_candidates(text: str) -> list[str]:
+def _extract_responsible_candidates(text: str) -> list[tuple[str, str]]:
+    """Return list of (candidate, source_type) tuples.
+    source_type: 'party' | 'head' | 'full' | 'issued' | 'fragment'
+    """
     clean = _clean_line_text(text)
     candidates = []
+    seen = set()
     party_match = re.match(r'^[甲乙丙丁]方[:：]\s*([\u4e00-\u9fa5A-Za-z0-9·（）()]+(?:有限公司|集团有限公司|集团|公司|委员会|办公室|档案局|档案馆|政府|中心|银行|局|厅|部|院|馆))', clean)
     if party_match:
         candidate = _clean_org_name(party_match.group(1))
-        if candidate:
-            candidates.append(candidate)
-    for pattern in (RESP_HEAD_PATTERN, RESP_FULL_PATTERN, RESP_FRAGMENT_PATTERN):
-        for match in pattern.finditer(clean):
-            candidate = _clean_org_name(match.group(1))
-            if candidate and candidate not in candidates:
-                candidates.append(candidate)
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'party'))
+            seen.add(candidate)
+    issued_match = ISSUED_BY_PATTERN.search(clean)
+    if issued_match:
+        candidate = _clean_org_name(issued_match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'issued'))
+            seen.add(candidate)
+    for match in RESP_HEAD_PATTERN.finditer(clean):
+        candidate = _clean_org_name(match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'head'))
+            seen.add(candidate)
+    for match in RESP_FULL_PATTERN.finditer(clean):
+        candidate = _clean_org_name(match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'full'))
+            seen.add(candidate)
+    for match in RESP_FRAGMENT_PATTERN.finditer(clean):
+        candidate = _clean_org_name(match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'fragment'))
+            seen.add(candidate)
     return candidates
 
 def _extract_responsible(items: list[dict], doc_no: str) -> str:
     best_value = ''
     best_score = -10**9
     for item in items:
-        for candidate in _extract_responsible_candidates(item['text']):
+        for candidate, source_type in _extract_responsible_candidates(item['text']):
             score = 0
-            if item['page_index'] == 0 and item['y_ratio'] < 0.35:
-                score += 8
+            # ── Strong prerequisite evidence (甲方/乙方, 盖章, 印发) ──
+            if source_type == 'party':
+                score += 25
+            if source_type == 'issued':
+                score += 20
+            if item['type'] == 'seal':
+                score += 18
+            if any(word in item['text'] for word in ('盖章', '印章', '公章')):
+                score += 15
+            if any(word in item['text'] for word in ('发文单位', '发文机关', '主送')):
+                score += 15
+            if any(word in item['text'] for word in ('印发', '发布', '下发')):
+                score += 10
+            # ── Position signals ──
             if item['page_index'] == item['page_total'] - 1 and item['y_ratio'] > 0.55:
                 score += 12
-            if item['page_index'] == item['page_total'] - 1 and ISSUED_BY_PATTERN.search(item['text']):
-                score += 15
-            if item['type'] == 'seal':
-                score += 5
-            if any(word in item['text'] for word in ('盖章', '印章', '公章')):
+            if item['page_index'] == 0 and item['y_ratio'] < 0.35:
                 score += 4
-            if any(word in item['text'] for word in ('印发', '发布', '下发')):
+            # ── Pattern quality ──
+            if source_type == 'head':
                 score += 6
-            if RESP_HEAD_PATTERN.search(item['text']):
-                score += 6
-            if RESP_FULL_PATTERN.search(_clean_line_text(item['text'])):
+            if source_type == 'full':
                 score += 4
+            if source_type == 'fragment':
+                score -= 5
+            # ── Length heuristics ──
             if 4 <= len(candidate) <= 24:
                 score += 3
             if len(candidate) > 32:
                 score -= 2
+            # ── Negative signals: title-position text is likely not the responsible party ──
+            if item['page_index'] == 0 and 0.15 < item['y_ratio'] < 0.45 and item.get('type') in TITLE_TYPES:
+                score -= 12
+            if any(kw in item['text'] for kw in TITLE_KEYWORDS) and source_type == 'fragment':
+                score -= 10
             if _extract_doc_no_from_text(item['text']):
-                score -= 2
-            if any(word in candidate for word in ('附件', '目录', '日期')):
-                score -= 4
+                score -= 3
+            if any(word in candidate for word in ('附件', '目录', '日期', '编号')):
+                score -= 8
             if score > best_score:
                 best_score = score
                 best_value = candidate
-    if best_value:
+    # Require minimum confidence: fragment-only low-score matches are unreliable
+    if best_value and best_score >= 3:
         return best_value
     if doc_no:
         match = re.match(r'([\u4e00-\u9fa5A-Za-z]{2,20})', doc_no)

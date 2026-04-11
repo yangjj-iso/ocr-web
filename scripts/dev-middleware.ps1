@@ -21,31 +21,9 @@ $DataDirectories = @(
     (Join-Path $ProjectRoot "docker-data\minio"),
     (Join-Path $ProjectRoot "docker-data\minio\data")
 )
-$RequiredPorts = @(5432, 5672, 6379, 9000, 9001, 15672)
-$WindowsServiceTargets = @(
-    @{
-        Name = "postgresql-x64-17"
-        Label = "PostgreSQL"
-        Ports = @(5432)
-    },
-    @{
-        Name = "RabbitMQ"
-        Label = "RabbitMQ"
-        Ports = @(5672, 15672)
-    }
-)
-$ProcessTargets = @(
-    @{
-        ProcessNames = @("redis-server")
-        Label = "Redis"
-        Ports = @(6379)
-    },
-    @{
-        ProcessNames = @("minio")
-        Label = "MinIO"
-        Ports = @(9000, 9001)
-    }
-)
+$RequiredPorts = @()
+$WindowsServiceTargets = @()
+$ProcessTargets = @()
 
 function Write-Section {
     param([string]$Title)
@@ -89,6 +67,23 @@ function Load-EnvFile {
     }
 
     return $map
+}
+
+function Get-ConfiguredPort {
+    param(
+        [hashtable]$EnvMap,
+        [string]$Key,
+        [int]$Default
+    )
+
+    if ($EnvMap.ContainsKey($Key)) {
+        $value = $EnvMap[$Key]
+        if ($value -match '^\d+$') {
+            return [int]$value
+        }
+    }
+
+    return $Default
 }
 
 function Get-BasicAuthHeaders {
@@ -298,8 +293,8 @@ function Assert-NoLocalRabbitMqConflict {
     }
 
     $listeners = @()
-    $listeners += @(Get-PortListeners -Port 5672)
-    $listeners += @(Get-PortListeners -Port 15672)
+    $listeners += @(Get-PortListeners -Port $RabbitMqPort)
+    $listeners += @(Get-PortListeners -Port $RabbitMqManagementPort)
     $erlListeners = @($listeners | Where-Object { $_.ProcessName -eq "erl" })
     if ($erlListeners.Count -gt 0) {
         $detail = ($erlListeners | Sort-Object Port, ProcessId | ForEach-Object {
@@ -355,7 +350,8 @@ function Assert-RabbitMqHostAuthentication {
 
     $username = if ($EnvMap.ContainsKey("RABBITMQ_DEFAULT_USER")) { $EnvMap["RABBITMQ_DEFAULT_USER"] } else { "ocr_admin" }
     $password = if ($EnvMap.ContainsKey("RABBITMQ_DEFAULT_PASS")) { $EnvMap["RABBITMQ_DEFAULT_PASS"] } else { "ocr_password123" }
-    $uri = "http://127.0.0.1:15672/api/whoami"
+    $managementPort = Get-ConfiguredPort -EnvMap $EnvMap -Key "RABBITMQ_MANAGEMENT_PORT" -Default 15672
+    $uri = "http://127.0.0.1:{0}/api/whoami" -f $managementPort
     $headers = Get-BasicAuthHeaders -Username $username -Password $password
 
     try {
@@ -363,9 +359,9 @@ function Assert-RabbitMqHostAuthentication {
         $payload = $response.Content | ConvertFrom-Json
     } catch {
         $message = if ($_.Exception.Response) {
-            "RabbitMQ management API rejected the configured Docker credentials. This usually means local RabbitMQ is still bound to 127.0.0.1:15672."
+            "RabbitMQ management API rejected the configured Docker credentials. This usually means local RabbitMQ is still bound to the expected management port."
         } else {
-            "RabbitMQ management API is not reachable on 127.0.0.1:15672."
+            ("RabbitMQ management API is not reachable on 127.0.0.1:{0}." -f $managementPort)
         }
         throw $message
     }
@@ -401,6 +397,8 @@ function Invoke-MiddlewareHealthChecks {
     $postgresUser = if ($envMap.ContainsKey("POSTGRES_USER")) { $envMap["POSTGRES_USER"] } else { "postgres" }
     $postgresDb = if ($envMap.ContainsKey("POSTGRES_DB")) { $envMap["POSTGRES_DB"] } else { "ocr_db" }
     $bucketName = if ($envMap.ContainsKey("OCR_STORAGE_BUCKET")) { $envMap["OCR_STORAGE_BUCKET"] } else { "ocr-source" }
+    $minioConsolePort = Get-ConfiguredPort -EnvMap $envMap -Key "MINIO_CONSOLE_PORT" -Default 9001
+    $minioEndpoint = if ($envMap.ContainsKey("OCR_STORAGE_ENDPOINT")) { $envMap["OCR_STORAGE_ENDPOINT"] } else { "http://127.0.0.1:9000" }
 
     Write-Section "Health checks"
 
@@ -429,7 +427,7 @@ function Invoke-MiddlewareHealthChecks {
 
     Wait-Until -Description "MinIO API readiness" -Probe {
         try {
-            $response = Invoke-WebRequest -Uri "http://127.0.0.1:9000/minio/health/live" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+            $response = Invoke-WebRequest -Uri ("{0}/minio/health/live" -f $minioEndpoint.TrimEnd("/")) -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
             $response.StatusCode -eq 200
         } catch {
             $false
@@ -437,7 +435,7 @@ function Invoke-MiddlewareHealthChecks {
     }
 
     Wait-Until -Description "MinIO Console readiness" -Probe {
-        Test-TcpPort -Port 9001
+        Test-TcpPort -Port $minioConsolePort
     }
 
     Write-Section "Ensuring MinIO bucket"
@@ -447,14 +445,19 @@ function Invoke-MiddlewareHealthChecks {
 
 function Show-UsageHints {
     $envMap = Load-EnvFile -Path $EnvPath
+    $postgresPort = Get-ConfiguredPort -EnvMap $envMap -Key "POSTGRES_PORT" -Default 5432
+    $rabbitMqPort = Get-ConfiguredPort -EnvMap $envMap -Key "RABBITMQ_PORT" -Default 5672
+    $rabbitMqManagementPort = Get-ConfiguredPort -EnvMap $envMap -Key "RABBITMQ_MANAGEMENT_PORT" -Default 15672
+    $redisPort = Get-ConfiguredPort -EnvMap $envMap -Key "REDIS_PORT" -Default 6379
+    $minioConsolePort = Get-ConfiguredPort -EnvMap $envMap -Key "MINIO_CONSOLE_PORT" -Default 9001
 
     Write-Section "Access"
-    Write-Host "PostgreSQL : 127.0.0.1:5432"
-    Write-Host "RabbitMQ   : amqp://127.0.0.1:5672"
-    Write-Host "RabbitMQ UI: http://127.0.0.1:15672"
-    Write-Host "Redis      : 127.0.0.1:6379"
+    Write-Host ("PostgreSQL : 127.0.0.1:{0}" -f $postgresPort)
+    Write-Host ("RabbitMQ   : amqp://127.0.0.1:{0}" -f $rabbitMqPort)
+    Write-Host ("RabbitMQ UI: http://127.0.0.1:{0}" -f $rabbitMqManagementPort)
+    Write-Host ("Redis      : 127.0.0.1:{0}" -f $redisPort)
     Write-Host ("MinIO API  : {0}" -f $envMap["OCR_STORAGE_ENDPOINT"])
-    Write-Host "MinIO UI   : http://127.0.0.1:9001"
+    Write-Host ("MinIO UI   : http://127.0.0.1:{0}" -f $minioConsolePort)
     Write-Host ""
     Write-Host "Default credentials"
     Write-Host ("- PostgreSQL : {0} / {1}" -f $envMap["POSTGRES_USER"], $envMap["POSTGRES_PASSWORD"])
@@ -494,6 +497,39 @@ function Show-Status {
 Assert-PathExists -Path $ComposePath -Label "Compose file"
 Assert-PathExists -Path $EnvPath -Label "Docker env file"
 
+$ConfiguredEnv = Load-EnvFile -Path $EnvPath
+$PostgresPort = Get-ConfiguredPort -EnvMap $ConfiguredEnv -Key "POSTGRES_PORT" -Default 5432
+$RabbitMqPort = Get-ConfiguredPort -EnvMap $ConfiguredEnv -Key "RABBITMQ_PORT" -Default 5672
+$RabbitMqManagementPort = Get-ConfiguredPort -EnvMap $ConfiguredEnv -Key "RABBITMQ_MANAGEMENT_PORT" -Default 15672
+$RedisPort = Get-ConfiguredPort -EnvMap $ConfiguredEnv -Key "REDIS_PORT" -Default 6379
+$MinioPort = Get-ConfiguredPort -EnvMap $ConfiguredEnv -Key "MINIO_PORT" -Default 9000
+$MinioConsolePort = Get-ConfiguredPort -EnvMap $ConfiguredEnv -Key "MINIO_CONSOLE_PORT" -Default 9001
+$RequiredPorts = @($PostgresPort, $RabbitMqPort, $RedisPort, $MinioPort, $MinioConsolePort, $RabbitMqManagementPort)
+$WindowsServiceTargets = @(
+    @{
+        Name = "postgresql-x64-17"
+        Label = "PostgreSQL"
+        Ports = @($PostgresPort)
+    },
+    @{
+        Name = "RabbitMQ"
+        Label = "RabbitMQ"
+        Ports = @($RabbitMqPort, $RabbitMqManagementPort)
+    }
+)
+$ProcessTargets = @(
+    @{
+        ProcessNames = @("redis-server")
+        Label = "Redis"
+        Ports = @($RedisPort)
+    },
+    @{
+        ProcessNames = @("minio")
+        Label = "MinIO"
+        Ports = @($MinioPort, $MinioConsolePort)
+    }
+)
+
 switch ($Action) {
     "Validate" {
         Test-DockerCli
@@ -521,8 +557,10 @@ switch ($Action) {
                 Stop-KnownLocalServices
             }
             Assert-NoLocalRabbitMqConflict
-            Write-Section "Middleware containers already running"
+            Write-Section "Middleware containers currently running"
             Write-Host ($runningServices -join ", ")
+            Write-Host "Ensuring all middleware services are up."
+            Invoke-Compose -ComposeArgs @("up", "-d", "postgres", "rabbitmq", "redis", "minio")
             Invoke-MiddlewareHealthChecks
             Show-Status
             Show-UsageHints

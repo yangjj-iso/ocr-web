@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./docker-data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -30,8 +30,8 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-ocr_admin}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-ocr_password123}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - ./docker-data/rabbitmq:/var/lib/rabbitmq
     healthcheck:
@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - ./docker-data/redis:/data
     healthcheck:
@@ -70,8 +70,8 @@ services:
       MINIO_ROOT_USER: ${OCR_STORAGE_ACCESS_KEY:-admin}
       MINIO_ROOT_PASSWORD: ${OCR_STORAGE_SECRET_KEY:-admin123456}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - ./docker-data/minio/data:/data
     networks:

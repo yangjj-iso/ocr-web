@@ -44,6 +44,9 @@ public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEnti
             """)
     List<String> findDistinctAssignedBatchIdsByFolder(@Param("folder") String folder);
 
+    @Query("select r from ArchiveRecordEntity r where r.taskId in :taskIds")
+    List<ArchiveRecordEntity> findByTaskIdIn(@Param("taskIds") List<Long> taskIds);
+
     long deleteByBatchFolder(String batchFolder);
 
     long deleteByBatchId(String batchId);
