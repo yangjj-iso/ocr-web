@@ -7,7 +7,7 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5433}/ocr_db}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5432}/ocr_db}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
     password: ${SPRING_DATASOURCE_PASSWORD:123456}
   jpa:

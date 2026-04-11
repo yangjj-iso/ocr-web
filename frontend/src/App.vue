@@ -68,7 +68,6 @@
               <span :class="roleBadgeClass" class="rounded px-1.5 py-0.5 text-[10px] font-medium">{{ roleLabel }}</span>
             </router-link>
             <button
-              v-if="authState.isAuthEnabled.value"
               class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-1 text-xs text-[var(--gov-text)] hover:bg-slate-50"
               @click="handleLogout"
             >
@@ -136,7 +135,11 @@ watch(() => authState.auth.value?.is_admin, (admin) => {
 })
 
 async function handleLogout() {
-  await authState.logout()
+  try {
+    await authState.logout()
+  } catch {
+    // ignore API errors (e.g. 401 when session already expired)
+  }
   router.replace('/login')
 }
 
