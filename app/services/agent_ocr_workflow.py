@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from functools import lru_cache
+from functools import lru_cache, wraps
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, TypedDict
 
@@ -80,7 +80,9 @@ class PageAgentState(TypedDict, total=False):
     filename: str
     mode: str
     page_num: int
+    total_pages: int
     image_path: str
+    workflow_thread_id: str
     max_retries: int
     retry_count: int
     processing_strategy: str
@@ -122,6 +124,8 @@ class BatchSupervisorState(TypedDict, total=False):
     resume_target: str
     workflow_thread_id: str
     workflow_result: dict[str, Any] | None
+
+
 def _blank_fields() -> dict[str, str]:
     return {field: "" for field in ARCHIVE_FIELDS}
 
@@ -366,7 +370,7 @@ def _get_workflow_db_session(state: BatchSupervisorState) -> AsyncSession | None
 
 
 def _get_event_callback(
-    state: BatchSupervisorState,
+    state: dict[str, Any],
 ) -> Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None:
     thread_id = _clean_text(state.get("workflow_thread_id"))
     if not thread_id:
@@ -544,7 +548,7 @@ def _build_interrupted_workflow_result(state: dict[str, Any], workflow_thread_id
 
 
 async def _emit_state_event(
-    state: BatchSupervisorState,
+    state: dict[str, Any],
     event_type: str,
     payload: dict[str, Any] | None = None,
     progress: dict[str, Any] | None = None,
@@ -561,6 +565,115 @@ async def _emit_state_event(
             event_type,
             exc_info=True,
         )
+
+
+def _compact_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key, value in payload.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, (list, dict)) and not value:
+            continue
+        compact[key] = value
+    return compact
+
+
+def _workflow_progress_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    total_pages = max(0, int(state.get("total_pages") or len(state.get("page_images") or [])))
+    current_page = 0
+    page_outputs = state.get("page_outputs") or []
+    if isinstance(page_outputs, list) and page_outputs:
+        current_page = len(page_outputs)
+    if current_page <= 0:
+        current_page = max(0, int(state.get("page_num") or 0))
+    if current_page <= 0:
+        current_page = max(0, int(state.get("current_page_index") or 0))
+    percent = round((current_page / total_pages) * 100.0, 2) if total_pages > 0 else 0.0
+    return {
+        "current_page": current_page,
+        "total_pages": total_pages,
+        "percent": percent,
+    }
+
+
+async def _emit_workflow_graph_event(
+    state: dict[str, Any],
+    event_type: str,
+    *,
+    graph_id: str,
+    payload: dict[str, Any] | None = None,
+    progress: dict[str, Any] | None = None,
+) -> None:
+    base_payload = {
+        "workflow_thread_id": _clean_text(state.get("workflow_thread_id")),
+        "graph_id": graph_id,
+        "task_id": int(state.get("task_id") or 0),
+        "batch_id": _clean_text(state.get("batch_id")),
+        "mode": _clean_text(state.get("mode")),
+        "page_no": int(state.get("page_num") or 0),
+        "retry_count": int(state.get("retry_count") or 0),
+        "recorded_at": _utc_now_iso(),
+    }
+    await _emit_state_event(
+        state,
+        event_type,
+        _compact_event_payload({**base_payload, **(payload or {})}),
+        progress or _workflow_progress_from_state(state),
+    )
+
+
+async def _emit_node_enter(
+    state: dict[str, Any],
+    *,
+    graph_id: str,
+    node_id: str,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    await _emit_workflow_graph_event(
+        state,
+        "NODE_ENTER",
+        graph_id=graph_id,
+        payload={"node_id": node_id, "summary": summary or {}},
+    )
+
+
+async def _emit_node_exit(
+    state: dict[str, Any],
+    *,
+    graph_id: str,
+    node_id: str,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    await _emit_workflow_graph_event(
+        state,
+        "NODE_EXIT",
+        graph_id=graph_id,
+        payload={"node_id": node_id, "summary": summary or {}},
+    )
+
+
+async def _emit_route_decision(
+    state: dict[str, Any],
+    *,
+    graph_id: str,
+    route_id: str,
+    from_node: str,
+    to_node: str,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    await _emit_workflow_graph_event(
+        state,
+        "ROUTE_DECISION",
+        graph_id=graph_id,
+        payload={
+            "route_id": route_id,
+            "from_node": from_node,
+            "to_node": to_node,
+            "summary": summary or {},
+        },
+    )
 
 
 def _normalize_fields(fields: dict[str, Any] | None) -> dict[str, str]:
@@ -1269,7 +1382,9 @@ async def node_process_next_page(state: BatchSupervisorState) -> dict[str, Any]:
         "filename": _clean_text(state.get("filename")),
         "mode": _clean_text(state.get("mode")) or "layout",
         "page_num": page_num,
+        "total_pages": len(page_images),
         "image_path": image_path,
+        "workflow_thread_id": _clean_text(state.get("workflow_thread_id")),
         "max_retries": MAX_RETRIES,
         "retry_count": 0,
         "processing_strategy": "none",
@@ -1692,21 +1807,291 @@ async def node_final_archiver_and_quality(state: BatchSupervisorState) -> dict[s
     }
 
 
+def _page_plan_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "should_use_vision": bool(result.get("should_use_vision")),
+            "secondary_mode": _clean_text(result.get("secondary_mode")),
+            "processing_strategy": _clean_text(result.get("processing_strategy")),
+            "page_complexity": round(_safe_float(result.get("page_complexity"), 0.0), 4),
+            "route_reason": _clean_text(result.get("route_reason")),
+        }
+    )
+
+
+def _ocr_node_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    ocr_result = dict(result.get("ocr_result") or {})
+    return _compact_event_payload(
+        {
+            "confidence": _clamp_confidence(ocr_result.get("confidence")),
+            "issue_count": len(ocr_result.get("issues") or []),
+            "text_present": bool(_clean_text(ocr_result.get("full_text"))),
+            "processing_strategy": _clean_text(ocr_result.get("processing_strategy")),
+        }
+    )
+
+
+def _ppocr_vl_node_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    vl_result = dict(result.get("vl_result") or {})
+    return _compact_event_payload(
+        {
+            "confidence": _clamp_confidence(vl_result.get("confidence")),
+            "issue_count": len(vl_result.get("issues") or []),
+            "text_present": bool(_clean_text(vl_result.get("transcript"))),
+        }
+    )
+
+
+def _page_merge_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    page_output = dict(result.get("page_output") or {})
+    return _compact_event_payload(
+        {
+            "confidence": _clamp_confidence(page_output.get("confidence")),
+            "source": _clean_text(page_output.get("source")),
+            "issue_count": len(page_output.get("issues") or []),
+            "human_review": bool(page_output.get("human_review")),
+            "review_reason": _clean_text(page_output.get("review_reason")),
+        }
+    )
+
+
+def _page_adjust_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "retry_count": int(result.get("retry_count") or 0),
+            "next_strategy": _clean_text(result.get("processing_strategy")),
+        }
+    )
+
+
+def _page_finalize_summary(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    page_output = dict(result.get("page_output") or state.get("page_output") or {})
+    return _compact_event_payload(
+        {
+            "confidence": _clamp_confidence(page_output.get("confidence")),
+            "human_review": bool(page_output.get("human_review")),
+            "review_reason": _clean_text(page_output.get("review_reason")),
+        }
+    )
+
+
+def _prepare_batch_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "total_pages": int(result.get("total_pages") or 0),
+            "batch_folder": _clean_text(result.get("batch_folder")),
+        }
+    )
+
+
+def _process_next_page_summary(state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    page_outputs = result.get("page_outputs") or state.get("page_outputs") or []
+    latest_output = dict(page_outputs[-1] if page_outputs else {})
+    return _compact_event_payload(
+        {
+            "page_no": int(latest_output.get("page_num") or state.get("page_num") or state.get("current_page_index") or 0),
+            "overall_confidence": _clamp_confidence(result.get("overall_confidence")),
+            "human_review_required": bool(latest_output.get("human_review")),
+            "pending_interrupt": bool(result.get("pending_interrupt")),
+            "processed_pages": len(page_outputs) if isinstance(page_outputs, list) else 0,
+        }
+    )
+
+
+def _cross_page_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    consistency = dict(result.get("consistency") or {})
+    return _compact_event_payload(
+        {
+            "status": _clean_text(consistency.get("status")),
+            "conflict_fields": list((consistency.get("conflicts") or {}).keys()),
+            "aligned_fields": consistency.get("aligned_fields") or [],
+        }
+    )
+
+
+def _rag_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    return {"examples_count": len(result.get("rag_examples") or [])}
+
+
+def _human_router_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "human_review": bool(result.get("human_review")),
+            "review_status": _clean_text(result.get("review_status")),
+            "review_reason": _clean_text(result.get("review_reason")),
+            "pending_interrupt": bool(result.get("pending_interrupt")),
+        }
+    )
+
+
+def _pending_review_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    return _compact_event_payload({"review_status": _clean_text(result.get("review_status"))})
+
+
+def _pause_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "resume_target": _clean_text(result.get("resume_target")),
+            "review_status": _clean_text(result.get("review_status")),
+            "review_reason": _clean_text(result.get("review_reason")),
+        }
+    )
+
+
+def _final_archiver_summary(_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    workflow_result = dict(result.get("workflow_result") or {})
+    return _compact_event_payload(
+        {
+            "page_count": int(workflow_result.get("page_count") or 0),
+            "overall_confidence": _clamp_confidence(workflow_result.get("overall_confidence")),
+            "human_review": bool(workflow_result.get("human_review")),
+            "archive_saved": bool(result.get("archive_saved")),
+        }
+    )
+
+
+def _prepare_batch_route_summary(state: dict[str, Any], target: str) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "processed_pages": int(state.get("current_page_index") or 0),
+            "total_pages": int(state.get("total_pages") or len(state.get("page_images") or [])),
+            "decision": target,
+        }
+    )
+
+
+def _page_after_ocr_route_summary(state: dict[str, Any], target: str) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "secondary_mode": _clean_text(state.get("secondary_mode")),
+            "route_reason": _clean_text(state.get("route_reason")),
+            "decision": target,
+        }
+    )
+
+
+def _page_after_merge_route_summary(state: dict[str, Any], target: str) -> dict[str, Any]:
+    final_result = dict(state.get("final_result") or {})
+    return _compact_event_payload(
+        {
+            "confidence": _clamp_confidence(final_result.get("confidence")),
+            "retry_count": int(state.get("retry_count") or 0),
+            "decision": target,
+        }
+    )
+
+
+def _next_page_route_summary(state: dict[str, Any], target: str) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "current_page_index": int(state.get("current_page_index") or 0),
+            "total_pages": int(state.get("total_pages") or 0),
+            "has_pending_interrupt": bool(state.get("pending_interrupt")),
+            "decision": target,
+        }
+    )
+
+
+def _pause_route_summary(state: dict[str, Any], target: str) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "resume_target": _clean_text(state.get("resume_target")),
+            "current_page_index": int(state.get("current_page_index") or 0),
+            "total_pages": int(state.get("total_pages") or 0),
+            "decision": target,
+        }
+    )
+
+
+def _human_router_route_summary(state: dict[str, Any], target: str) -> dict[str, Any]:
+    return _compact_event_payload(
+        {
+            "human_review": bool(state.get("human_review")),
+            "review_status": _clean_text(state.get("review_status")),
+            "decision": target,
+        }
+    )
+
+
+def _instrument_node(
+    graph_id: str,
+    node_id: str,
+    node_fn: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+    *,
+    summary_builder: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
+) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+    @wraps(node_fn)
+    async def wrapped(state: dict[str, Any]) -> dict[str, Any]:
+        await _emit_node_enter(state, graph_id=graph_id, node_id=node_id)
+        result = await node_fn(state)
+        summary = summary_builder(state, result) if summary_builder is not None else {}
+        await _emit_node_exit(state, graph_id=graph_id, node_id=node_id, summary=summary)
+        return result
+
+    return wrapped
+
+
+def _instrument_route(
+    graph_id: str,
+    route_id: str,
+    from_node: str,
+    route_fn: Callable[[dict[str, Any]], Awaitable[str]],
+    *,
+    summary_builder: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
+) -> Callable[[dict[str, Any]], Awaitable[str]]:
+    @wraps(route_fn)
+    async def wrapped(state: dict[str, Any]) -> str:
+        target = await route_fn(state)
+        summary = summary_builder(state, target) if summary_builder is not None else {}
+        await _emit_route_decision(
+            state,
+            graph_id=graph_id,
+            route_id=route_id,
+            from_node=from_node,
+            to_node=target,
+            summary=summary,
+        )
+        return target
+
+    return wrapped
+
+
 @lru_cache(maxsize=1)
 def get_page_agent_graph():
     graph = StateGraph(PageAgentState)
-    graph.add_node("node_page_plan", node_page_plan)
-    graph.add_node("node_ocr", node_ocr)
-    graph.add_node("node_ppocr_vl", node_ppocr_vl)
-    graph.add_node("node_evaluate_and_merge", node_evaluate_and_merge)
-    graph.add_node("node_adjust_strategy", node_adjust_strategy)
-    graph.add_node("node_finalize_page", node_finalize_page)
+    graph.add_node("node_page_plan", _instrument_node("page_agent", "node_page_plan", node_page_plan, summary_builder=_page_plan_summary))
+    graph.add_node("node_ocr", _instrument_node("page_agent", "node_ocr", node_ocr, summary_builder=_ocr_node_summary))
+    graph.add_node("node_ppocr_vl", _instrument_node("page_agent", "node_ppocr_vl", node_ppocr_vl, summary_builder=_ppocr_vl_node_summary))
+    graph.add_node(
+        "node_evaluate_and_merge",
+        _instrument_node("page_agent", "node_evaluate_and_merge", node_evaluate_and_merge, summary_builder=_page_merge_summary),
+    )
+    graph.add_node(
+        "node_adjust_strategy",
+        _instrument_node("page_agent", "node_adjust_strategy", node_adjust_strategy, summary_builder=_page_adjust_summary),
+    )
+    graph.add_node(
+        "node_finalize_page",
+        _instrument_node("page_agent", "node_finalize_page", node_finalize_page, summary_builder=_page_finalize_summary),
+    )
 
     graph.add_edge(START, "node_page_plan")
     graph.add_edge("node_page_plan", "node_ocr")
-    graph.add_conditional_edges("node_ocr", route_after_ocr)
+    graph.add_conditional_edges(
+        "node_ocr",
+        _instrument_route("page_agent", "route_after_ocr", "node_ocr", route_after_ocr, summary_builder=_page_after_ocr_route_summary),
+    )
     graph.add_edge("node_ppocr_vl", "node_evaluate_and_merge")
-    graph.add_conditional_edges("node_evaluate_and_merge", route_after_page_merge)
+    graph.add_conditional_edges(
+        "node_evaluate_and_merge",
+        _instrument_route(
+            "page_agent",
+            "route_after_page_merge",
+            "node_evaluate_and_merge",
+            route_after_page_merge,
+            summary_builder=_page_after_merge_route_summary,
+        ),
+    )
     graph.add_edge("node_adjust_strategy", "node_page_plan")
     graph.add_edge("node_finalize_page", END)
     return graph.compile()
@@ -1714,23 +2099,85 @@ def get_page_agent_graph():
 
 def _compile_batch_supervisor_graph(*, with_checkpointer: bool):
     graph = StateGraph(BatchSupervisorState)
-    graph.add_node("node_prepare_batch", node_prepare_batch)
-    graph.add_node("node_process_next_page", node_process_next_page)
-    graph.add_node("node_cross_page_consistency", node_cross_page_consistency)
-    graph.add_node("node_rag_retrieve", node_rag_retrieve)
-    graph.add_node("node_human_router", node_human_router)
-    graph.add_node("node_pending_human_review", node_pending_human_review)
-    graph.add_node("node_pause_for_human_review", node_pause_for_human_review)
-    graph.add_node("node_final_archiver_and_quality", node_final_archiver_and_quality)
+    graph.add_node(
+        "node_prepare_batch",
+        _instrument_node("batch_supervisor", "node_prepare_batch", node_prepare_batch, summary_builder=_prepare_batch_summary),
+    )
+    graph.add_node(
+        "node_process_next_page",
+        _instrument_node("batch_supervisor", "node_process_next_page", node_process_next_page, summary_builder=_process_next_page_summary),
+    )
+    graph.add_node(
+        "node_cross_page_consistency",
+        _instrument_node("batch_supervisor", "node_cross_page_consistency", node_cross_page_consistency, summary_builder=_cross_page_summary),
+    )
+    graph.add_node("node_rag_retrieve", _instrument_node("batch_supervisor", "node_rag_retrieve", node_rag_retrieve, summary_builder=_rag_summary))
+    graph.add_node(
+        "node_human_router",
+        _instrument_node("batch_supervisor", "node_human_router", node_human_router, summary_builder=_human_router_summary),
+    )
+    graph.add_node(
+        "node_pending_human_review",
+        _instrument_node("batch_supervisor", "node_pending_human_review", node_pending_human_review, summary_builder=_pending_review_summary),
+    )
+    graph.add_node(
+        "node_pause_for_human_review",
+        _instrument_node("batch_supervisor", "node_pause_for_human_review", node_pause_for_human_review, summary_builder=_pause_summary),
+    )
+    graph.add_node(
+        "node_final_archiver_and_quality",
+        _instrument_node(
+            "batch_supervisor",
+            "node_final_archiver_and_quality",
+            node_final_archiver_and_quality,
+            summary_builder=_final_archiver_summary,
+        ),
+    )
 
     graph.add_edge(START, "node_prepare_batch")
-    graph.add_conditional_edges("node_prepare_batch", route_after_prepare_batch)
-    graph.add_conditional_edges("node_process_next_page", route_after_next_page)
+    graph.add_conditional_edges(
+        "node_prepare_batch",
+        _instrument_route(
+            "batch_supervisor",
+            "route_after_prepare_batch",
+            "node_prepare_batch",
+            route_after_prepare_batch,
+            summary_builder=_prepare_batch_route_summary,
+        ),
+    )
+    graph.add_conditional_edges(
+        "node_process_next_page",
+        _instrument_route(
+            "batch_supervisor",
+            "route_after_next_page",
+            "node_process_next_page",
+            route_after_next_page,
+            summary_builder=_next_page_route_summary,
+        ),
+    )
     graph.add_edge("node_cross_page_consistency", "node_rag_retrieve")
     graph.add_edge("node_rag_retrieve", "node_human_router")
-    graph.add_conditional_edges("node_human_router", route_after_human_router)
+    graph.add_conditional_edges(
+        "node_human_router",
+        _instrument_route(
+            "batch_supervisor",
+            "route_after_human_router",
+            "node_human_router",
+            route_after_human_router,
+            summary_builder=_human_router_route_summary,
+        ),
+    )
     graph.add_edge("node_pending_human_review", "node_final_archiver_and_quality")
-    graph.add_conditional_edges("node_pause_for_human_review", route_after_pause)
+    graph.add_conditional_edges(
+        "node_pause_for_human_review",
+        _instrument_route(
+            "batch_supervisor",
+            "route_after_pause",
+            "node_pause_for_human_review",
+            route_after_pause,
+            summary_builder=_pause_route_summary,
+        ),
+    )
     graph.add_edge("node_final_archiver_and_quality", END)
     if with_checkpointer:
         return graph.compile(checkpointer=get_langgraph_checkpointer())

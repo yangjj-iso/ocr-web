@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import {
   aiMergeExtractBatch,
   exportArchiveRecords,
+  exportBatchMergeArchiveRecords,
   getBatchEvaluationMetrics,
   getTasksProgress,
   scanFolder,
@@ -386,6 +387,7 @@ export function useBatchUpload(mode, callbacks = {}) {
     updateProcessingProgress(doneCount.value, requestedCount, failedCount.value)
 
     while (completedCount.value + Math.max(failedCount.value - initialDone, 0) < taskIds.length) {
+      let pollFailed = false
       try {
         const { data } = await getTasksProgress(taskIds)
         completedCount.value = Number(data?.done_count || 0)
@@ -394,10 +396,12 @@ export function useBatchUpload(mode, callbacks = {}) {
         pendingCount.value = Number(data?.pending_count || 0)
         doneCount.value = completedCount.value + failedCount.value
         updateProcessingProgress(doneCount.value, requestedCount, failedCount.value)
-      } catch (_) {}
+      } catch (_) {
+        pollFailed = true
+      }
 
       if (completedCount.value + Math.max(failedCount.value - initialDone, 0) < taskIds.length) {
-        await delay(1500)
+        await delay(pollFailed ? 5000 : 1500)
       }
     }
   }
@@ -508,7 +512,7 @@ export function useBatchUpload(mode, callbacks = {}) {
 
     processing.value = false
     const hasUsableResults = completedCount.value > 0
-    batchDone.value = requestedCount > 1 && submittedTaskIds.length > 0 && hasUsableResults
+    batchDone.value = submittedTaskIds.length > 0 && hasUsableResults
     queue.value = []
     pathQueue.value = []
     scheduledTime.value = ''
@@ -554,9 +558,16 @@ export function useBatchUpload(mode, callbacks = {}) {
       failed: failedCount.value,
       hasUsableResults,
     })
+
+    if (batchDone.value) {
+      runAiMergeExtract().catch(() => {})
+    }
   }
 
-  const doExportExcel = () => exportArchiveRecords({ batch_id: lastBatchId.value, filename: 'batch_archive.xlsx' })
+  const doExportExcel = () => {
+    if (!lastBatchId.value) return
+    exportBatchMergeArchiveRecords({ batch_id: lastBatchId.value, filename: 'batch_archive.xlsx' })
+  }
 
   const doExportInitExcel = () =>
     exportArchiveRecords({ batch_id: 'init_import', filename: 'archive_catalog.xlsx' })

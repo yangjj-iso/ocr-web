@@ -1,5 +1,7 @@
 package com.ocrweb.controlplane.task.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -12,7 +14,11 @@ public final class TaskDtos {
     private TaskDtos() {
     }
 
-    public record UploadFromPathRequest(@NotBlank String filePath) {
+    public record UploadFromPathRequest(
+            @JsonProperty("file_path")
+            @JsonAlias("filePath")
+            @NotBlank String filePath
+    ) {
     }
 
     public record TaskResponse(
@@ -55,6 +61,26 @@ public final class TaskDtos {
             String reviewReason,
             OffsetDateTime createdAt,
             OffsetDateTime updatedAt
+    ) {
+    }
+
+    public record WorkflowEventResponse(
+            String eventId,
+            String eventType,
+            OffsetDateTime createdAt,
+            String occurredAt,
+            JsonNode payload,
+            JsonNode progress
+    ) {
+    }
+
+    public record WorkflowEventsResponse(
+            Long taskId,
+            String workflowThreadId,
+            String taskStatus,
+            String mode,
+            String filename,
+            List<WorkflowEventResponse> events
     ) {
     }
 

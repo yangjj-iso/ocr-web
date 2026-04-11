@@ -14,11 +14,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 # ===== 配置 =====
-DATABASE_URL = "postgresql+asyncpg://postgres:123456@localhost:5432/ocr_db"
+import os as _os
+DATABASE_URL = _os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:123456@localhost:5432/ocr_db")
 # 模版文件所在文件夹（用于按 file_path 模糊匹配数据库任务）
-TEMPLATE_FOLDER = r"D:\GOOLGE\软件著录\模版文件"
+TEMPLATE_FOLDER = _os.getenv("TEMPLATE_FOLDER", r"D:\GOOLGE\软件著录\模版文件")
 # 写入目标 Excel（xls 格式，使用 openpyxl 会生成新文件覆盖）
-OUTPUT_XLSX = r"D:\GOOLGE\软件著录\归档文件目录（所需字段）.xls"
+OUTPUT_XLSX = _os.getenv("OUTPUT_XLSX", r"D:\GOOLGE\软件著录\归档文件目录（所需字段）.xls")
 
 
 # ===== 字段提取函数 =====

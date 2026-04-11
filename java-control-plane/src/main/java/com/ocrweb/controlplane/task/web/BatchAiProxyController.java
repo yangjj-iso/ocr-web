@@ -35,6 +35,11 @@ public class BatchAiProxyController {
         return aiProxyService.proxyJsonGet(aiProxyService.batchEvaluationTruthPath(batchId), request);
     }
 
+    @GetMapping("/batches/{batchId}/ai-merge-export")
+    public ResponseEntity<byte[]> exportBatchMergeExcel(@PathVariable String batchId, HttpServletRequest request) {
+        return aiProxyService.proxyBinaryGet(aiProxyService.batchAiMergeExportPath(batchId), request);
+    }
+
     @PutMapping("/batches/{batchId}/evaluation-truth")
     public ResponseEntity<JsonNode> putBatchEvaluationTruth(
             @PathVariable String batchId,

@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 
-import { getArchiveRecords, getBatchEvaluationMetrics } from '../api/ocr.js'
+import { getArchiveRecords, getBatchEvaluationMetrics, getTasks } from '../api/ocr.js'
 
 const STORAGE_KEYS = {
   latestBatchId: 'ocr:lastBatchId',
@@ -89,6 +89,11 @@ function isBackendUnavailableError(error) {
 function isNoEligibleBatchError(error) {
   return Number(error?.response?.status || 0) === 404 &&
     /No eligible completed tasks/i.test(buildCompactErrorText(error))
+}
+
+function isMetricsEligibleStatus(status = '') {
+  const normalized = String(status || '').trim().toLowerCase()
+  return normalized === 'done' || normalized === 'human_review'
 }
 
 export function getAiAnswerSource(provider) {
@@ -286,6 +291,21 @@ export function useAiCapabilityState() {
     }
 
     try {
+      const { data: taskList } = await getTasks(1, 100, '', '', batchId)
+      const batchTasks = Array.isArray(taskList?.tasks) ? taskList.tasks : []
+      if (batchTasks.length > 0 && !batchTasks.some((task) => isMetricsEligibleStatus(task?.status))) {
+        aiServiceAvailable.value = false
+        lastError.value = ''
+        rememberAiRuntimeState({
+          latestBatchId: batchId,
+          aiServiceAvailable: false,
+          answerSource: answerSource.value,
+          lastError: '',
+        })
+        loading.value = false
+        return
+      }
+
       const { data } = await getBatchEvaluationMetrics(batchId, { forceRefresh: false })
       if (typeof data === 'string' && /<!doctype html|<html/i.test(data)) {
         throw { response: { data } }

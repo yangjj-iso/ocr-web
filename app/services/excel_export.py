@@ -24,7 +24,7 @@ ORG_SUFFIXES = (
     '党委', '支部', '协会', '中心', '银行', '局', '厅', '部', '院', '馆'
 )
 ORG_SUFFIX_PATTERN = '|'.join(re.escape(item) for item in sorted(ORG_SUFFIXES, key=len, reverse=True))
-ORG_BODY_PATTERN = rf'[\u4e00-\u9fa5A-Za-z0-9·（）()]{2,60}(?:{ORG_SUFFIX_PATTERN})'
+ORG_BODY_PATTERN = rf'[\u4e00-\u9fa5A-Za-z0-9·（）()]{{2,60}}(?:{ORG_SUFFIX_PATTERN})'
 RESP_HEAD_PATTERN = re.compile(rf'({ORG_BODY_PATTERN})\s*(?:关于|印发|发布|转发|公布|报送|请示|通知|决定|意见|办法|规定|通报|公告|方案)')
 RESP_FULL_PATTERN = re.compile(rf'({ORG_BODY_PATTERN})$')
 RESP_FRAGMENT_PATTERN = re.compile(rf'({ORG_BODY_PATTERN})')
@@ -33,29 +33,60 @@ DOC_NO_PATTERNS = (
     re.compile(r'([\u4e00-\u9fa5A-Za-z]{2,20}(?:发|函|字|办)\s*(?:\[\d{4}\]|\(\d{4}\))\s*\d+\s*号)'),
 )
 DATE_PATTERN = re.compile(r'(\d{4})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?')
-CLASSIFICATION_PATTERN = re.compile(r'(绝密|机密|秘密|内部|公开)')
+CLASSIFICATION_PATTERN = re.compile(r'(绝密|机密|秘密|内部|公开|普通)')
+PERIOD_DOC_NO_PATTERNS = (
+    re.compile(r'(\d{4}\s*年\s*第\s*\d+\s*期)'),
+    re.compile(r'(第\s*\d+\s*期)'),
+)
+ISSUED_BY_PATTERN = re.compile(r'([\u4e00-\u9fa5A-Za-z0-9·（）()]{4,40}(?:' + ORG_SUFFIX_PATTERN + r'))\s*\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日\s*(?:印发|发布|下发)')
 
-def _extract_archive_number(filename: str) -> str:
+def _extract_archive_number_from_path(file_path: str) -> str:
+    """Parse folder hierarchy to extract archive number.
+    Supports structures like: .../WS/2024/D30/0156/... → WS·2024·D30-0156
+    """
+    if not file_path:
+        return ""
+    parts = Path(file_path).parts
+    for i in range(len(parts) - 1):
+        upper = parts[i].upper()
+        if upper in ('WS', 'KJ') and i + 3 < len(parts):
+            category = upper
+            year_part = parts[i + 1]
+            retention_part = parts[i + 2]
+            item_no_part = parts[i + 3]
+            if re.fullmatch(r'\d{4}', year_part) and re.fullmatch(r'[A-Za-z]\d+[A-Za-z]?', retention_part):
+                if re.fullmatch(r'\d+', item_no_part):
+                    return f"{category}·{year_part}·{retention_part}-{item_no_part}"
+    return ""
+
+def _extract_archive_number(filename: str, file_path: str = "") -> str:
     stem = Path(filename).stem.strip()
     if not stem:
-        return ""
+        return _extract_archive_number_from_path(file_path)
 
-    ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+(?:-\d+)+)$', stem, re.IGNORECASE)
+    normalized_stem = re.sub(r'\s+', '', stem)
+    normalized_stem = normalized_stem.replace('•', '·').replace('・', '·')
+
+    ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+-\d+)', normalized_stem, re.IGNORECASE)
     if ws_match:
         return ws_match.group(1)
 
-    kj_match = re.match(r'^(KJ(?:-[A-Za-z0-9]+){4,})$', stem, re.IGNORECASE)
+    kj_match = re.match(r'^(KJ(?:-[A-Za-z0-9]+){4,})$', normalized_stem, re.IGNORECASE)
     if kj_match:
         return kj_match.group(1)
 
-    legacy_ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+[-]\d+)$', stem, re.IGNORECASE)
+    legacy_ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+[·.]\d+)', normalized_stem, re.IGNORECASE)
     if legacy_ws_match:
         return legacy_ws_match.group(1)
 
-    if re.match(r'^(KJ[-].*)$', stem, re.IGNORECASE):
-        parts = stem.split('-')
-        if len(parts) >= 5:
-            return '-'.join(parts[:5])
+    if re.match(r'^(KJ[-].*)$', normalized_stem, re.IGNORECASE):
+        parts_list = normalized_stem.split('-')
+        if len(parts_list) >= 5:
+            return '-'.join(parts_list[:5])
+
+    path_result = _extract_archive_number_from_path(file_path)
+    if path_result:
+        return path_result
 
     return ""
 
@@ -249,6 +280,22 @@ def _looks_like_page_number(text: str) -> bool:
 def _is_probable_title_text(text: str) -> bool:
     return any(keyword in text for keyword in TITLE_KEYWORDS)
 
+def _looks_like_archive_stamp_code(text: str) -> bool:
+    search_text = re.sub(r'\s+', '', _normalize_search_text(text)).upper()
+    if not search_text:
+        return False
+    if re.search(r'全宗号|门类|年度|件号|保管期限|页数|目录号', text):
+        return True
+    if ("WS" in search_text or "KJ" in search_text) and sum(ch.isdigit() for ch in search_text) >= 6:
+        return True
+    if re.fullmatch(r'[A-Z0-9.·-]{10,}', search_text) and sum(ch.isdigit() for ch in search_text) >= 5:
+        return True
+    return False
+
+def _is_generic_short_heading(text: str) -> bool:
+    clean = re.sub(r'\s+', '', _clean_line_text(text))
+    return clean in {"会议纪要", "通知", "决定", "意见", "办法", "通报", "公告", "方案", "细则"}
+
 def _score_title_item(item: dict) -> int:
     """
     打分系统（标题评判）
@@ -261,7 +308,11 @@ def _score_title_item(item: dict) -> int:
     返回分数越高，该行文本是文件标题的概率越大。
     """
     text = item['text']
-    if item['page_index'] != 0 or item['y_ratio'] > 0.55:
+    if item['page_index'] != 0 or item['y_ratio'] > 0.72:
+        return -100
+    if _looks_like_archive_stamp_code(text):
+        return -100
+    if re.search(r'全宗号|门类.*年度|件\s*号|保管期限|页\s*数', text):
         return -100
     if re.match(r'^[甲乙丙丁]方[:：]', text):
         return -100
@@ -271,10 +322,14 @@ def _score_title_item(item: dict) -> int:
         return -100
     if _extract_doc_no_from_text(text):
         return -80
+    if _extract_period_doc_no(text) and len(text) <= 24:
+        return -60
     if _extract_date_candidates(text) and len(text) <= 24:
         return -40
     if CLASSIFICATION_PATTERN.fullmatch(text):
         return -40
+    if _is_generic_short_heading(text):
+        return -20
 
     score = 0
     if item['type'] in TITLE_TYPES:
@@ -291,6 +346,10 @@ def _score_title_item(item: dict) -> int:
         score -= 4
     if item['y_ratio'] < 0.35:
         score += 4
+    elif item['y_ratio'] <= 0.68:
+        score += 2
+    if _is_probable_title_text(text) and any(suffix in text for suffix in ORG_SUFFIXES):
+        score += 10
     if any(text.endswith(suffix) for suffix in ORG_SUFFIXES) and '关于' not in text:
         score -= 5
     if sum(ch.isdigit() for ch in text) >= 8:
@@ -302,7 +361,7 @@ def _join_title_group(group: list[dict]) -> str:
     return re.sub(r'\s+', '', text)[:120]
 
 def _extract_title(items: list[dict], fallback_lines: list[str]) -> str:
-    top_items = [item for item in items if item['page_index'] == 0 and item['y_ratio'] <= 0.55]
+    top_items = [item for item in items if item['page_index'] == 0 and item['y_ratio'] <= 0.72]
     candidates = [item for item in top_items if _score_title_item(item) > 0]
     if candidates:
         groups = []
@@ -328,24 +387,68 @@ def _extract_title(items: list[dict], fallback_lines: list[str]) -> str:
             if not group_text:
                 continue
             score = sum(_score_title_item(item) for item in group)
+            if _looks_like_archive_stamp_code(group_text):
+                score -= 120
             if _is_probable_title_text(group_text):
+                score += 6
+            if len(group) >= 2:
                 score += 6
             if 8 <= len(group_text) <= 80:
                 score += 4
+            if _is_probable_title_text(group_text) and any(suffix in group_text for suffix in ORG_SUFFIXES):
+                score += 18
+            if _is_generic_short_heading(group_text):
+                score -= 16
             if group_text.endswith(('通知', '决定', '意见', '办法', '规则', '方法', '规范', '条例', '规定', '请示', '通报', '公告', '方案', '细则', '会议纪要')):
                 score += 2
             if score > best_score:
                 best_score = score
                 best_text = group_text
+        for index in range(min(len(groups) - 1, 5)):
+            combined_text = _join_title_group(groups[index] + groups[index + 1])
+            if not combined_text:
+                continue
+            if _looks_like_archive_stamp_code(combined_text):
+                continue
+            score = sum(_score_title_item(item) for item in groups[index] + groups[index + 1])
+            if _is_probable_title_text(combined_text):
+                score += 10
+            if any(suffix in combined_text for suffix in ORG_SUFFIXES):
+                score += 10
+            if _is_probable_title_text(combined_text) and any(suffix in combined_text for suffix in ORG_SUFFIXES):
+                score += 20
+            if 12 <= len(combined_text) <= 100:
+                score += 8
+            if score > best_score:
+                best_score = score
+                best_text = combined_text
         if best_text:
             return best_text
 
     for line in fallback_lines[:10]:
         clean = _clean_line_text(line)
-        if len(clean) >= 6 and not _looks_like_page_number(clean) and not _extract_doc_no_from_text(clean) and _is_probable_title_text(clean):
+        if (
+            len(clean) >= 6
+            and not _looks_like_page_number(clean)
+            and not _extract_doc_no_from_text(clean)
+            and not _looks_like_archive_stamp_code(clean)
+            and not _is_generic_short_heading(clean)
+            and _is_probable_title_text(clean)
+        ):
             return clean[:120]
 
-    candidates = sorted((_clean_line_text(line) for line in fallback_lines[:8]), key=len, reverse=True)
+    candidates = sorted(
+        (
+            _clean_line_text(line)
+            for line in fallback_lines[:8]
+            if _clean_line_text(line)
+            and not _looks_like_archive_stamp_code(_clean_line_text(line))
+            and not _looks_like_page_number(_clean_line_text(line))
+            and not _extract_doc_no_from_text(_clean_line_text(line))
+        ),
+        key=len,
+        reverse=True,
+    )
     return candidates[0][:120] if candidates else ''
 
 def _clean_org_name(text: str) -> str:
@@ -385,10 +488,14 @@ def _extract_responsible(items: list[dict], doc_no: str) -> str:
                 score += 8
             if item['page_index'] == item['page_total'] - 1 and item['y_ratio'] > 0.55:
                 score += 12
+            if item['page_index'] == item['page_total'] - 1 and ISSUED_BY_PATTERN.search(item['text']):
+                score += 15
             if item['type'] == 'seal':
                 score += 5
             if any(word in item['text'] for word in ('盖章', '印章', '公章')):
                 score += 4
+            if any(word in item['text'] for word in ('印发', '发布', '下发')):
+                score += 6
             if RESP_HEAD_PATTERN.search(item['text']):
                 score += 6
             if RESP_FULL_PATTERN.search(_clean_line_text(item['text'])):
@@ -412,11 +519,22 @@ def _extract_responsible(items: list[dict], doc_no: str) -> str:
             return match.group(1)
     return ''
 
+def _extract_period_doc_no(text: str) -> str:
+    """Extract period/issue style document numbers like '2024年第13期'."""
+    search_text = _normalize_search_text(text)
+    for pattern in PERIOD_DOC_NO_PATTERNS:
+        match = pattern.search(search_text)
+        if match:
+            return re.sub(r'\s+', '', match.group(1))
+    return ''
+
 def _extract_doc_no(items: list[dict], fallback_lines: list[str]) -> str:
     best_value = ''
     best_score = -10**9
     for item in items:
         candidate = _extract_doc_no_from_text(item['text'])
+        if not candidate:
+            candidate = _extract_period_doc_no(item['text'])
         if not candidate:
             continue
         score = 0
@@ -439,6 +557,8 @@ def _extract_doc_no(items: list[dict], fallback_lines: list[str]) -> str:
         return best_value
     for line in fallback_lines[:12]:
         candidate = _extract_doc_no_from_text(line)
+        if not candidate:
+            candidate = _extract_period_doc_no(line)
         if candidate:
             return candidate
     return ''
@@ -460,9 +580,15 @@ def _extract_date(items: list[dict], fallback_lines: list[str]) -> str:
                 score += 4
             if len(item['text']) <= 24:
                 score += 2
-            if any(word in item['text'] for word in ('印发', '成文', '日期')):
+            if any(word in item['text'] for word in ('印发', '发布', '下发')):
+                score += 8
+            if any(word in item['text'] for word in ('成文', '日期')):
                 score += 4
-            if any(word in item['text'] for word in ('起', '截至', '会议', '活动', '培训', '实施')):
+            if item['page_index'] == item['page_total'] - 1 and ISSUED_BY_PATTERN.search(item['text']):
+                score += 10
+            if any(word in item['text'] for word in ('起', '截至', '活动', '培训', '实施')):
+                score -= 4
+            if any(word in item['text'] for word in ('会议',)) and '印发' not in item['text']:
                 score -= 4
             marker = (score, item['page_index'], item['y1'])
             if best_marker is None or marker > best_marker:
@@ -480,29 +606,38 @@ def _extract_classification(items: list[dict], full_text: str) -> str:
     best_value = ''
     best_score = -10**9
     for item in items:
-        match = CLASSIFICATION_PATTERN.search(_clean_line_text(item['text']))
+        clean = _clean_line_text(item['text'])
+        match = CLASSIFICATION_PATTERN.search(clean)
         if not match:
+            continue
+        value = match.group(1)
+        if value == '普通' and '密级' not in clean and len(clean) > 12:
             continue
         score = 0
         if item['page_index'] == 0:
             score += 4
         if item['y_ratio'] < 0.2 or item['y_ratio'] > 0.75:
             score += 6
-        if len(item['text']) <= 12:
+        if len(clean) <= 12:
             score += 4
+        if '密级' in clean:
+            score += 8
         if score > best_score:
             best_score = score
-            best_value = match.group(1)
+            best_value = value
     if best_value:
         return best_value
+    classified_match = re.search(r'密级[：:\s]*(' + CLASSIFICATION_PATTERN.pattern[1:-1] + r')', _normalize_search_text(full_text)[:800])
+    if classified_match:
+        return classified_match.group(1)
     match = CLASSIFICATION_PATTERN.search(_normalize_search_text(full_text)[:600])
     return match.group(1) if match else ''
 
-def extract_fields(filename: str, full_text: str, result_json, page_count: int) -> dict:
+def extract_fields(filename: str, full_text: str, result_json, page_count: int, *, file_path: str = "") -> dict:
     """
     核心业务：从 OCR 结果中提取关键业务字段（用于后续的报表生成）。
     
-    采用“探针式”和“计分卡”的多维度规则引擎，由于不同类型的机构发文在排版（如文号在左上还是居中、日期靠底部还是页眉）
+    采用"探针式"和"计分卡"的多维度规则引擎，由于不同类型的机构发文在排版（如文号在左上还是居中、日期靠底部还是页眉）
     和字体特征上有很大差异，这里使用了 `score` 加权机制来评判最可能的字段归属。
 
     Args:
@@ -510,6 +645,7 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int) 
         full_text: 未经排版梳理的全部提取文本流。
         result_json: 由 ocr_engine 输出的带版面、行列和置信度坐标的富文本对象。
         page_count: 总页数（用于确定首页和尾页位置的边界条件）。
+        file_path: 文件完整路径，用于从文件夹层级解析档号。
     """
     fields = {h: "" for h in HEADERS}
     fields["页数"] = str(page_count) if page_count else ""
@@ -524,8 +660,8 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int) 
             continue
         lines.append(clean)
 
-    # --- 档号：从文件名提取 ---
-    fields["档号"] = _extract_archive_number(filename)
+    # --- 档号：从文件名 + 文件夹路径提取 ---
+    fields["档号"] = _extract_archive_number(filename, file_path)
 
     # --- 文号 ---
     items = _collect_items(result_json, full_text)

@@ -226,6 +226,32 @@ public class OcrTaskService {
         return toDetail(task);
     }
 
+    public TaskDtos.WorkflowEventsResponse getWorkflowEvents(Long taskId) {
+        OcrTaskEntity task = taskRepository.findById(taskId).orElseThrow();
+        List<TaskDtos.WorkflowEventResponse> events = callbackEventRepository
+                .findByTaskIdOrderByCreatedAtAscIdAsc(taskId)
+                .stream()
+                .map(this::toWorkflowEvent)
+                .toList();
+        String workflowThreadId = safe(task.getWorkflowThreadId());
+        if (!StringUtils.hasText(workflowThreadId)) {
+            workflowThreadId = events.stream()
+                    .map(TaskDtos.WorkflowEventResponse::payload)
+                    .map(this::extractWorkflowThreadId)
+                    .filter(StringUtils::hasText)
+                    .findFirst()
+                    .orElse("");
+        }
+        return new TaskDtos.WorkflowEventsResponse(
+                task.getId(),
+                workflowThreadId,
+                effectiveStatus(task),
+                task.getMode(),
+                task.getFilename(),
+                events
+        );
+    }
+
     public TaskStorageService.StoredFileResource getTaskFileResource(Long taskId) throws IOException {
         OcrTaskEntity task = taskRepository.findById(taskId).orElseThrow();
         return storageService.loadTaskResource(task);
@@ -328,6 +354,7 @@ public class OcrTaskService {
         if (task.getTraceId() == null || task.getTraceId().isBlank()) {
             task.setTraceId(request.traceId());
         }
+        updateWorkflowThreadId(task, request.payload());
         if (request.progress() != null) {
             task.setProcessedPages(request.progress().currentPage());
             task.setTotalPages(request.progress().totalPages());
@@ -547,6 +574,47 @@ public class OcrTaskService {
         entity.setEventType(eventType);
         entity.setPayloadJson(payload);
         callbackEventRepository.save(entity);
+    }
+
+    private TaskDtos.WorkflowEventResponse toWorkflowEvent(TaskCallbackEventEntity entity) {
+        JsonNode callbackPayload = entity.getPayloadJson();
+        JsonNode payload = callbackPayload != null && callbackPayload.has("payload")
+                ? callbackPayload.get("payload")
+                : objectMapper.createObjectNode();
+        JsonNode progress = callbackPayload != null && callbackPayload.has("progress")
+                ? callbackPayload.get("progress")
+                : objectMapper.createObjectNode();
+        String occurredAt = callbackPayload != null && callbackPayload.has("occurredAt")
+                ? callbackPayload.path("occurredAt").asText("")
+                : "";
+        String eventId = callbackPayload != null && callbackPayload.has("eventId")
+                ? callbackPayload.path("eventId").asText("")
+                : entity.getEventId();
+        return new TaskDtos.WorkflowEventResponse(
+                eventId,
+                entity.getEventType(),
+                entity.getCreatedAt(),
+                occurredAt,
+                payload,
+                progress
+        );
+    }
+
+    private void updateWorkflowThreadId(OcrTaskEntity task, JsonNode payload) {
+        if (payload == null || payload.isNull()) {
+            return;
+        }
+        String workflowThreadId = extractWorkflowThreadId(payload);
+        if (StringUtils.hasText(workflowThreadId)) {
+            task.setWorkflowThreadId(workflowThreadId);
+        }
+    }
+
+    private String extractWorkflowThreadId(JsonNode payload) {
+        if (payload == null || payload.isNull()) {
+            return "";
+        }
+        return safe(payload.path("workflow_thread_id").asText(""));
     }
 
     private TaskDtos.TaskResponse toSummary(OcrTaskEntity task) {

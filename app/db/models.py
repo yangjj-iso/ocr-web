@@ -9,7 +9,7 @@ Database Models (Entities)
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +32,11 @@ class AppUser(Base):
 
 class OCRTask(Base):
     __tablename__ = "ocr_tasks"
+    __table_args__ = (
+        Index("ix_ocr_tasks_status", "status"),
+        Index("ix_ocr_tasks_file_path", "file_path"),
+        Index("ix_ocr_tasks_created_at", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -53,6 +58,11 @@ class OCRTask(Base):
 
 class ArchiveRecord(Base):
     __tablename__ = "archive_records"
+    __table_args__ = (
+        Index("ix_archive_records_batch_id", "batch_id"),
+        Index("ix_archive_records_task_id", "task_id"),
+        Index("ix_archive_records_batch_folder", "batch_folder"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)           # 关联 ocr_tasks.id，外部导入时为 NULL

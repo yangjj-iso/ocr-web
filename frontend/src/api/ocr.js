@@ -124,10 +124,22 @@ export const deleteTasksByFolder = (folder) =>
 export const deleteTasksBySubmission = (submissionId) =>
   controlPlaneApi.delete('/tasks/by-submission', { params: { submission_id: submissionId } })
 
+const normalizeArchiveRecordParams = (params = {}) => {
+  const normalized = {}
+  if (params.folder) normalized.folder = params.folder
+  const batchId = params.batchId || params.batch_id
+  if (batchId) normalized.batchId = batchId
+  if (params.page != null) normalized.page = params.page
+  const pageSize = params.pageSize || params.page_size
+  if (pageSize != null) normalized.pageSize = pageSize
+  return normalized
+}
+
 export const exportArchiveRecords = (params = {}) => {
   const qs = new URLSearchParams()
-  if (params.folder) qs.set('folder', params.folder)
-  if (params.batch_id) qs.set('batch_id', params.batch_id)
+  const normalized = normalizeArchiveRecordParams(params)
+  if (normalized.folder) qs.set('folder', normalized.folder)
+  if (normalized.batchId) qs.set('batchId', normalized.batchId)
   const link = document.createElement('a')
   link.href = controlPlaneBackendUrl(`/api/ocr/archive-records/export?${qs.toString()}`)
   link.download = params.filename || 'archive_records.xlsx'
@@ -136,12 +148,29 @@ export const exportArchiveRecords = (params = {}) => {
   setTimeout(() => document.body.removeChild(link), 200)
 }
 
-export const getArchiveRecords = (params = {}) => controlPlaneApi.get('/archive-records', { params })
+export const exportBatchMergeArchiveRecords = (params = {}) => {
+  const normalized = normalizeArchiveRecordParams(params)
+  if (!normalized.batchId) return
+  const qs = new URLSearchParams()
+  if (params.forceRefresh != null) qs.set('force_refresh', params.forceRefresh ? 'true' : 'false')
+  if (params.similarityThreshold !== undefined && params.similarityThreshold !== null) {
+    qs.set('similarity_threshold', String(params.similarityThreshold))
+  }
+  const suffix = qs.toString() ? `?${qs.toString()}` : ''
+  const link = document.createElement('a')
+  link.href = controlPlaneBackendUrl(`/api/ocr/batches/${encodeURIComponent(normalized.batchId)}/ai-merge-export${suffix}`)
+  link.download = params.filename || 'batch_archive.xlsx'
+  document.body.appendChild(link)
+  link.click()
+  setTimeout(() => document.body.removeChild(link), 200)
+}
+
+export const getArchiveRecords = (params = {}) => controlPlaneApi.get('/archive-records', { params: normalizeArchiveRecordParams(params) })
 
 export const importArchiveFromExcel = (filePath, batchId = '') =>
-  controlPlaneApi.post('/archive-records/import-excel', { file_path: filePath, batch_id: batchId })
+  controlPlaneApi.post('/archive-records/import-excel', { filePath, batchId })
 
-export const deleteArchiveRecords = (params = {}) => controlPlaneApi.delete('/archive-records', { params })
+export const deleteArchiveRecords = (params = {}) => controlPlaneApi.delete('/archive-records', { params: normalizeArchiveRecordParams(params) })
 
 export const ensureFolderBatch = (folder) => controlPlaneApi.post('/folders/ensure-batch', { folder })
 

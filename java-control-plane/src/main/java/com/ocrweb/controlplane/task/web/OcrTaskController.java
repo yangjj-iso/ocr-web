@@ -88,6 +88,11 @@ public class OcrTaskController {
         return taskService.getTask(taskId);
     }
 
+    @GetMapping("/tasks/{taskId}/workflow-events")
+    public TaskDtos.WorkflowEventsResponse getWorkflowEvents(@PathVariable Long taskId) {
+        return taskService.getWorkflowEvents(taskId);
+    }
+
     @org.springframework.web.bind.annotation.PutMapping("/tasks/{taskId}")
     public TaskDtos.TaskDetailResponse updateTask(
             @PathVariable Long taskId,

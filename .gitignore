@@ -33,6 +33,9 @@ start.bat
 
 # Environment
 .env
+.env.local
+.env.docker
+.env.docker.local
 
 # Database
 *.db
@@ -41,7 +44,23 @@ start.bat
 *.tmp
 tmp/
 
+# Build archives (do not commit)
+*.zip
+
+# Test export artifacts
+test_export_*.xlsx
+
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.env.local
 static/vue/
+
+# Docker middleware runtime data
+docker-data/
+
+# Java Maven build output
+java-control-plane/target/
+
+# Windsurf IDE config
+.windsurf/

@@ -81,6 +81,12 @@ public class InternalTaskCallbackController {
                 .body(new ByteArrayResource(resource.content()));
     }
 
+    @GetMapping("/{taskId}/workflow-events")
+    public TaskDtos.WorkflowEventsResponse workflowEvents(@PathVariable Long taskId, HttpServletRequest servletRequest) {
+        verifyInternalToken(servletRequest);
+        return taskService.getWorkflowEvents(taskId);
+    }
+
     private void verifyInternalToken(HttpServletRequest request) {
         if (!StringUtils.hasText(internalApiProperties.getToken())) {
             return;

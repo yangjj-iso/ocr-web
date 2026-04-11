@@ -90,6 +90,13 @@
             placeholder="处理结果保存位置（可选）"
             class="w-full rounded-lg border border-dashed border-[var(--gov-border)] px-3 py-2 text-xs focus:border-[var(--gov-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--gov-primary)]/30"
           />
+
+          <button
+            class="w-full rounded-lg border border-dashed border-[var(--gov-border)] bg-white py-2 text-xs font-medium text-[var(--gov-text-muted)] transition hover:border-[var(--gov-border-strong)] hover:text-[var(--gov-text)]"
+            @click="doExportInitExcel"
+          >
+            导出目录清单模板
+          </button>
         </div>
       </div>
 
@@ -190,7 +197,7 @@
     </div>
 
     <div v-if="hasQueueItems || processing || batchDone" class="space-y-3 px-4 pb-4">
-      <div class="flex items-center space-x-2">
+      <div v-if="hasQueueItems && !processing && !batchDone" class="flex items-center space-x-2">
         <label class="text-xs gov-muted">定时开始</label>
         <input
           v-model="scheduledTime"
@@ -201,6 +208,7 @@
       </div>
 
       <button
+        v-if="!batchDone"
         class="w-full rounded-lg py-2 text-sm font-medium text-white transition-all"
         :class="processing ? 'cursor-not-allowed bg-slate-400' : cc.btn"
         :disabled="processing || !hasQueueItems"
@@ -209,43 +217,56 @@
         {{ actionButtonLabel }}
       </button>
 
-      <div v-if="batchDone && lastBatchId && !processing" class="grid grid-cols-2 gap-2">
-        <button class="rounded-lg bg-[var(--gov-primary)] py-1.5 text-xs font-medium text-white transition hover:brightness-105" @click="doExportInitExcel">
-          导出目录清单
-        </button>
-        <button class="rounded-lg bg-emerald-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105" @click="doExportExcel">
-          导出本次归档
-        </button>
-        <button
-          class="rounded-lg bg-violet-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-violet-300"
-          :disabled="aiMerging"
-          @click="runAiMergeExtract"
-        >
-          {{ aiMerging ? '智能整合中…' : '智能整合' }}
-        </button>
-        <button
-          class="rounded-lg bg-slate-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-300"
-          :disabled="!lastBatchId"
-          @click="openBatchInsights"
-        >
-          质量概览
-        </button>
-      </div>
+      <div v-if="batchDone && lastBatchId && !processing" class="space-y-2">
+        <div class="flex items-center gap-2 rounded-lg border px-3 py-2 text-xs" :class="aiMerging ? 'border-violet-200 bg-violet-50' : aiMergeError ? 'border-amber-200 bg-amber-50' : aiMergeResult ? 'border-emerald-200 bg-emerald-50' : 'border-[var(--gov-border)] bg-[var(--gov-surface-muted)]'">
+          <span v-if="aiMerging" class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-violet-400 border-t-transparent"></span>
+          <span v-else-if="aiMergeResult" class="text-emerald-600">&#10003;</span>
+          <span v-else-if="aiMergeError" class="text-amber-600">&#9888;</span>
+          <span class="flex-1" :class="aiMerging ? 'text-violet-700' : aiMergeError ? 'text-amber-700' : aiMergeResult ? 'text-emerald-700' : 'text-[var(--gov-text-muted)]'">
+            <template v-if="aiMerging">智能整合分析中…</template>
+            <template v-else-if="aiMergeError">{{ aiMergeError }}</template>
+            <template v-else-if="aiMergeResult">智能整合完成，已形成 {{ mergedDocuments.length || aiMergeResult.summary.documents_count }} 份归并文件建议。</template>
+            <template v-else>等待智能整合…</template>
+          </span>
+          <button
+            v-if="aiMergeResult && !aiMerging"
+            class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:brightness-105"
+            @click="mergeModalVisible = true"
+          >
+            查看结果
+          </button>
+          <button
+            v-if="aiMergeError && !aiMerging"
+            class="shrink-0 rounded bg-amber-600 px-2 py-1 text-[11px] font-medium text-white hover:brightness-105"
+            @click="runAiMergeExtract"
+          >
+            重试
+          </button>
+        </div>
 
-      <p v-if="aiMergeError" class="text-xs text-[var(--gov-danger)]">{{ aiMergeError }}</p>
-      <p v-if="aiMergeResult && !aiMerging" class="text-xs text-[var(--gov-success)]">
-        智能整合已完成，已形成 {{ mergedDocuments.length || aiMergeResult.summary.documents_count }} 份归并文件建议。
-      </p>
+        <div class="grid grid-cols-2 gap-2">
+          <button class="rounded-lg bg-emerald-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105" @click="doExportExcel">
+            导出本次归档
+          </button>
+          <button
+            class="rounded-lg bg-slate-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-300"
+            :disabled="!lastBatchId"
+            @click="openBatchInsights"
+          >
+            质量概览
+          </button>
+        </div>
+      </div>
     </div>
 
-    <div v-if="aiMergeResult" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="clearAiMergeResult">
+    <div v-if="aiMergeResult && mergeModalVisible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="mergeModalVisible = false">
       <div class="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-xl bg-white shadow-2xl">
         <div class="flex items-center justify-between border-b border-[var(--gov-border)] px-5 py-3">
           <div>
             <h3 class="text-sm font-semibold text-[var(--gov-text)]">智能整合结果</h3>
             <p class="text-xs gov-muted">已生成可核对的归并文件和字段建议。</p>
           </div>
-          <button class="rounded px-2 py-1 text-xs gov-muted hover:bg-slate-100" @click="clearAiMergeResult">关闭</button>
+          <button class="rounded px-2 py-1 text-xs gov-muted hover:bg-slate-100" @click="mergeModalVisible = false">关闭</button>
         </div>
 
         <div class="max-h-[calc(85vh-64px)] space-y-4 overflow-y-auto px-5 py-4">
@@ -391,7 +412,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useBatchUpload } from '../composables/useBatchUpload.js'
@@ -432,6 +453,7 @@ const cc = computed(() => COLOR_MAP[props.model.color] || COLOR_MAP.blue)
 const dragover = ref(false)
 const fileInput = ref(null)
 const folderInput = ref(null)
+const mergeModalVisible = ref(false)
 
 const {
   batchDone,
@@ -442,7 +464,6 @@ const {
   aiMetricsError,
   aiMetricsLoading,
   clearQueue,
-  clearAiMergeResult,
   displayQueueSummary,
   doExportExcel,
   doExportInitExcel,
@@ -481,6 +502,10 @@ const {
 } = useBatchUpload(props.model.mode, {
   onSubmitted: () => emit('start-batch'),
   onCompleted: (payload) => emit('batch-completed', payload),
+})
+
+watch(aiMergeResult, (val) => {
+  mergeModalVisible.value = !!val
 })
 
 const mergedDocuments = computed(() => buildMergedDocumentViews(aiMergeResult.value))

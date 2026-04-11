@@ -17,7 +17,7 @@ from app.services.document_boundary_feedback_service import (
     get_batch_boundary_truth as load_batch_boundary_truth,
     save_batch_boundary_truth as persist_batch_boundary_truth,
 )
-from app.services.batch_merge_extraction_service import get_batch_boundary_analysis_result
+from app.services.batch_merge_extraction_service import export_batch_merge_extract_excel, get_batch_boundary_analysis_result
 
 
 def scan_allowed_folder(folder: Path) -> dict:
@@ -141,6 +141,24 @@ async def ai_merge_extract_batch(
         batch_id=batch_id,
         include_evidence=include_evidence,
         force_refresh=force_refresh,
+        similarity_threshold=similarity_threshold,
+    )
+
+
+async def export_batch_ai_merge_excel(
+    *,
+    batch_id: str,
+    force_refresh: bool,
+    output_path: str,
+    similarity_threshold: int | None = None,
+    db,
+):
+    return await export_batch_merge_extract_excel(
+        db,
+        batch_id=batch_id,
+        include_evidence=False,
+        force_refresh=force_refresh,
+        output_path=output_path,
         similarity_threshold=similarity_threshold,
     )
 

@@ -73,4 +73,12 @@ public class TaskCallbackEventEntity {
     public void setPayloadJson(JsonNode payloadJson) {
         this.payloadJson = payloadJson;
     }
+
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(OffsetDateTime createdAt) {
+        this.createdAt = createdAt;
+    }
 }

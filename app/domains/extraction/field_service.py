@@ -15,8 +15,8 @@ from app.services import llm_field_extraction_service as legacy_llm_extraction
 from app.shared.contracts import FieldExtractionResult
 
 
-def extract_fields(filename: str, full_text: str, result_json, page_count: int) -> dict[str, str]:
-    raw_fields = legacy_excel_export.extract_fields(filename, full_text, result_json, page_count)
+def extract_fields(filename: str, full_text: str, result_json, page_count: int, *, file_path: str = "") -> dict[str, str]:
+    raw_fields = legacy_excel_export.extract_fields(filename, full_text, result_json, page_count, file_path=file_path)
     return {str(key): str(value or "") for key, value in (raw_fields or {}).items()}
 
 

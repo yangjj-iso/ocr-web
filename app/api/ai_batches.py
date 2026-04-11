@@ -1,11 +1,13 @@
 """AI-facing batch routes: field extraction and smart merge."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, raise_for_error, raise_service_unavailable, require_auth
 from app.application.workflows.batches import (
     ai_extract_task_fields,
+    export_batch_ai_merge_excel,
     get_batch_boundary_analysis,
     get_batch_boundary_truth,
     ai_merge_extract_batch as run_ai_merge_extract_batch,
@@ -20,6 +22,14 @@ from app.schemas.batches import (
     AIExtractFieldsRequest,
     AIExtractFieldsResponse,
 )
+import shutil
+import tempfile
+from pathlib import Path
+
+def _safe_export_filename(batch_id: str) -> str:
+    normalized = ''.join(ch if ch.isalnum() or ch in {'-', '_'} else '_' for ch in str(batch_id or ''))
+    normalized = normalized.strip('_') or 'batch'
+    return f"{normalized}_archive.xlsx"
 
 
 router = APIRouter(
@@ -87,6 +97,40 @@ async def ai_merge_extract_batch(
     if not result:
         raise HTTPException(status_code=404, detail="No eligible completed tasks were found for this batch.")
     return result
+
+
+@router.get("/batches/{batch_id}/ai-merge-export")
+async def export_batch_merge_excel(
+    batch_id: str,
+    background_tasks: BackgroundTasks,
+    force_refresh: bool = False,
+    similarity_threshold: int | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    export_dir = Path(tempfile.mkdtemp(prefix="ocr-merge-export-"))
+    export_file = export_dir / _safe_export_filename(batch_id)
+    try:
+        file_path = await export_batch_ai_merge_excel(
+            batch_id=batch_id,
+            force_refresh=force_refresh,
+            output_path=str(export_file),
+            similarity_threshold=similarity_threshold,
+            db=db,
+        )
+    except Exception as error:  # noqa: BLE001
+        shutil.rmtree(export_dir, ignore_errors=True)
+        raise_service_unavailable(error, "Smart merge export service is temporarily unavailable. Please retry later.")
+
+    if not file_path:
+        shutil.rmtree(export_dir, ignore_errors=True)
+        raise HTTPException(status_code=404, detail="No merged archive documents were generated for this batch.")
+
+    background_tasks.add_task(shutil.rmtree, export_dir, True)
+    return FileResponse(
+        path=file_path,
+        filename=Path(file_path).name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @router.get("/batches/{batch_id}/boundary-analysis", response_model=AIBoundaryAnalysisResponse)

@@ -477,18 +477,18 @@
             </div>
             <button
               class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition"
-              :class="aiLoading || isMergedMaterialView ? 'bg-indigo-50 text-indigo-400' : 'bg-indigo-600 text-white hover:bg-indigo-700'"
-              :disabled="aiLoading || task?.status !== 'done' || isMergedMaterialView"
+              :class="aiLoading || fieldsLoading || (!isMergedMaterialView && task?.status !== 'done') ? 'bg-indigo-50 text-indigo-400' : 'bg-indigo-600 text-white hover:bg-indigo-700'"
+              :disabled="aiLoading || fieldsLoading || (!isMergedMaterialView && task?.status !== 'done')"
               @click="runAiExtraction"
             >
               <svg v-if="aiLoading" class="h-3.5 w-3.5 animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16 8 8 0 008-8h-4" /></svg>
               <svg v-else class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
-              {{ aiLoading ? '提取中…' : 'AI 智能提取' }}
+              {{ aiLoading ? '提取中…' : (isMergedMaterialView ? '整组字段提取' : 'AI 智能提取') }}
             </button>
           </div>
 
           <div v-if="isMergedMaterialView" class="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-700">
-            当前为同文件合并视图，识别结果已按连续页收纳展示。字段提取与字段编辑仍按单页任务管理，如需修正字段，请点击左侧具体页进入单页视图。
+            当前为同文件合并视图，字段提取已按整组文档口径展示。这里看到的是整份文件的合并字段；如需逐页修正内容，可切换到左侧具体页继续处理。
           </div>
 
           <div v-if="fieldsLoading" class="flex items-center justify-center py-12 text-sm text-gray-400">
@@ -756,6 +756,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import {
   aiExtractFields,
+  aiMergeExtractBatch,
   ensureFolderBatch,
   getBatchBoundaryAnalysis,
   getTask,
@@ -766,6 +767,7 @@ import {
 } from '@/api/ocr.js'
 import EditableTable from '@/components/EditableTable.vue'
 import { useResultViewState } from '@/composables/useResultViewState.js'
+import { buildMergedDocumentViews } from '@/utils/mergeDocumentDisplay.js'
 import { normalizeTaskForDisplay } from '@/utils/ocrDisplay.js'
 
 const props = defineProps({
@@ -945,7 +947,7 @@ const folderTaskMap = computed(() => new Map(
 
 const boundaryGroupById = computed(() => new Map(
   (Array.isArray(boundaryAnalysis.value?.groups) ? boundaryAnalysis.value.groups : [])
-    .map((group) => [String(group?.group_id || ''), group])
+    .map((group) => [String(group?.group_id || '').trim(), group])
     .filter(([groupId]) => groupId)
 ))
 
@@ -1024,6 +1026,10 @@ function normalizeTaskIds(taskIds, { sort = false } = {}) {
     : normalized
 }
 
+function normalizeTaskIdKey(taskIds) {
+  return sortTaskIds(taskIds).join(',')
+}
+
 function normalizeManualGroupPayload(rawValue) {
   if (!Array.isArray(rawValue)) return []
   return rawValue
@@ -1042,27 +1048,32 @@ function normalizeManualGroupPayload(rawValue) {
 }
 
 function loadManualMaterialGroups() {
-  const storageKey = manualMaterialGroupsStorageKey.value
-  if (!storageKey) {
+  const key = manualMaterialGroupsStorageKey.value
+  if (!key) {
+    manualMaterialGroups.value = []
+    return
+  }
+  const raw = readSessionStorage(key)
+  if (!raw) {
     manualMaterialGroups.value = []
     return
   }
   try {
-    const parsed = JSON.parse(readSessionStorage(storageKey, '[]') || '[]')
+    const parsed = JSON.parse(raw)
     manualMaterialGroups.value = normalizeManualGroupPayload(parsed)
   } catch (_) {
     manualMaterialGroups.value = []
   }
 }
 
-function persistManualMaterialGroups(groups = normalizedManualMaterialGroups.value) {
-  const storageKey = manualMaterialGroupsStorageKey.value
-  if (!storageKey) return
-  if (!groups.length) {
-    removeSessionStorage(storageKey)
+function persistManualMaterialGroups(groups) {
+  const key = manualMaterialGroupsStorageKey.value
+  if (!key) return
+  if (!Array.isArray(groups) || groups.length === 0) {
+    removeSessionStorage(key)
     return
   }
-  writeSessionStorage(storageKey, JSON.stringify(groups))
+  writeSessionStorage(key, JSON.stringify(groups))
 }
 
 const normalizedManualMaterialGroups = computed(() =>
@@ -1153,6 +1164,30 @@ const folderMaterials = computed(() => {
 const currentMaterial = computed(() => {
   const currentTaskId = Number(props.id)
   return folderMaterials.value.find((material) => material.memberTaskIds.includes(currentTaskId)) || null
+})
+
+const mergedDocumentViews = computed(() => buildMergedDocumentViews(mergeExtractResult.value))
+const mergedDocumentByGroupId = computed(() => new Map(
+  mergedDocumentViews.value
+    .map((documentItem) => [String(documentItem?.groupId || '').trim(), documentItem])
+    .filter(([groupId]) => groupId)
+))
+const mergedDocumentByTaskKey = computed(() => new Map(
+  mergedDocumentViews.value
+    .map((documentItem) => [normalizeTaskIdKey(documentItem?.taskIds || []), documentItem])
+    .filter(([taskKey]) => taskKey)
+))
+const currentMergedDocumentView = computed(() => {
+  const material = currentMaterial.value
+  if (!material?.isMerged) return null
+
+  const materialId = String(material.id || '').trim()
+  if (materialId && mergedDocumentByGroupId.value.has(materialId)) {
+    return mergedDocumentByGroupId.value.get(materialId) || null
+  }
+
+  const taskKey = normalizeTaskIdKey(material.memberTaskIds || [])
+  return mergedDocumentByTaskKey.value.get(taskKey) || null
 })
 
 const currentMaterialId = computed(() => currentMaterial.value?.id || '')
@@ -1550,24 +1585,10 @@ async function loadBoundaryAnalysis() {
       task_to_group: data?.task_to_group && typeof data.task_to_group === 'object' ? data.task_to_group : {},
     })
 
-    const hasMergedGroup = (payload) => Array.isArray(payload?.groups)
-      && payload.groups.some((group) => Array.isArray(group?.task_ids) && group.task_ids.length > 1)
-
-    let response = await getBatchBoundaryAnalysis(batchId, { forceRefresh: false })
+    const response = await getBatchBoundaryAnalysis(batchId, { forceRefresh: true })
     let payload = response?.data && typeof response.data === 'object' && response.data.batch_id
       ? normalizeBoundaryPayload(response.data)
       : null
-
-    if (
-      payload
-      && !hasMergedGroup(payload)
-      && (folderTasks.value?.length || 0) > 1
-    ) {
-      response = await getBatchBoundaryAnalysis(batchId, { forceRefresh: true })
-      payload = response?.data && typeof response.data === 'object' && response.data.batch_id
-        ? normalizeBoundaryPayload(response.data)
-        : payload
-    }
 
     if (payload?.batch_id) {
       boundaryAnalysis.value = payload
@@ -1576,7 +1597,9 @@ async function loadBoundaryAnalysis() {
 
     boundaryAnalysis.value = { ...EMPTY_BOUNDARY_ANALYSIS }
   } catch (error) {
-    console.warn('Failed to load boundary analysis for folder materials.', error)
+    if (error?.response?.status !== 404) {
+      console.warn('Failed to load boundary analysis for folder materials.', error)
+    }
     boundaryAnalysis.value = { ...EMPTY_BOUNDARY_ANALYSIS }
   } finally {
     boundaryLoading.value = false
@@ -2132,6 +2155,78 @@ const aiLoading = ref(false)
 const fieldsError = ref('')
 const editingFieldKey = ref('')
 const editingFieldValue = ref('')
+const loadedMergedFieldKey = ref('')
+const mergeExtractResult = ref(null)
+
+function resetFieldState({ clearError = false } = {}) {
+  ruleFields.value = {}
+  aiFields.value = null
+  recommendedFields.value = null
+  fieldConflicts.value = {}
+  fieldEvidence.value = {}
+  if (clearError) {
+    fieldsError.value = ''
+  }
+}
+
+function applyRuleFields(fields = {}) {
+  ruleFields.value = fields || {}
+  aiFields.value = null
+  recommendedFields.value = null
+  fieldConflicts.value = {}
+  fieldEvidence.value = {}
+}
+
+function applyComparisonFields(comparison = {}) {
+  ruleFields.value = comparison?.rule_fields || {}
+  aiFields.value = comparison?.llm_fields || null
+  recommendedFields.value = comparison?.recommended_fields || null
+  fieldConflicts.value = comparison?.conflicts || {}
+  fieldEvidence.value = (comparison?.llm_fields || {}).evidence || {}
+}
+
+async function loadMergedFields({ forceRefresh = false } = {}) {
+  if (!isMergedMaterialView.value) return
+
+  const batchId = String(boundaryBatchId.value || '').trim()
+  if (!batchId) {
+    resetFieldState()
+    loadedMergedFieldKey.value = ''
+    fieldsError.value = '当前合并材料暂无批次上下文，暂时无法加载整组字段。'
+    return
+  }
+
+  const requestKey = `${batchId}:${String(currentMaterialId.value || '').trim()}`
+  if (!forceRefresh && requestKey && loadedMergedFieldKey.value === requestKey && currentMergedDocumentView.value?.document) {
+    applyComparisonFields(currentMergedDocumentView.value.document)
+    return
+  }
+
+  fieldsLoading.value = true
+  fieldsError.value = ''
+  try {
+    const { data } = await aiMergeExtractBatch(batchId, {
+      include_evidence: true,
+      persist: false,
+      force_refresh: forceRefresh,
+    })
+    mergeExtractResult.value = data && typeof data === 'object' ? data : null
+
+    const documentView = currentMergedDocumentView.value
+    if (!documentView?.document) {
+      throw new Error('当前合并材料尚未生成整组字段，请先确认归并结果。')
+    }
+
+    applyComparisonFields(documentView.document)
+    loadedMergedFieldKey.value = requestKey
+  } catch (err) {
+    resetFieldState()
+    loadedMergedFieldKey.value = ''
+    fieldsError.value = err?.response?.data?.detail || err?.message || '整组字段提取失败'
+  } finally {
+    fieldsLoading.value = false
+  }
+}
 
 async function loadRuleFields() {
   if (isMergedMaterialView.value) return
@@ -2140,7 +2235,8 @@ async function loadRuleFields() {
   fieldsError.value = ''
   try {
     const { data } = await getTaskFields(props.id)
-    ruleFields.value = data.fields || {}
+    loadedMergedFieldKey.value = ''
+    applyRuleFields(data.fields || {})
   } catch (err) {
     fieldsError.value = err.response?.data?.detail || '字段提取失败'
   } finally {
@@ -2150,7 +2246,16 @@ async function loadRuleFields() {
 
 async function runAiExtraction() {
   if (isMergedMaterialView.value) {
-    fieldsError.value = '当前为同文件合并视图，请切换到左侧具体页后再执行字段提取。'
+    aiLoading.value = true
+    fieldsError.value = ''
+    try {
+      await loadMergedFields({ forceRefresh: true })
+      if (!fieldsError.value) {
+        showToast('整组字段提取完成')
+      }
+    } finally {
+      aiLoading.value = false
+    }
     return
   }
   aiLoading.value = true
@@ -2207,18 +2312,26 @@ function saveFieldEdit(key) {
 }
 
 watch(() => activeTab.value, (tab) => {
-  if (tab === 'fields' && !isMergedMaterialView.value && !Object.keys(ruleFields.value).length && task.value?.status === 'done') {
+  if (tab !== 'fields') {
+    return
+  }
+  if (isMergedMaterialView.value) {
+    loadMergedFields().catch(() => {})
+    return
+  }
+  if (!Object.keys(ruleFields.value).length && task.value?.status === 'done') {
     loadRuleFields()
   }
 })
 
 watch(() => props.id, () => {
-  ruleFields.value = {}
-  aiFields.value = null
-  recommendedFields.value = null
-  fieldConflicts.value = {}
-  fieldEvidence.value = {}
-  fieldsError.value = ''
+  resetFieldState({ clearError: true })
+  loadedMergedFieldKey.value = ''
+})
+
+watch(() => boundaryBatchId.value, () => {
+  mergeExtractResult.value = null
+  loadedMergedFieldKey.value = ''
 })
 
 function isStructuredTextRegion(type) {
@@ -2771,7 +2884,7 @@ function filterDisplayRegions(regions) {
   for (const region of regions) {
     const type = String(region?.type || 'text')
     const rect = regionDisplayRect(region)
-    const regionText = compactText(type === 'seal' ? normalizeSealDisplayContent(region?.content) : region?.content)
+    const regionText = compactText(type === 'seal' ? sealDisplayText(region) : region?.content)
 
     if (type === 'table') {
       const duplicateIndex = keptTables.findIndex((table) => tableRegionsLookDuplicated(region, table.region))

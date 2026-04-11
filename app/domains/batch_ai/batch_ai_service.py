@@ -15,13 +15,16 @@ def normalize_batch_ids(batch_ids) -> set[str]:
     return legacy_batch_cache_service.normalize_batch_ids(batch_ids)
 
 
-async def get_batch_merge_extract_result(db, *, batch_id: str, include_evidence: bool, force_refresh: bool):
+async def get_batch_merge_extract_result(db, *, batch_id: str, include_evidence: bool, force_refresh: bool, similarity_threshold: int | None = None):
     payload = await legacy_batch_merge_service.get_batch_merge_extract_result(
         db,
         batch_id=batch_id,
         include_evidence=include_evidence,
         force_refresh=force_refresh,
+        similarity_threshold=similarity_threshold,
     )
+    if not payload:
+        return None
     groups = [
         DocumentMergeGroup.model_validate(group).model_dump(mode="json")
         for group in payload.get("groups", [])

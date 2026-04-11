@@ -5,6 +5,7 @@ import com.ocrweb.controlplane.config.AuthProperties;
 import com.ocrweb.controlplane.config.ControlPlaneSecurityProperties;
 import com.ocrweb.controlplane.config.InternalApiProperties;
 import com.ocrweb.controlplane.config.LocalPathProperties;
+import com.ocrweb.controlplane.config.ProcessingProperties;
 import com.ocrweb.controlplane.config.RateLimitProperties;
 import com.ocrweb.controlplane.config.RabbitMqProperties;
 import com.ocrweb.controlplane.config.StorageProperties;
@@ -21,7 +22,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         AuthProperties.class,
         LocalPathProperties.class,
         ControlPlaneSecurityProperties.class,
-        RateLimitProperties.class
+        RateLimitProperties.class,
+        ProcessingProperties.class
 })
 public class ControlPlaneApplication {
 

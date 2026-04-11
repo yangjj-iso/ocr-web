@@ -1,6 +1,7 @@
 package com.ocrweb.controlplane.task.service;
 
 import com.ocrweb.controlplane.config.InternalApiProperties;
+import com.ocrweb.controlplane.config.ProcessingProperties;
 import com.ocrweb.controlplane.config.RabbitMqProperties;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.trace.RequestTraceContext;
@@ -29,7 +30,12 @@ class TaskCommandProducerTest {
         properties.setRoutingKey("ocr.task.submit.v1");
         InternalApiProperties internalApiProperties = new InternalApiProperties();
         internalApiProperties.setBaseUrl("http://127.0.0.1:8080");
-        TaskCommandProducer producer = new TaskCommandProducer(rabbitTemplate, properties, internalApiProperties);
+        TaskCommandProducer producer = new TaskCommandProducer(
+                rabbitTemplate,
+                properties,
+                internalApiProperties,
+                new ProcessingProperties()
+        );
 
         OcrTaskEntity task = new OcrTaskEntity();
         task.setFilename("sample.jpg");
@@ -68,7 +74,12 @@ class TaskCommandProducerTest {
         properties.setRoutingKey("ocr.task.submit.v1");
         InternalApiProperties internalApiProperties = new InternalApiProperties();
         internalApiProperties.setBaseUrl("http://127.0.0.1:8080");
-        TaskCommandProducer producer = new TaskCommandProducer(rabbitTemplate, properties, internalApiProperties);
+        TaskCommandProducer producer = new TaskCommandProducer(
+                rabbitTemplate,
+                properties,
+                internalApiProperties,
+                new ProcessingProperties()
+        );
 
         OcrTaskEntity task = new OcrTaskEntity();
         task.setFilename("sample.jpg");

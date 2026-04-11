@@ -435,7 +435,7 @@
             <p class="mt-1 text-xs gov-muted">每次提交算作一次任务，按提交快速回看处理结果</p>
           </div>
           <div class="bg-white p-5">
-            <HistoryList ref="historyRef" @view-result="handleViewResult" @batch-context="handleHistoryBatchContext" />
+            <HistoryList ref="historyRef" @view-result="handleViewResult" @batch-context="handleHistoryBatchContext" @view-batch="handleHistoryViewBatch" />
           </div>
         </div>
       </div>
@@ -842,6 +842,13 @@ async function handleHistoryBatchContext(payload = {}) {
   if (selectedTab.value === 'assistant') {
     await loadAssistantPreview()
   }
+}
+
+async function handleHistoryViewBatch(payload = {}) {
+  const batchId = payload?.batchId
+  if (!batchId) return
+  await aiCapability.refreshAiCapability({ passive: false, batchId })
+  router.push({ path: `/batch-insights/${encodeURIComponent(batchId)}` })
 }
 
 async function submitAssistantQa() {

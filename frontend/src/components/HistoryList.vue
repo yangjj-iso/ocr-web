@@ -43,6 +43,29 @@
 
           <div class="ml-3 flex flex-shrink-0 items-center gap-2">
             <span class="text-xs gov-muted">{{ formatTime(group.last_time) }}</span>
+
+            <template v-if="group.batch_id">
+              <button
+                class="flex items-center gap-1 rounded border border-[var(--gov-primary)] px-2 py-0.5 text-[11px] font-medium text-[var(--gov-primary)] opacity-0 transition hover:bg-[var(--gov-primary-soft)] group-hover:opacity-100"
+                :class="expandedSubmissions[group.submission_id] ? 'opacity-100' : ''"
+                title="查看批次整合结果"
+                @click.stop="emitViewBatch(group)"
+              >
+                <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                查看结果
+              </button>
+              <button
+                class="flex items-center gap-1 rounded border border-emerald-500 px-2 py-0.5 text-[11px] font-medium text-emerald-600 opacity-0 transition hover:bg-emerald-50 group-hover:opacity-100"
+                :class="[exportingBatchId === group.batch_id ? 'opacity-100 cursor-wait' : expandedSubmissions[group.submission_id] ? 'opacity-100' : '']"
+                :disabled="exportingBatchId === group.batch_id"
+                :title="exportingBatchId === group.batch_id ? '正在导出...' : '导出归档 Excel'"
+                @click.stop="handleExportArchive(group)"
+              >
+                <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                {{ exportingBatchId === group.batch_id ? '导出中...' : '导出归档' }}
+              </button>
+            </template>
+
             <button
               class="flex h-6 w-6 items-center justify-center rounded opacity-0 transition hover:bg-red-50 group-hover:opacity-100"
               :class="expandedSubmissions[group.submission_id] ? 'opacity-100' : ''"
@@ -129,9 +152,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 
-import { deleteTasksBySubmission, getTaskSubmissions, getTasks } from '../api/ocr.js'
+import { deleteTasksBySubmission, exportBatchMergeArchiveRecords, getTaskSubmissions, getTasks } from '../api/ocr.js'
 
-const emit = defineEmits(['view-result', 'batch-context'])
+const emit = defineEmits(['view-result', 'batch-context', 'view-batch'])
 
 const groups = ref([])
 const loading = ref(true)
@@ -140,6 +163,7 @@ const deleting = ref(false)
 const loadMessage = ref('')
 const expandedSubmissions = reactive({})
 const submissionTasks = reactive({})
+const exportingBatchId = ref('')
 
 function extractErrorText(error) {
   return `${error?.response?.data?.detail || error?.response?.data || ''} ${error?.message || ''}`.replace(/\s+/g, ' ').trim()
@@ -212,6 +236,23 @@ function inferFolderPath(filePath = '') {
   if (!normalized) return ''
   const slashIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
   return slashIndex >= 0 ? normalized.slice(0, slashIndex) : ''
+}
+
+function emitViewBatch(group) {
+  if (!group?.batch_id) return
+  emit('view-batch', { batchId: group.batch_id, submissionId: group.submission_id })
+}
+
+async function handleExportArchive(group) {
+  if (!group?.batch_id || exportingBatchId.value === group.batch_id) return
+  exportingBatchId.value = group.batch_id
+  try {
+    exportBatchMergeArchiveRecords({ batchId: group.batch_id })
+  } finally {
+    setTimeout(() => {
+      if (exportingBatchId.value === group.batch_id) exportingBatchId.value = ''
+    }, 2000)
+  }
 }
 
 function emitViewResult(taskId, options = {}) {

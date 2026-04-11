@@ -10,6 +10,7 @@ from config import (
     MQ_COMMAND_DLQ,
     MQ_COMMAND_DLX,
     MQ_COMMAND_EXCHANGE,
+    MQ_PREFETCH_COUNT,
     MQ_COMMAND_QUEUE,
     MQ_COMMAND_ROUTING_KEY,
 )
@@ -75,12 +76,19 @@ def run_command_consumer() -> None:
                 return
             message.ack()
 
-        with Consumer(connection, queues=[queue], callbacks=[_handle_message], accept=["json"]):
+        with Consumer(
+            connection,
+            queues=[queue],
+            callbacks=[_handle_message],
+            accept=["json"],
+            prefetch_count=MQ_PREFETCH_COUNT,
+        ):
             logger.info(
-                "RabbitMQ command consumer started: broker=%s, queue=%s, routing_key=%s",
+                "RabbitMQ command consumer started: broker=%s, queue=%s, routing_key=%s, prefetch=%s",
                 MQ_BROKER_URL,
                 MQ_COMMAND_QUEUE,
                 MQ_COMMAND_ROUTING_KEY,
+                MQ_PREFETCH_COUNT,
             )
             _maybe_refresh_queue_depth(force=True)
             try:

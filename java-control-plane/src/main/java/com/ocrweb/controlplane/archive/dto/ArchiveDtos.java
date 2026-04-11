@@ -1,5 +1,6 @@
 package com.ocrweb.controlplane.archive.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import jakarta.validation.constraints.NotBlank;
 
 import java.time.OffsetDateTime;
@@ -29,7 +30,10 @@ public final class ArchiveDtos {
     public record ArchiveRecordListResponse(long total, List<ArchiveRecordResponse> records) {
     }
 
-    public record ImportArchiveRequest(String filePath, String batchId) {
+    public record ImportArchiveRequest(
+            @JsonAlias("file_path") String filePath,
+            @JsonAlias("batch_id") String batchId
+    ) {
     }
 
     public record EnsureFolderBatchRequest(@NotBlank String folder) {

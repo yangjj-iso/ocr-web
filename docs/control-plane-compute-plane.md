@@ -26,7 +26,7 @@
 ### 运行方式
 
 ```powershell
-D:\Code\work\OCR-WEB-main\.venv\Scripts\python.exe D:\Code\work\OCR-WEB-main\app\main_worker.py
+D:\OCR_WEB\ocr\.venv\Scripts\python.exe -m app.main_worker
 ```
 
 或：

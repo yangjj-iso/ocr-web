@@ -7,6 +7,7 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,19 +36,27 @@ public class ArchiveController {
     @GetMapping("/archive-records")
     public ArchiveDtos.ArchiveRecordListResponse listArchiveRecords(
             @RequestParam(defaultValue = "") String folder,
-            @RequestParam(defaultValue = "") String batchId,
-            @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "200") int pageSize
+            @RequestParam(required = false) String batchId,
+            @RequestParam(name = "batch_id", required = false) String legacyBatchId,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(name = "pageSize", required = false) Integer pageSize,
+            @RequestParam(name = "page_size", required = false) Integer legacyPageSize
     ) {
-        return archiveRecordService.listRecords(folder, batchId, page, pageSize);
+        return archiveRecordService.listRecords(
+                folder,
+                firstText(batchId, legacyBatchId),
+                page == null ? 1 : page,
+                firstPositive(pageSize, legacyPageSize, 200)
+        );
     }
 
     @GetMapping("/archive-records/export")
     public ResponseEntity<Resource> exportArchiveRecords(
             @RequestParam(defaultValue = "") String folder,
-            @RequestParam(defaultValue = "") String batchId
+            @RequestParam(required = false) String batchId,
+            @RequestParam(name = "batch_id", required = false) String legacyBatchId
     ) {
-        Path filePath = archiveRecordService.exportRecords(folder, batchId);
+        Path filePath = archiveRecordService.exportRecords(folder, firstText(batchId, legacyBatchId));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .body(new FileSystemResource(filePath));
@@ -62,13 +71,34 @@ public class ArchiveController {
     @DeleteMapping("/archive-records")
     public Map<String, Object> deleteArchiveRecords(
             @RequestParam(defaultValue = "") String folder,
-            @RequestParam(defaultValue = "") String batchId
+            @RequestParam(required = false) String batchId,
+            @RequestParam(name = "batch_id", required = false) String legacyBatchId
     ) {
-        return Map.of("deleted", archiveRecordService.deleteRecords(folder, batchId));
+        return Map.of("deleted", archiveRecordService.deleteRecords(folder, firstText(batchId, legacyBatchId)));
     }
 
     @PostMapping("/folders/ensure-batch")
     public Map<String, Object> ensureFolderBatch(@Valid @RequestBody ArchiveDtos.EnsureFolderBatchRequest request) {
         return archiveRecordService.ensureBatchForFolder(request.folder());
+    }
+
+    private static String firstText(String preferred, String legacy) {
+        if (StringUtils.hasText(preferred)) {
+            return preferred.trim();
+        }
+        if (StringUtils.hasText(legacy)) {
+            return legacy.trim();
+        }
+        return "";
+    }
+
+    private static int firstPositive(Integer preferred, Integer legacy, int defaultValue) {
+        if (preferred != null && preferred > 0) {
+            return preferred;
+        }
+        if (legacy != null && legacy > 0) {
+            return legacy;
+        }
+        return defaultValue;
     }
 }

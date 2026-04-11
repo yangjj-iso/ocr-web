@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/health")
+@RequestMapping({"/health", "/api/health"})
 public class HealthController {
     private final ControlPlaneHealthService controlPlaneHealthService;
 
@@ -22,7 +22,7 @@ public class HealthController {
         return controlPlaneHealthService.live();
     }
 
-    @GetMapping("/ready")
+    @GetMapping({"", "/", "/ready"})
     public ResponseEntity<Map<String, Object>> ready() {
         return buildDependencyResponse(controlPlaneHealthService.readiness());
     }

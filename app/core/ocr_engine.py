@@ -229,8 +229,46 @@ def _is_known_layout_runtime_error(exc: Exception) -> bool:
             "Expected Ptr<cv::UMat>",
             "Overload resolution failed",
             "Conversion error: src",
+            "ConvertPirAttribute2RuntimeAttribute",
+            "pir::ArrayAttribute<pir::DoubleAttribute>",
+            "onednn_instruction.cc:118",
         )
     )
+
+
+def _is_known_vl_runtime_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(
+        token in message
+        for token in (
+            "is_bfloat16_supported()",
+            "Place(undefined:0)",
+            "int(Tensor) is not supported in static graph mode",
+            "Exception from the 'vlm' worker",
+            "bfloat16",
+        )
+    )
+
+
+def _annotate_fallback_document(
+    document: dict[str, Any],
+    *,
+    original_mode: str,
+    fallback_mode: str,
+    warning: str,
+) -> dict[str, Any]:
+    document["mode"] = original_mode
+    document["fallback_mode"] = fallback_mode
+    for page in document.get("pages") or []:
+        agent_meta = dict(page.get("agent_meta") or {})
+        issues = list(agent_meta.get("issues") or [])
+        if warning not in issues:
+            issues.append(warning)
+        agent_meta["issues"] = issues
+        agent_meta["original_mode"] = original_mode
+        agent_meta["fallback_mode"] = fallback_mode
+        page["agent_meta"] = agent_meta
+    return document
 
 
 def get_ocr() -> PaddleOCR:
@@ -269,19 +307,19 @@ def get_layout_pipeline():
     return _layout_pipeline
 
 
-def _maybe_resize_image(image_path: str, max_pixels: int | None = MAX_IMAGE_PIXELS) -> str:
-    """如果图片过大，等比缩放后保存到临时文件，返回新路径；否则返回原路径"""
+def _maybe_resize_image(image_path: str, max_pixels: int | None = MAX_IMAGE_PIXELS) -> tuple[str, float]:
+    """如果图片过大，等比缩放后保存到临时文件，返回 (新路径, 缩放比例)；否则返回 (原路径, 1.0)"""
     try:
         if not max_pixels or max_pixels <= 0:
-            return image_path
+            return image_path, 1.0
         img = _cv_imread(image_path)
         if img is None:
-            return image_path
+            return image_path, 1.0
         h, w = img.shape[:2]
         pixels = h * w
         if pixels <= max_pixels:
             del img
-            return image_path
+            return image_path, 1.0
         scale = (max_pixels / pixels) ** 0.5
         new_w = int(w * scale)
         new_h = int(h * scale)
@@ -293,10 +331,47 @@ def _maybe_resize_image(image_path: str, max_pixels: int | None = MAX_IMAGE_PIXE
         tmp.close()
         _cv_imwrite(tmp.name, resized)
         del img, resized
-        return tmp.name
+        return tmp.name, scale
     except Exception as e:
         logger.warning("图片缩放失败 %s: %s", image_path, e)
-        return image_path
+        return image_path, 1.0
+
+
+def _rescale_page_bboxes(page: dict, inv_scale: float) -> dict:
+    """将页面中所有 bbox 坐标乘以 inv_scale，还原到原始图片尺寸。"""
+    if inv_scale == 1.0:
+        return page
+
+    def _scale_rect(rect: list) -> list:
+        return [round(v * inv_scale, 1) for v in rect]
+
+    def _scale_poly(poly: list) -> list:
+        return [[round(x * inv_scale, 1), round(y * inv_scale, 1)] for x, y in poly]
+
+    def _scale_bbox(bbox, bbox_type: str):
+        if not bbox:
+            return bbox
+        if bbox_type == "poly" and isinstance(bbox[0], (list, tuple)):
+            return _scale_poly(bbox)
+        return _scale_rect(bbox)
+
+    for region in page.get("regions", []):
+        bt = region.get("bbox_type", "rect")
+        if "bbox" in region:
+            region["bbox"] = _scale_bbox(region["bbox"], bt)
+        if "layout_bbox" in region:
+            region["layout_bbox"] = _scale_rect(region["layout_bbox"]) if region["layout_bbox"] else region["layout_bbox"]
+        for line in region.get("region_lines", []):
+            if "bbox" in line and line["bbox"]:
+                line_bt = line.get("bbox_type", "poly" if isinstance(line["bbox"][0], (list, tuple)) else "rect")
+                line["bbox"] = _scale_bbox(line["bbox"], line_bt)
+
+    for line in page.get("lines", []):
+        if "bbox" in line and line["bbox"]:
+            line_bt = line.get("bbox_type", "poly" if isinstance(line["bbox"][0], (list, tuple)) else "rect")
+            line["bbox"] = _scale_bbox(line["bbox"], line_bt)
+
+    return page
 
 
 def _poly_to_list(poly) -> list[list[float]]:
@@ -545,6 +620,17 @@ def _line_center(poly: list[list[float]]) -> tuple[float, float]:
         sum(point[0] for point in poly) / len(poly),
         sum(point[1] for point in poly) / len(poly),
     )
+
+
+def _rect_to_poly(rect: list[float]) -> list[list[float]]:
+    if len(rect) < 4:
+        return []
+    return [
+        [float(rect[0]), float(rect[1])],
+        [float(rect[2]), float(rect[1])],
+        [float(rect[2]), float(rect[3])],
+        [float(rect[0]), float(rect[3])],
+    ]
 
 
 def _line_sort_key(line: dict) -> tuple[float, float, int]:
@@ -1175,7 +1261,7 @@ def ocr_image_with_vl(image_path: str) -> dict:
                 region["region_lines"] = region_lines
             regions.append(region)
 
-    return {"regions": _filter_output_regions(regions), "lines": []}
+    return {"regions": _filter_output_regions(regions), "lines": [_copy_line_payload(line) for line in page_lines]}
 
 
 def pdf_to_images(pdf_path: str) -> list[str]:
@@ -1259,10 +1345,18 @@ def _get_baidu_access_token() -> str:
         },
         timeout=30,
     )
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+
+    if resp.status_code >= 400:
+        error_code = str(data.get("error") or f"http_{resp.status_code}")
+        error_description = str(data.get("error_description") or resp.text or "未知错误").strip()
+        raise RuntimeError(f"百度 AI 鉴权失败 ({error_code}): {error_description}")
+
     if "access_token" not in data:
-        raise RuntimeError(f"百度 AI 鉴权失败: {data}")
+        raise RuntimeError(f"百度 AI 鉴权失败: {data or resp.text}")
 
     token = data["access_token"]
     expires_in = int(data.get("expires_in", 2592000))
@@ -1646,6 +1740,8 @@ def _map_baidu_page(baidu_page: dict) -> dict:
     }
 
     regions = []
+    page_lines = []
+    line_num = 0
     for layout in layouts:
         try:
             layout_id = layout.get("layout_id", "")
@@ -1673,14 +1769,26 @@ def _map_baidu_page(baidu_page: dict) -> dict:
                     span_text = str(span.get("text") or "").strip()
                     span_bbox = _baidu_location_to_bbox(span.get("location") or [])
                     if span_text:
+                        span_poly = _rect_to_poly(span_bbox)
                         region_lines.append({
                             "text": span_text,
                             "bbox": span_bbox,
                             "bbox_type": "rect",
                             "confidence": 0.99,
                         })
+                        if span_poly:
+                            page_lines.append({
+                                "text": span_text,
+                                "bbox": span_poly,
+                                "confidence": 0.99,
+                                "line_num": line_num,
+                            })
+                            line_num += 1
                 except Exception as span_exc:
                     logger.warning("Baidu span 瑙ｆ瀽宸茶烦杩囷細%s", span_exc)
+
+            if label == "seal":
+                text = _seal_content_from_lines(bbox, page_lines, raw_content=text)
 
             region: dict[str, Any] = {
                 "type": label,
@@ -1699,7 +1807,7 @@ def _map_baidu_page(baidu_page: dict) -> dict:
         except Exception as layout_exc:
             logger.warning("Baidu layout 瑙ｆ瀽宸茶烦杩囷細%s", layout_exc)
 
-    return {"regions": _filter_output_regions(regions), "lines": []}
+    return {"regions": _filter_output_regions(regions), "lines": [_copy_line_payload(line) for line in page_lines]}
 
 
 def _map_baidu_result_to_document(raw: dict) -> dict:
@@ -1865,17 +1973,21 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
             image_paths = pdf_to_images(file_path)
             temp_images = image_paths
             for page_idx, img_path in enumerate(image_paths):
-                resized_path = _maybe_resize_image(img_path, max_pixels=max_pixels)
+                resized_path, resize_scale = _maybe_resize_image(img_path, max_pixels=max_pixels)
                 if resized_path != img_path:
                     temp_images.append(resized_path)
                 page_result = recognize_fn(resized_path)
+                if resize_scale < 1.0:
+                    _rescale_page_bboxes(page_result, 1.0 / resize_scale)
                 page_result["page_num"] = page_idx + 1
                 pages.append(page_result)
         else:
-            resized_path = _maybe_resize_image(file_path, max_pixels=max_pixels)
+            resized_path, resize_scale = _maybe_resize_image(file_path, max_pixels=max_pixels)
             if resized_path != file_path:
                 temp_images.append(resized_path)
             page_result = recognize_fn(resized_path)
+            if resize_scale < 1.0:
+                _rescale_page_bboxes(page_result, 1.0 / resize_scale)
             page_result["page_num"] = 1
             pages.append(page_result)
 
@@ -1906,6 +2018,33 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
             "mode": mode,
         }
     except Exception as exc:
+        if mode == "vl" and _is_known_vl_runtime_error(exc):
+            if _can_use_baidu_document_api():
+                logger.warning(
+                    "Local VL runtime failed for %s with a known runtime error. Falling back to Baidu document parsing.",
+                    Path(file_path).name,
+                    exc_info=True,
+                )
+                return _annotate_fallback_document(
+                    ocr_document_baidu_vl(file_path),
+                    original_mode="vl",
+                    fallback_mode="baidu_vl",
+                    warning="本地综合识别运行时不可用，已自动切换到百度文档解析。",
+                )
+
+            logger.warning(
+                "Local VL runtime failed for %s with a known runtime error. Falling back to layout processing.",
+                Path(file_path).name,
+                exc_info=True,
+            )
+            fallback_document = ocr_document(file_path, "layout")
+            return _annotate_fallback_document(
+                fallback_document,
+                original_mode="vl",
+                fallback_mode=str(fallback_document.get("fallback_mode") or "layout"),
+                warning="本地综合识别运行时不可用，已自动降级到版式/文本识别。",
+            )
+
         if mode == "layout" and _can_use_baidu_document_api() and _is_known_layout_runtime_error(exc):
             logger.warning(
                 "PP-StructureV3 local layout failed for %s with a known runtime error. "
@@ -1913,7 +2052,26 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
                 Path(file_path).name,
                 exc_info=True,
             )
-            return ocr_document_baidu_vl(file_path)
+            return _annotate_fallback_document(
+                ocr_document_baidu_vl(file_path),
+                original_mode="layout",
+                fallback_mode="baidu_vl",
+                warning="本地版式识别运行时不可用，已自动切换到百度文档解析。",
+            )
+        if mode == "layout" and _is_known_layout_runtime_error(exc):
+            logger.warning(
+                "PP-StructureV3 local layout failed for %s with a known runtime error. "
+                "Falling back to OCR-only extraction.",
+                Path(file_path).name,
+                exc_info=True,
+            )
+            fallback_document = ocr_document(file_path, "ocr")
+            return _annotate_fallback_document(
+                fallback_document,
+                original_mode="layout",
+                fallback_mode="ocr",
+                warning="本地版式识别运行时不可用，已自动降级到文本识别；表格和印章提取可能不完整。",
+            )
         raise
     finally:
         for tmp in temp_images:

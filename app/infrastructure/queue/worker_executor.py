@@ -31,7 +31,7 @@ from app.core.result_validation import normalize_result_pages, serialize_pages_t
 from app.domains.extraction import field_service
 from app.services.agent_ocr_workflow import run_hierarchical_ocr_detached
 from app.services.ocr_service import _run_ocr_document
-from config import CALLBACK_INLINE_RESULT_MAX_BYTES, WORKER_TEMP_DIR
+from config import CALLBACK_INLINE_RESULT_MAX_BYTES, CONTROL_PLANE_INTERNAL_TOKEN, WORKER_TEMP_DIR
 
 try:
     from .callback_client import ControlPlaneCallbackClient, build_progress
@@ -104,7 +104,7 @@ async def _stage_input_file(command: OcrTaskCommand) -> tuple[str, bool]:
         temp_path = Path(temp_file.name)
         temp_file.close()
         headers: dict[str, str] = {}
-        client_token = os.getenv("CONTROL_PLANE_INTERNAL_TOKEN", "").strip()
+        client_token = (CONTROL_PLANE_INTERNAL_TOKEN or "").strip()
         if client_token:
             headers["Authorization"] = f"Bearer {client_token}"
         async with httpx.AsyncClient(timeout=command.execution.timeout_seconds) as client:
@@ -130,7 +130,7 @@ async def _stage_input_file(command: OcrTaskCommand) -> tuple[str, bool]:
     temp_path = Path(temp_file.name)
     temp_file.close()
     headers: dict[str, str] = {}
-    client_token = os.getenv("CONTROL_PLANE_INTERNAL_TOKEN", "").strip()
+    client_token = (CONTROL_PLANE_INTERNAL_TOKEN or "").strip()
     if file_url.lower().startswith(("http://", "https://")) and client_token:
         headers["Authorization"] = f"Bearer {client_token}"
     async with httpx.AsyncClient(timeout=command.execution.timeout_seconds) as client:

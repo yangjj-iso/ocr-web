@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - import guard for incomplete environmen
 
 
 ARCHIVE_FIELDS = ["档号", "文号", "责任者", "题名", "日期", "页数", "密级", "备注"]
+_LLM_PREFERRED_FIELDS: frozenset[str] = frozenset({"题名", "责任者", "备注"})
 TITLE_TYPES = {"title", "doc_title", "paragraph_title", "content_title", "abstract_title", "reference_title"}
 DOC_NO_PATTERN = re.compile(
     r"[\u4e00-\u9fa5A-Za-z]{2,20}(?:[\[\(（]?\d{4}[\]\)）]?)\s*(?:第\s*)?\d+\s*号"
@@ -184,7 +185,12 @@ def _build_prompt(
     page_count: int,
     rule_fields: dict[str, str],
     excerpt_text: str,
+    file_path: str = "",
 ) -> str:
+    path_hint = ""
+    if file_path:
+        path_hint = f"文件路径：{file_path}\n"
+
     return (
         "你是中国档案、公文、合同和申报材料归档字段抽取助手。\n"
         "你只能根据给定文本抽取，不得猜测，不得补全未知内容。\n"
@@ -192,7 +198,18 @@ def _build_prompt(
         "JSON 必须包含以下字段：档号、文号、责任者、题名、日期、页数、密级、备注、evidence。\n"
         "其中 evidence 也必须是一个 JSON 对象，键为前面 8 个字段名，值为支持该字段的原文短句；没有证据就填空字符串。\n"
         "如果某字段无法确定，请填空字符串。\n\n"
+        "【字段填写规范】\n"
+        "- 档号：从文件名或文件夹路径解析，格式为 WS·年度·保管期限-件号（如 WS·2024·D30-0156）。"
+        "同一文件夹内所有图片共享同一个档号。\n"
+        "- 文号：从正文首页提取，如 中办发〔2023〕12号 或 2024年第13期。无则留空。\n"
+        "- 责任者：发文机构全称，优先从首页标题区或末页落款/盖章/印发处提取。多个用中文分号分隔。\n"
+        "- 题名：完整标题，从首页正文标题区提取。\n"
+        "- 日期：优先取末页「印发」日期或正文成文日期，格式 YYYYMMDD 或 YYYY-MM-DD。\n"
+        "- 页数：文档总页数。\n"
+        "- 密级：普通/公开/内部/秘密/机密/绝密，无则留空。\n"
+        "- 备注：破损、缺页、附件类型等特殊说明，无则留空。\n\n"
         f"文件名：{filename}\n"
+        f"{path_hint}"
         f"页数：{page_count}\n"
         f"规则抽取结果：{json.dumps(rule_fields, ensure_ascii=False)}\n\n"
         "OCR 文本如下：\n"
@@ -376,7 +393,10 @@ def merge_rule_and_llm_fields(
             recommended[field] = rule_value
             continue
 
-        recommended[field] = ""
+        if field in _LLM_PREFERRED_FIELDS:
+            recommended[field] = llm_value
+        else:
+            recommended[field] = rule_value
         conflicts[field] = {
             "rule": rule_value,
             "llm": llm_value,
@@ -393,6 +413,7 @@ async def call_minimax_field_extraction(
     full_text: str,
     result_json: Any,
     rule_fields: dict[str, str],
+    file_path: str = "",
 ) -> dict[str, Any]:
     title_candidates = collect_first_page_title_candidates(result_json)
     doc_no_candidates = collect_doc_no_candidates(full_text)
@@ -407,6 +428,7 @@ async def call_minimax_field_extraction(
         page_count=page_count,
         rule_fields=rule_fields,
         excerpt_text=excerpt_text,
+        file_path=file_path,
     )
 
     payload = {
@@ -758,14 +780,16 @@ async def compare_rule_and_llm_fields_for_content(
     result_json: Any,
     include_evidence: bool = True,
     task_id: int | None = None,
+    file_path: str = "",
 ) -> dict[str, Any]:
-    rule_fields = extract_fields(filename, full_text or "", result_json, page_count)
+    rule_fields = extract_fields(filename, full_text or "", result_json, page_count, file_path=file_path)
     llm_response = await call_minimax_field_extraction(
         filename=filename,
         page_count=page_count,
         full_text=full_text or "",
         result_json=result_json,
         rule_fields=rule_fields,
+        file_path=file_path,
     )
     llm_fields = llm_response["llm_fields"]
     recommended_fields, conflicts = merge_rule_and_llm_fields(
@@ -800,5 +824,6 @@ async def compare_rule_and_llm_fields(task: OCRTask, *, include_evidence: bool =
         full_text=task.full_text or "",
         result_json=task.result_json,
         include_evidence=include_evidence,
+        file_path=task.file_path or "",
         task_id=task.id,
     )

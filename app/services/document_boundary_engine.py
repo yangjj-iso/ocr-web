@@ -64,6 +64,12 @@ ENTITY_PATTERNS = (
 _PUNCT_PATTERN = re.compile(r"[\s,.;:!?\-_/\\，。；：！？（）()《》【】\[\]]+")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
+# Keywords that appear together in Chinese archival filing stamps (归档章).
+# Detecting ≥2 of these near the start of a page is a universal signal that
+# the page is the FIRST page of a new archived document.
+_ARCHIVE_STAMP_KEYWORDS: frozenset[str] = frozenset({"全宗号", "件号", "页数", "门类"})
+_ARCHIVE_STAMP_MIN_KEYWORDS = 2
+
 
 @dataclass(slots=True)
 class SequencePage:
@@ -175,6 +181,7 @@ class _PreparedSequencePage:
     starts_attachment: bool
     starts_continuation: bool
     ends_formal_closure: bool
+    starts_archive_stamp: bool = False
 
 
 def _coerce_text(value: Any) -> str:
@@ -228,6 +235,19 @@ def _starts_with_continuation(value: str) -> bool:
 def _starts_with_attachment(value: str) -> bool:
     text = _first_chars(value, 40)
     return any(text.startswith(marker) for marker in ATTACHMENT_START_MARKERS)
+
+
+def _starts_with_archive_stamp(value: str) -> bool:
+    """Return True when a page begins with a Chinese archival filing stamp (归档章).
+
+    Such stamps appear at the top of the first page of an archived document and
+    contain structured metadata fields (全宗号 / 门类 / 件号 / 页数).  Detecting
+    at least *two* of those keywords within the first 200 characters is a
+    reliable, document-agnostic signal that this page **starts a new document**.
+    """
+    first = _first_chars(value, 200)
+    count = sum(1 for kw in _ARCHIVE_STAMP_KEYWORDS if kw in first)
+    return count >= _ARCHIVE_STAMP_MIN_KEYWORDS
 
 
 def _ends_formal_closure(value: str) -> bool:
@@ -314,6 +334,7 @@ def _prepare_pages(pages: list[SequencePage]) -> list[_PreparedSequencePage]:
                 starts_attachment=_starts_with_attachment(" ".join([page.title_hint, text])),
                 starts_continuation=_starts_with_continuation(text or page.title_hint),
                 ends_formal_closure=_ends_formal_closure(text),
+                starts_archive_stamp=_starts_with_archive_stamp(text),
             )
         )
     return prepared_pages
@@ -416,6 +437,9 @@ def _score_boundary(
     title_similarity = _title_similarity(left_page, right_page)
     entity_overlap = _jaccard(left.entity_tokens, right.entity_tokens)
     field_overlap = _field_overlap_score(left_page, right_page)
+    left_archive_no = _coerce_text((left_page.rule_fields or {}).get("档号")).upper()
+    right_archive_no = _coerce_text((right_page.rule_fields or {}).get("档号")).upper()
+    same_archive_no = bool(left_archive_no and left_archive_no == right_archive_no)
     same_family = bool(left_page.document_family and left_page.document_family == right_page.document_family)
     same_continuation_family = same_family and left_page.document_family in CONTINUATION_FAMILIES
     weak_semantic_signal = (
@@ -431,11 +455,15 @@ def _score_boundary(
         + (title_similarity * 0.12)
         + (entity_overlap * 0.16)
         + (field_overlap * 0.12)
+        + (0.12 if same_archive_no else 0.0)
         + (0.08 if same_family else 0.0)
     )
 
     bonuses: list[str] = []
     penalties: list[str] = []
+
+    if same_archive_no:
+        bonuses.append("档号一致")
 
     if same_continuation_family:
         score += 0.18
@@ -467,6 +495,22 @@ def _score_boundary(
     if same_continuation_family and page_gap == 1 and not right.starts_attachment:
         score += 0.18
         bonuses.append("相邻页材料脉络连续")
+
+    if right.starts_archive_stamp:
+        if same_archive_no and page_gap == 1:
+            # Stamp page at the END of this document (same 档号 = same doc, stamp is cover).
+            score += 0.52
+            bonuses.append("同档号含归档章（封面末置，同件号）")
+        else:
+            # Stamp page begins a NEW document.
+            score -= 0.55
+            penalties.append("后页含归档章，为新文件起始")
+    elif same_archive_no and page_gap == 1:
+        score += 0.52
+        bonuses.append("同档号连续页（同件号）")
+    elif page_gap == 1 and re.match(r'(?:WS|KJ)', left_page.prefix, re.IGNORECASE):
+        score += 0.30
+        bonuses.append("档案编号连续页（同件号）")
 
     if page_gap > 1:
         gap_penalty = min(0.24, (page_gap - 1) * 0.12)
@@ -508,7 +552,11 @@ def _score_boundary(
             penalties.extend(feedback_reasons)
 
     score = round(max(0.02, min(0.98, score)), 4)
-    strong_split = score <= HARD_SPLIT_SCORE or ("前页已结束且后页为附件/新表单起始" in penalties)
+    strong_split = (
+        score <= HARD_SPLIT_SCORE
+        or "前页已结束且后页为附件/新表单起始" in penalties
+        or "后页含归档章，为新文件起始" in penalties
+    )
     should_merge = score >= STRONG_MERGE_SCORE
     is_ambiguous = not should_merge and score >= AMBIGUOUS_SCORE_LOW
 

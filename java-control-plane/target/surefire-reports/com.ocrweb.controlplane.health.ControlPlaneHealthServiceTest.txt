@@ -1,4 +1,0 @@
--------------------------------------------------------------------------------
-Test set: com.ocrweb.controlplane.health.ControlPlaneHealthServiceTest
--------------------------------------------------------------------------------
-Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.783 s -- in com.ocrweb.controlplane.health.ControlPlaneHealthServiceTest

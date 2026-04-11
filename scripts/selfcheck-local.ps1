@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$BaseUrl = "http://localhost:8000",
+    [string]$BaseUrl = "http://localhost:8080",
     [int]$TaskId = 0,
     [string]$BatchId = ""
 )

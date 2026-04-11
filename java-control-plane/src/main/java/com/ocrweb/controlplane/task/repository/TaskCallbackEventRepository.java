@@ -5,4 +5,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface TaskCallbackEventRepository extends JpaRepository<TaskCallbackEventEntity, Long> {
     boolean existsByEventId(String eventId);
+
+    java.util.List<TaskCallbackEventEntity> findByTaskIdOrderByCreatedAtAscIdAsc(Long taskId);
 }

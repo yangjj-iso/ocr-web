@@ -3,7 +3,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 async def main():
-    engine = create_async_engine("postgresql+asyncpg://postgres:123456@localhost:5432/ocr_db")
+    import os
+    db_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:123456@localhost:5432/ocr_db")
+    engine = create_async_engine(db_url)
     async with engine.begin() as conn:
         r = await conn.execute(text(
             "SELECT MIN(id), MAX(id), COUNT(*), "

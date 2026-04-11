@@ -15,11 +15,11 @@ spring:
       ddl-auto: update
     open-in-view: false
   rabbitmq:
-    host: 127.0.0.1
-    port: 5672
-    username: ocr_admin
-    password: ocr_password123
-    virtual-host: /
+    host: ${SPRING_RABBITMQ_HOST:127.0.0.1}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:ocr_admin}
+    password: ${SPRING_RABBITMQ_PASSWORD:ocr_password123}
+    virtual-host: ${SPRING_RABBITMQ_VHOST:/}
 
 ocr:
   security:
@@ -56,7 +56,7 @@ ocr:
     key-prefix: ${OCR_STORAGE_KEY_PREFIX:uploads}
     path-style: ${OCR_STORAGE_PATH_STYLE:true}
   local-path:
-    roots: ${LOCAL_PATH_ROOTS:./uploads-java,../app/uploads,../app}
+    roots: ${LOCAL_PATH_ROOTS:../docker-data/minio/data/ocr-source/uploads,./uploads-java,../app/uploads,../app}
   ai:
     base-url: ${OCR_AI_BASE_URL:http://127.0.0.1:8001}
     health-path: ${OCR_AI_HEALTH_PATH:/api/health}
@@ -64,6 +64,20 @@ ocr:
     read-timeout-seconds: ${OCR_AI_READ_TIMEOUT_SECONDS:300}
     circuit-failure-threshold: ${OCR_AI_CIRCUIT_FAILURE_THRESHOLD:5}
     circuit-open-seconds: ${OCR_AI_CIRCUIT_OPEN_SECONDS:30}
+  processing:
+    layout-backend: ${OCR_LAYOUT_BACKEND:local}
+    vl-backend: ${OCR_VL_BACKEND:auto}
+    enable-hierarchical-agent: ${ENABLE_HIERARCHICAL_AGENT:false}
+    llm-backend: ${OCR_PROCESSING_LLM_BACKEND:local}
+    llm-model: ${OCR_PROCESSING_LLM_MODEL:}
+    processing-strategy: ${OCR_PROCESSING_STRATEGY:auto}
+    max-retries: ${MAX_RETRIES:2}
+    confidence-threshold: ${CONFIDENCE_THRESHOLD:0.85}
+    human-review-threshold-low: ${HUMAN_REVIEW_MIN_CONFIDENCE:0.60}
+    human-review-threshold-high: ${HUMAN_REVIEW_MAX_CONFIDENCE:0.85}
+    timeout-seconds: ${OCR_PROCESSING_TIMEOUT_SECONDS:1800}
+    gpu-profile: ${OCR_GPU_PROFILE:single_gpu}
+    langgraph-graph: ${OCR_LANGGRAPH_GRAPH:batch_supervisor_v1}
   rate-limit:
     enabled: ${OCR_RATE_LIMIT_ENABLED:true}
     window-seconds: ${OCR_RATE_LIMIT_WINDOW_SECONDS:60}

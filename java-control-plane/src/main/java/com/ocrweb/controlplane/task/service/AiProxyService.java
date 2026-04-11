@@ -188,6 +188,10 @@ public class AiProxyService {
         return batchPath(batchId, "/ai-merge-extract");
     }
 
+    public String batchAiMergeExportPath(String batchId) {
+        return batchPath(batchId, "/ai-merge-export");
+    }
+
     public String batchEvaluationTruthPath(String batchId) {
         return batchPath(batchId, "/evaluation-truth");
     }

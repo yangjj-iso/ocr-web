@@ -1,52 +1,90 @@
-# LangGraph 简化流转图
+# LangGraph Workflow View
 
-这份图不是给框架看的，是给人看的。  
-如果你觉得 LangSmith / LangGraph 原生 trace 太绕，先看这张，再回去看节点树。
+This document explains the local LangGraph debugging entrypoints for OCR-WEB and, most importantly, where to see the full workflow instead of a health page.
 
-## 整份文件主流程
+## What each URL is for
 
-```mermaid
-flowchart LR
-    A["node_prepare_batch<br/>准备批次 / 拆页 / 初始化状态"] --> B["node_process_next_page<br/>逐页处理"]
-    B --> C["node_cross_page_consistency<br/>跨页一致性检查"]
-    C --> D["node_rag_retrieve<br/>检索历史样本"]
-    D --> E{"node_human_router<br/>是否需要人工审核?"}
-    E -- "否" --> F["node_final_archiver_and_quality<br/>最终归档与质量汇总"]
-    E -- "是" --> G["node_pause_for_human_review<br/>暂停等待人工"]
-    G --> H["resume<br/>人工确认后继续"]
-    H --> F
+- `http://127.0.0.1:8123/health/live`
+  - Liveness only.
+  - Expected response: `{"status":"ok"}`.
+  - This is not the workflow page.
+
+- `http://127.0.0.1:8123/studio/info`
+  - Lists the exposed graph ids.
+  - Expected graphs: `batch_supervisor`, `page_agent`.
+
+- `http://127.0.0.1:8123/studio/topology`
+  - Returns the topology JSON used by the Studio page.
+  - Use this when you want to inspect the graph data structure directly.
+
+- `http://127.0.0.1:8123/studio/flow`
+  - The actual full workflow page.
+  - Shows both the batch-level graph and the page-level graph.
+
+- `http://127.0.0.1:8123/studio/flow?taskId=<taskId>`
+  - Same page, but with the real runtime event trace overlaid for one OCR task.
+  - The executed nodes and edges are highlighted.
+
+## Workflow scope
+
+The Studio view visualizes two graphs:
+
+- `batch_supervisor`
+  - `node_prepare_batch`
+  - `node_process_next_page`
+  - `node_cross_page_consistency`
+  - `node_rag_retrieve`
+  - `node_human_router`
+  - `node_pending_human_review`
+  - `node_pause_for_human_review`
+  - `node_final_archiver_and_quality`
+
+- `page_agent`
+  - `node_page_plan`
+  - `node_ocr`
+  - `node_ppocr_vl`
+  - `node_evaluate_and_merge`
+  - `node_adjust_strategy`
+  - `node_finalize_page`
+
+The batch graph calls the page graph from `node_process_next_page`, and the page graph can loop through `node_adjust_strategy -> node_page_plan` when it decides to retry.
+
+## Runtime trace source
+
+The runtime trace shown in `/studio/flow?taskId=<taskId>` is not coming from LangSmith.
+
+It is built from the existing OCR runtime callback chain:
+
+- worker executes the LangGraph workflow
+- worker emits node-level events
+- control plane stores callback events
+- Studio page fetches the stored events and replays them on top of the topology
+
+The node-level events now include:
+
+- `NODE_ENTER`
+- `NODE_EXIT`
+- `ROUTE_DECISION`
+
+Existing business events such as `PAGE_COMPLETED` and `HUMAN_REVIEW_REQUIRED` are still preserved.
+
+## Start the local Studio service
+
+```powershell
+cd D:\OCR_WEB\ocr
+powershell -ExecutionPolicy Bypass -File .\scripts\start_langgraph_studio.ps1 -NoBrowser
 ```
 
-## 单页处理子流程
+If port `8123` is already occupied, start on another port:
 
-```mermaid
-flowchart LR
-    A["node_page_plan<br/>页级计划 / 复杂度判断"] --> B["node_ocr<br/>传统 OCR"]
-    B --> C["node_vision_llm<br/>Vision LLM 辅助"]
-    C --> D{"node_evaluate_and_merge<br/>仲裁合并 / 打分"}
-    D -- "通过" --> E["node_finalize_page<br/>完成单页"]
-    D -- "不通过" --> F["node_adjust_strategy<br/>切换预处理策略重试"]
-    F --> A
+```powershell
+cd D:\OCR_WEB\ocr
+powershell -ExecutionPolicy Bypass -File .\scripts\start_langgraph_studio.ps1 -Port 8124 -NoBrowser
 ```
 
-## 你最该看的 4 个节点
+## Related files
 
-- `node_ocr`
-  这里看 OCR 是否真正读到了字，是否有图片路径、版面解析、预处理问题。
-- `node_vision_llm`
-  这里看大模型有没有参与、返回内容是不是脏格式、有没有超时。
-- `node_evaluate_and_merge`
-  这里看最终 `confidence`、`issues`、`human_review`。
-- `node_human_router`
-  这里看为什么任务被暂停给人工，重点看 `review_reason`。
-
-## 本地查看入口
-
-启动 LangGraph Studio 本地服务后，可以直接打开：
-
-- [http://127.0.0.1:8123/studio/flow](http://127.0.0.1:8123/studio/flow)
-
-对应代码：
-
-- [`app/studio/webapp.py`](/D:/Code/work/OCR-WEB-main/app/studio/webapp.py)
-- [`app/services/agent_ocr_workflow.py`](/D:/Code/work/OCR-WEB-main/app/services/agent_ocr_workflow.py)
+- [`D:\OCR_WEB\ocr\app\studio\webapp.py`](/D:/OCR_WEB/ocr/app/studio/webapp.py)
+- [`D:\OCR_WEB\ocr\app\studio\workflow_topology.py`](/D:/OCR_WEB/ocr/app/studio/workflow_topology.py)
+- [`D:\OCR_WEB\ocr\app\services\agent_ocr_workflow.py`](/D:/OCR_WEB/ocr/app/services/agent_ocr_workflow.py)
+- [`D:\OCR_WEB\ocr\langgraph.json`](/D:/OCR_WEB/ocr/langgraph.json)

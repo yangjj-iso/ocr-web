@@ -29,7 +29,14 @@ from app.services.document_family import (
     infer_document_family_from_text,
     infer_title_hint,
 )
-from app.services.excel_export import extract_fields
+from app.services.excel_export import (
+    DEFAULT_EXCEL_NAME,
+    HEADERS,
+    append_to_excel,
+    init_excel,
+    resolve_excel_output_path,
+    extract_fields,
+)
 from app.services.llm_field_extraction_service import (
     ARCHIVE_FIELDS,
     MiniMaxServiceError,
@@ -69,7 +76,7 @@ NEARBY_CANDIDATE_DISTANCE = 1
 MISSING_TEXT_REASON = "Task full_text is empty."
 MISSING_TEXT_WITHOUT_VISUAL_REASON = "Task full_text is empty and cannot participate in visual grouping."
 NOT_DONE_REASON = "Task is not finished yet."
-MERGE_CACHE_PREFIX = "batch_ai_merge:v2:"
+MERGE_CACHE_PREFIX = "batch_ai_merge:v3:"
 MERGE_CACHE_TTL = 1800
 VISUAL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
@@ -190,6 +197,7 @@ def _is_multi_layout_continuation_pair(
         and left.document_family in MULTI_LAYOUT_CONTINUATION_FAMILIES
     )
 
+
 def _infer_document_family_from_task(*, title_hint: str, full_text: str) -> str:
     return infer_document_family_from_text(title_hint=title_hint, full_text=full_text)
 
@@ -206,8 +214,14 @@ def _is_visual_sequence_candidate(task: OCRTask) -> bool:
     return file_type in VISUAL_IMAGE_EXTENSIONS and _extract_visual_sequence_parts(task.filename) is not None
 
 
+def _is_image_file(task: OCRTask) -> bool:
+    """Check if a task is an image file regardless of naming convention."""
+    file_type = _coerce_text(task.file_type).lower() or Path(task.filename or "").suffix.lower()
+    return file_type in VISUAL_IMAGE_EXTENSIONS
+
+
 def _task_is_merge_eligible(task: OCRTask) -> bool:
-    return task.status == "done" and bool(_coerce_text(task.full_text) or _is_visual_sequence_candidate(task))
+    return task.status == "done" and bool(_coerce_text(task.full_text) or _is_visual_sequence_candidate(task) or _is_image_file(task))
 
 
 def _task_is_boundary_analysis_eligible(task: OCRTask) -> bool:
@@ -220,6 +234,36 @@ def _similarity(left: str, right: str) -> float:
     if not left or not right:
         return 0.0
     return SequenceMatcher(a=left, b=right).ratio()
+
+
+def _assign_folder_sequence_info(candidates: list[TaskCandidate]) -> None:
+    """Assign virtual visual_prefix and visual_page_no to image candidates that
+    lack standard naming-convention sequence info, grouping them by their
+    parent directory so the boundary engine can process them."""
+    no_sequence = [
+        c for c in candidates
+        if (not c.visual_prefix or c.visual_page_no is None) and _is_image_file(c.task)
+    ]
+    if not no_sequence:
+        return
+
+    folder_groups: dict[str, list[TaskCandidate]] = defaultdict(list)
+    for candidate in no_sequence:
+        folder = str(Path(candidate.task.file_path or "").parent)
+        if folder and folder != ".":
+            folder_groups[folder].append(candidate)
+
+    for folder, members in folder_groups.items():
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda c: (c.task.filename or "", c.task.created_at or datetime.min, c.task.id))
+        folder_name = Path(folder).name or "folder"
+        virtual_prefix = f"_folder_{folder_name}"
+        for page_no, candidate in enumerate(members, start=1):
+            candidate.visual_prefix = virtual_prefix
+            candidate.visual_page_no = page_no
+            if not candidate.series_key:
+                candidate.series_key = f".|{_normalize_text(folder_name)}"
 
 
 def _filename_sort_key(candidate: TaskCandidate) -> tuple[int, datetime, int]:
@@ -356,12 +400,16 @@ def _apply_boundary_pdf_exports(
                 break
 
             visual_sequence = _extract_visual_sequence_parts(task.filename or image_path.name)
-            if visual_sequence is None:
+            if visual_sequence is not None:
+                page_prefix, page_no = visual_sequence
+            elif prefix:
+                page_prefix = prefix
+                page_no = start_page + task_ids.index(task_id)
+            else:
                 warnings.append(f"{group['suggested_pdf_filename']}: 文件名不符合连续页规则，未导出 PDF。")
                 pages = []
                 break
 
-            page_prefix, page_no = visual_sequence
             if not prefix:
                 prefix = page_prefix
                 group["prefix"] = prefix
@@ -471,7 +519,7 @@ async def _load_batch_tasks(db: AsyncSession, batch_id: str) -> list[OCRTask]:
 
 
 def _build_task_candidate(task: OCRTask) -> TaskCandidate:
-    fields = extract_fields(task.filename, task.full_text or "", task.result_json, task.page_count)
+    fields = extract_fields(task.filename, task.full_text or "", task.result_json, task.page_count, file_path=task.file_path or "")
     title_hint = _coerce_text(fields.get("题名")) or infer_title_hint(task.full_text or "")
     title = _normalize_text(title_hint)
     doc_no = _normalize_text(fields.get("文号", ""))
@@ -803,44 +851,44 @@ def _build_visual_group_hints(candidates: list[TaskCandidate]) -> tuple[dict[int
                     exc_info=True,
                 )
 
-        if not fingerprints:
-            continue
+    if not fingerprints:
+        return {}, {}
 
-        threshold = suggest_similarity_threshold(fingerprints)
-        groups = group_pages_by_similarity(
-            fingerprints,
-            similarity_threshold=threshold,
-            text_similarity_threshold=DEFAULT_TEXT_SIMILARITY_THRESHOLD,
+    threshold = suggest_similarity_threshold(fingerprints)
+    groups = group_pages_by_similarity(
+        fingerprints,
+        similarity_threshold=threshold,
+        text_similarity_threshold=DEFAULT_TEXT_SIMILARITY_THRESHOLD,
+    )
+    for group_index, group in enumerate(groups, start=1):
+        member_candidates = [
+            fingerprint_to_candidate[id(page)]
+            for page in group.pages
+            if id(page) in fingerprint_to_candidate
+        ]
+        if not member_candidates:
+            continue
+        member_candidates.sort(key=_filename_sort_key)
+        group_id = f"{prefix}#visual-{group_index}"
+        start_page = member_candidates[0].visual_page_no or 0
+        end_page = member_candidates[-1].visual_page_no or start_page
+        adjacent_scores = [
+            float(page.comparison_from_previous.combined_change_score or 0.0)
+            for page in group.pages[1:]
+            if page.comparison_from_previous is not None
+        ]
+        confidence = round(max(0.9, 1.0 - (max(adjacent_scores) * 0.08 if adjacent_scores else 0.02)), 4)
+        reason = (
+            f"视觉分页判定为同一原始文件（序列 {prefix}，页码 {start_page:03d}-{end_page:03d}，"
+            f"阈值 {threshold}）。"
         )
-        for group_index, group in enumerate(groups, start=1):
-            member_candidates = [
-                fingerprint_to_candidate[id(page)]
-                for page in group.pages
-                if id(page) in fingerprint_to_candidate
-            ]
-            if not member_candidates:
-                continue
-            member_candidates.sort(key=_filename_sort_key)
-            group_id = f"{prefix}#visual-{group_index}"
-            start_page = member_candidates[0].visual_page_no or 0
-            end_page = member_candidates[-1].visual_page_no or start_page
-            adjacent_scores = [
-                float(page.comparison_from_previous.combined_change_score or 0.0)
-                for page in group.pages[1:]
-                if page.comparison_from_previous is not None
-            ]
-            confidence = round(max(0.9, 1.0 - (max(adjacent_scores) * 0.08 if adjacent_scores else 0.02)), 4)
-            reason = (
-                f"视觉分页判定为同一原始文件（序列 {prefix}，页码 {start_page:03d}-{end_page:03d}，"
-                f"阈值 {threshold}）。"
-            )
-            visual_group_meta[group_id] = {
-                "confidence": confidence,
-                "reason": reason,
-                "task_ids": [candidate.task.id for candidate in member_candidates],
-            }
-            for candidate in member_candidates:
-                visual_group_by_task_id[candidate.task.id] = group_id
+        visual_group_meta[group_id] = {
+            "confidence": confidence,
+            "reason": reason,
+            "task_ids": [candidate.task.id for candidate in member_candidates],
+        }
+        for candidate in member_candidates:
+            visual_group_by_task_id[candidate.task.id] = group_id
 
     return visual_group_by_task_id, visual_group_meta
 
@@ -1120,8 +1168,9 @@ def _build_rule_fallback_comparison(
     page_count: int,
     full_text: str,
     result_json: Any,
+    file_path: str = "",
 ) -> dict[str, Any]:
-    rule_fields = extract_fields(filename, full_text or "", result_json, page_count)
+    rule_fields = extract_fields(filename, full_text or "", result_json, page_count, file_path=file_path)
     llm_fields = {field: "" for field in ARCHIVE_FIELDS}
     llm_fields["evidence"] = {field: "" for field in ARCHIVE_FIELDS}
     return {
@@ -1134,6 +1183,64 @@ def _build_rule_fallback_comparison(
         "model": "",
         "raw_usage": {},
     }
+
+
+def _normalize_export_field_row(fields: dict[str, Any] | None, *, merged_page_count: int = 0) -> dict[str, str]:
+    normalized = {header: "" for header in HEADERS}
+    for header in HEADERS:
+        value = "" if not isinstance(fields, dict) else fields.get(header, "")
+        normalized[header] = _coerce_text(value)
+    if merged_page_count > 0:
+        normalized["页数"] = str(merged_page_count)
+    return normalized
+
+
+def _merged_documents_to_excel_rows(payload: dict[str, Any]) -> list[dict[str, str]]:
+    documents = payload.get("documents") or []
+    rows: list[dict[str, str]] = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        fields = document.get("recommended_fields")
+        if not isinstance(fields, dict) or not fields:
+            fields = document.get("rule_fields") if isinstance(document.get("rule_fields"), dict) else {}
+        rows.append(
+            _normalize_export_field_row(
+                fields,
+                merged_page_count=int(document.get("merged_page_count") or 0),
+            )
+        )
+    return rows
+
+
+async def export_batch_merge_extract_excel(
+    db: AsyncSession,
+    *,
+    batch_id: str,
+    include_evidence: bool = False,
+    force_refresh: bool = False,
+    output_path: str = "",
+    similarity_threshold: int | None = None,
+) -> str | None:
+    payload = await get_batch_merge_extract_result(
+        db,
+        batch_id=batch_id,
+        include_evidence=include_evidence,
+        force_refresh=force_refresh,
+        similarity_threshold=similarity_threshold,
+    )
+    if not payload:
+        return None
+
+    rows = _merged_documents_to_excel_rows(payload)
+    if not rows:
+        return None
+
+    resolved_path = resolve_excel_output_path(output_path or f"{batch_id}_{DEFAULT_EXCEL_NAME}")
+    init_excel(resolved_path)
+    for row in rows:
+        append_to_excel(resolved_path, row)
+    return resolved_path
 
 
 async def batch_merge_extract_fields(
@@ -1163,7 +1270,7 @@ async def batch_merge_extract_fields(
                 }
             )
             continue
-        if not _coerce_text(task.full_text) and not _is_visual_sequence_candidate(task):
+        if not _coerce_text(task.full_text) and not _is_visual_sequence_candidate(task) and not _is_image_file(task):
             skipped_tasks.append(
                 {
                     "task_id": task.id,
@@ -1179,6 +1286,7 @@ async def batch_merge_extract_fields(
         return None
 
     candidates = [_build_task_candidate(task) for task in eligible_tasks]
+    _assign_folder_sequence_info(candidates)
     feedback_priors = await load_boundary_feedback_priors(db)
     boundary_sequences = _build_boundary_sequences_payload(candidates)
     applied_similarity_threshold = _normalize_similarity_threshold(similarity_threshold)
@@ -1401,7 +1509,8 @@ async def batch_merge_extract_fields(
             if len(members) == 1
             else f"{Path(members[0].task.filename).stem}_merged_{len(members)}"
         )
-        group_compare_jobs.append((group, merged_page_count, merged_filename, merged_text, merged_pages))
+        first_file_path = members[0].task.file_path or "" if members else ""
+        group_compare_jobs.append((group, merged_page_count, merged_filename, merged_text, merged_pages, first_file_path))
         compare_coroutines.append(
             _run_limited(
                 llm_semaphore,
@@ -1411,13 +1520,14 @@ async def batch_merge_extract_fields(
                     full_text=merged_text,
                     result_json=merged_pages,
                     include_evidence=include_evidence,
+                    file_path=first_file_path,
                 ),
             )
         )
 
     if compare_coroutines:
         compare_results = await asyncio.gather(*compare_coroutines, return_exceptions=True)
-        for (group, merged_page_count, merged_filename, merged_text, merged_pages), comparison in zip(
+        for (group, merged_page_count, merged_filename, merged_text, merged_pages, first_file_path), comparison in zip(
             group_compare_jobs,
             compare_results,
         ):
@@ -1433,6 +1543,7 @@ async def batch_merge_extract_fields(
                     page_count=merged_page_count,
                     full_text=merged_text,
                     result_json=merged_pages,
+                    file_path=first_file_path,
                 )
 
             _merge_usage(raw_usage, comparison.get("raw_usage", {}))
@@ -1568,6 +1679,7 @@ async def get_batch_boundary_analysis_result(
         return None
 
     candidates = [_build_task_candidate(task) for task in eligible_tasks]
+    _assign_folder_sequence_info(candidates)
     feedback_priors = await load_boundary_feedback_priors(db)
     boundary_sequences = _build_boundary_sequences_payload(candidates)
     boundary_result = _build_boundary_hints(
