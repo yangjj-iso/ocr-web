@@ -51,6 +51,9 @@ public class ArchiveRecordEntity {
     @Column(length = 1000)
     private String remarks;
 
+    @Column(name = "storage_path", length = 1000)
+    private String storagePath;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;
@@ -145,6 +148,14 @@ public class ArchiveRecordEntity {
 
     public void setRemarks(String remarks) {
         this.remarks = remarks;
+    }
+
+    public String getStoragePath() {
+        return storagePath;
+    }
+
+    public void setStoragePath(String storagePath) {
+        this.storagePath = storagePath;
     }
 
     public OffsetDateTime getCreatedAt() {

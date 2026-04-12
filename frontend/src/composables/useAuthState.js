@@ -18,8 +18,10 @@ const auth = ref({
   authenticated: false,
   username: null,
   is_admin: false,
+  role: 'operator',
   user_status: null,
   default_username: null,
+  display_name: null,
 })
 
 const pendingUsers = ref([])
@@ -40,8 +42,10 @@ async function refreshAuthStatus(force = false) {
         authenticated: Boolean(data?.authenticated),
         username: data?.username || null,
         is_admin: Boolean(data?.is_admin),
+        role: data?.role || 'operator',
         user_status: data?.user_status || null,
         default_username: data?.default_username || null,
+        display_name: data?.display_name || null,
       }
       authLoaded.value = true
       return auth.value
@@ -52,8 +56,10 @@ async function refreshAuthStatus(force = false) {
         authenticated: false,
         username: null,
         is_admin: false,
+        role: 'operator',
         user_status: null,
         default_username: null,
+        display_name: null,
       }
       authLoaded.value = true
       return auth.value
@@ -73,14 +79,16 @@ async function login(username, password) {
     authenticated: true,
     username: data?.username || username,
     is_admin: Boolean(data?.is_admin),
+    role: data?.role || 'operator',
     user_status: data?.user_status || 'active',
+    display_name: null,
   }
   authLoaded.value = true
   return auth.value
 }
 
-async function register(username, password) {
-  const { data } = await registerApi(username, password)
+async function register(username, password, realName, requestedRole) {
+  const { data } = await registerApi(username, password, realName, requestedRole)
   return data
 }
 
@@ -93,7 +101,9 @@ async function logout() {
       authenticated: false,
       username: null,
       is_admin: false,
+      role: 'operator',
       user_status: null,
+      display_name: null,
     }
   }
 }
@@ -136,6 +146,10 @@ export function useAuthState() {
     isAuthEnabled: computed(() => Boolean(auth.value.enabled)),
     isAuthenticated: computed(() => Boolean(auth.value.authenticated)),
     isAdmin: computed(() => Boolean(auth.value.is_admin)),
+    isOperator: computed(() => auth.value.role === 'operator'),
+    isReviewer: computed(() => false), // role removed
+    isSearcher: computed(() => auth.value.role === 'searcher'),
+    userRole: computed(() => auth.value.role || 'operator'),
     refreshAuthStatus,
     login,
     register,

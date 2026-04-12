@@ -170,7 +170,15 @@ export const getArchiveRecords = (params = {}) => controlPlaneApi.get('/archive-
 export const importArchiveFromExcel = (filePath, batchId = '') =>
   controlPlaneApi.post('/archive-records/import-excel', { filePath, batchId })
 
+export const batchUpdateArchiveRecords = (payload = {}) =>
+  controlPlaneApi.put('/archive-records/batch-update', payload)
+
+export const getStorageTree = () => controlPlaneApi.get('/storage-tree')
+export const getStorageTreeRecords = (path) => controlPlaneApi.get('/storage-tree/records', { params: { path } })
+
 export const deleteArchiveRecords = (params = {}) => controlPlaneApi.delete('/archive-records', { params: normalizeArchiveRecordParams(params) })
+
+export const getDashboardStats = (days = 7) => controlPlaneApi.get('/dashboard/stats', { params: { days } })
 
 export const ensureFolderBatch = (folder) => controlPlaneApi.post('/folders/ensure-batch', { folder })
 
@@ -179,6 +187,22 @@ export const getTaskFileUrl = (id) => controlPlaneBackendUrl(`/api/ocr/tasks/${i
 export const getTaskThumbnailUrl = (id) => controlPlaneBackendUrl(`/api/ocr/tasks/${id}/thumbnail`)
 
 export const getTaskPageImageUrl = (id, pageNum) => controlPlaneBackendUrl(`/api/ocr/tasks/${id}/pages/${pageNum}/image`)
+
+export const listTasks = (params = {}) => controlPlaneApi.get('/tasks', { params })
+
+export const listMyAssignedTasks = (params = {}) => controlPlaneApi.get('/tasks/my-assigned', { params })
+
+export const uploadOnly = (file, relativePath = '', batchId = '') => {
+  const form = new FormData()
+  form.append('file', file)
+  return controlPlaneApi.post(`/upload-only?relative_path=${encodeURIComponent(relativePath)}&batch_id=${encodeURIComponent(batchId)}`, form)
+}
+
+export const assignTasks = (taskIds, assigneeUsername) =>
+  controlPlaneApi.post('/tasks/assign', { task_ids: taskIds, assignee_username: assigneeUsername })
+
+export const submitBatch = (taskIds) =>
+  controlPlaneApi.post('/tasks/submit-batch', { task_ids: taskIds })
 
 export const getTaskFields = (id) => controlPlaneApi.get(`/tasks/${id}/extract-fields`)
 

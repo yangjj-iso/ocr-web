@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ocrweb.controlplane.archive.service.ArchiveRecordService;
+import com.ocrweb.controlplane.auth.service.CurrentUser;
+import com.ocrweb.controlplane.auth.service.UserQuotaService;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.task.domain.OcrTaskStatus;
 import com.ocrweb.controlplane.task.domain.TaskCallbackEventEntity;
@@ -29,6 +31,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -51,6 +54,7 @@ public class OcrTaskService {
     private final TaskStorageService storageService;
     private final TaskCommandProducer taskCommandProducer;
     private final ArchiveRecordService archiveRecordService;
+    private final UserQuotaService userQuotaService;
     private final ObjectMapper objectMapper;
 
     public OcrTaskService(
@@ -59,6 +63,7 @@ public class OcrTaskService {
             TaskStorageService storageService,
             TaskCommandProducer taskCommandProducer,
             ArchiveRecordService archiveRecordService,
+            UserQuotaService userQuotaService,
             ObjectMapper objectMapper
     ) {
         this.taskRepository = taskRepository;
@@ -66,19 +71,21 @@ public class OcrTaskService {
         this.storageService = storageService;
         this.taskCommandProducer = taskCommandProducer;
         this.archiveRecordService = archiveRecordService;
+        this.userQuotaService = userQuotaService;
         this.objectMapper = objectMapper;
     }
 
-    @Transactional
+    @Transactional(rollbackOn = Exception.class)
     public OcrTaskEntity submitUpload(
             MultipartFile file,
             String relativePath,
             String mode,
             String batchId,
-            String submitterUsername
+            CurrentUser submitter
     ) throws IOException {
         String resolvedBatchId = resolveBatchId(batchId);
-        SubmissionMetadata submissionMetadata = resolveSubmissionMetadata(resolvedBatchId, submitterUsername);
+        SubmissionMetadata submissionMetadata = resolveSubmissionMetadata(resolvedBatchId, submitter == null ? "" : submitter.username());
+        userQuotaService.consumeUploadQuota(submitter, 1);
         logger.info(
                 "Submitting uploaded OCR task: filename={}, relativePath={}, mode={}, batchId={}, submitterUsername={}",
                 file.getOriginalFilename(),
@@ -117,15 +124,16 @@ public class OcrTaskService {
         return saved;
     }
 
-    @Transactional
+    @Transactional(rollbackOn = Exception.class)
     public OcrTaskEntity submitExistingPath(
             String filePath,
             String mode,
             String batchId,
-            String submitterUsername
+            CurrentUser submitter
     ) throws IOException {
         String resolvedBatchId = resolveBatchId(batchId);
-        SubmissionMetadata submissionMetadata = resolveSubmissionMetadata(resolvedBatchId, submitterUsername);
+        SubmissionMetadata submissionMetadata = resolveSubmissionMetadata(resolvedBatchId, submitter == null ? "" : submitter.username());
+        userQuotaService.consumeUploadQuota(submitter, 1);
         logger.info(
                 "Submitting existing-path OCR task: filePath={}, mode={}, batchId={}, submitterUsername={}",
                 filePath,
@@ -163,28 +171,185 @@ public class OcrTaskService {
         return saved;
     }
 
+    @Transactional(rollbackOn = Exception.class)
+    public OcrTaskEntity uploadOnly(
+            MultipartFile file,
+            String relativePath,
+            String batchId,
+            CurrentUser submitter
+    ) throws IOException {
+        String resolvedBatchId = resolveBatchId(batchId);
+        SubmissionMetadata submissionMetadata = resolveSubmissionMetadata(resolvedBatchId, submitter == null ? "" : submitter.username());
+        userQuotaService.consumeUploadQuota(submitter, 1);
+        TaskStorageService.StoredFileHandle storedFile = storageService.saveUpload(file, relativePath);
+        OcrTaskEntity task = new OcrTaskEntity();
+        task.setFilename(file.getOriginalFilename());
+        task.setFilePath(storedFile.logicalPath());
+        task.setFileType(extension(file.getOriginalFilename()));
+        task.setStorageProvider(storedFile.storageProvider());
+        task.setStorageBucket(storedFile.bucket());
+        task.setStorageObjectKey(storedFile.objectKey());
+        task.setFileSha256(storedFile.sha256());
+        task.setFileSizeBytes(storedFile.sizeBytes());
+        task.setMode("vl");
+        task.setBatchId(resolvedBatchId);
+        task.setSubmitterUsername(submissionMetadata.submitterUsername());
+        task.setSubmissionName(submissionMetadata.submissionName());
+        task.setTraceId(RequestTraceContext.getTraceId());
+        task.setStatus("uploaded");
+        OcrTaskEntity saved = taskRepository.save(task);
+        logger.info("File uploaded (no OCR): taskId={}, filename={}, batchId={}", saved.getId(), saved.getFilename(), saved.getBatchId());
+        return saved;
+    }
+
+    @Transactional(rollbackOn = Exception.class)
+    public int assignTasks(List<Long> taskIds, String assigneeUsername) {
+        List<OcrTaskEntity> tasks = taskRepository.findAllById(taskIds);
+        int count = 0;
+        for (OcrTaskEntity task : tasks) {
+            task.setAssigneeUsername(assigneeUsername);
+            taskRepository.save(task);
+            count++;
+        }
+        logger.info("Assigned {} tasks to user {}", count, assigneeUsername);
+        return count;
+    }
+
+    @Transactional(rollbackOn = Exception.class)
+    public int submitBatchForProcessing(List<Long> taskIds) {
+        List<OcrTaskEntity> tasks = taskRepository.findAllById(taskIds);
+        int count = 0;
+        for (OcrTaskEntity task : tasks) {
+            if (!"uploaded".equals(task.getStatus())) continue;
+            task.setStatus(normalizeStatus(OcrTaskStatus.QUEUED));
+            OcrTaskEntity saved = taskRepository.save(task);
+            taskCommandProducer.publish(saved);
+            count++;
+        }
+        logger.info("Submitted {} uploaded tasks for OCR processing", count);
+        return count;
+    }
+
     public TaskDtos.TaskListResponse listTasks(int page, int pageSize, String folder, String submissionId, String batchId) {
+        return listTasks(page, pageSize, folder, submissionId, batchId, "");
+    }
+
+    public TaskDtos.TaskListResponse listTasks(int page, int pageSize, String folder, String submissionId, String batchId, String status) {
         String safeSubmissionId = safe(submissionId);
         if (StringUtils.hasText(safeSubmissionId)) {
             List<OcrTaskEntity> tasks = findTasksBySubmissionId(safeSubmissionId);
+            if (StringUtils.hasText(status)) {
+                tasks = tasks.stream().filter(t -> status.equalsIgnoreCase(t.getStatus())).toList();
+            }
             return paginateTasks(tasks, page, pageSize);
         }
 
-        var tasks = taskRepository.findByFolderAndBatchId(
-                safe(folder),
-                safe(batchId),
-                PageRequest.of(Math.max(0, page - 1), pageSize)
-        );
-        return new TaskDtos.TaskListResponse(tasks.getTotalElements(), tasks.getContent().stream().map(this::toSummary).toList());
-    }
-
-    public TaskDtos.TaskListResponse searchTasks(String keyword, int page, int pageSize) {
-        var tasks = taskRepository.search(keyword == null ? "" : keyword, PageRequest.of(Math.max(0, page - 1), pageSize));
-        String safeKeyword = keyword == null ? "" : keyword.trim();
+        Page<OcrTaskEntity> tasks;
+        if (StringUtils.hasText(status)) {
+            tasks = taskRepository.findByFolderAndBatchIdAndStatus(
+                    safe(folder),
+                    safe(batchId),
+                    status,
+                    PageRequest.of(Math.max(0, page - 1), pageSize)
+            );
+        } else {
+            tasks = taskRepository.findByFolderAndBatchId(
+                    safe(folder),
+                    safe(batchId),
+                    PageRequest.of(Math.max(0, page - 1), pageSize)
+            );
+        }
         return new TaskDtos.TaskListResponse(
                 tasks.getTotalElements(),
-                tasks.getContent().stream().map(task -> toSummary(task, buildSearchSnippet(task, safeKeyword))).toList()
+                tasks.getContent().stream().map(this::toSummary).toList()
         );
+    }
+
+    public TaskDtos.TaskListResponse listMyAssignedTasks(String username, String status, int page, int pageSize) {
+        Page<OcrTaskEntity> tasks;
+        if (StringUtils.hasText(status)) {
+            tasks = taskRepository.findByAssigneeUsernameAndStatus(
+                    username,
+                    status,
+                    PageRequest.of(Math.max(0, page - 1), pageSize)
+            );
+        } else {
+            // Find all tasks assigned to this user regardless of status
+            List<OcrTaskEntity> allTasks = taskRepository.findByAssigneeUsername(username);
+            return paginateTasks(allTasks, page, pageSize);
+        }
+        return new TaskDtos.TaskListResponse(
+                tasks.getTotalElements(),
+                tasks.getContent().stream().map(this::toSummary).toList()
+        );
+    }
+
+    public TaskDtos.SearchResponse searchTasks(String keyword, int page, int pageSize) {
+        var tasks = taskRepository.searchWithArchive(keyword == null ? "" : keyword, PageRequest.of(Math.max(0, page - 1), pageSize));
+        String safeKeyword = keyword == null ? "" : keyword.trim();
+        List<Long> taskIds = tasks.getContent().stream().map(OcrTaskEntity::getId).toList();
+        Map<Long, com.ocrweb.controlplane.archive.domain.ArchiveRecordEntity> archiveMap = new HashMap<>();
+        if (!taskIds.isEmpty()) {
+            archiveRecordService.findByTaskIds(taskIds).forEach(r -> archiveMap.put(r.getTaskId(), r));
+        }
+        return new TaskDtos.SearchResponse(
+                tasks.getTotalElements(),
+                tasks.getContent().stream().map(task -> {
+                    var ar = archiveMap.get(task.getId());
+                    return new TaskDtos.SearchResultResponse(
+                            task.getId(),
+                            task.getFilename(),
+                            task.getFilePath(),
+                            task.getBatchId(),
+                            task.getFileType(),
+                            task.getMode(),
+                            task.getStatus() == null ? null : task.getStatus().toLowerCase(),
+                            task.getPageCount(),
+                            buildSearchSnippet(task, safeKeyword),
+                            task.getCreatedAt(),
+                            ar == null ? null : ar.getArchiveNo(),
+                            ar == null ? null : ar.getDocNo(),
+                            ar == null ? null : ar.getResponsible(),
+                            ar == null ? null : ar.getTitle(),
+                            ar == null ? null : ar.getDate(),
+                            ar == null ? null : ar.getClassification(),
+                            ar == null ? null : ar.getStoragePath()
+                    );
+                }).toList()
+        );
+    }
+
+    public TaskDtos.DashboardStatsResponse getDashboardStats(int trendDays) {
+        List<OcrTaskEntity> allTasks = taskRepository.findAll();
+        long total = allTasks.size();
+        long done = 0, processing = 0, failed = 0, pending = 0, totalPages = 0;
+        for (OcrTaskEntity t : allTasks) {
+            String s = t.getStatus() == null ? "" : t.getStatus().toLowerCase();
+            switch (s) {
+                case "done", "completed" -> done++;
+                case "failed" -> failed++;
+                case "human_review" -> failed++;
+                case "queued", "pending" -> pending++;
+                default -> processing++;
+            }
+            if (t.getPageCount() != null) totalPages += t.getPageCount();
+        }
+        LocalDate today = LocalDate.now(SUBMISSION_ZONE_ID);
+        List<TaskDtos.DailyCount> dailyCounts = new ArrayList<>();
+        for (int i = trendDays - 1; i >= 0; i--) {
+            LocalDate day = today.minusDays(i);
+            String label = day.getMonthValue() + "/" + day.getDayOfMonth();
+            OffsetDateTime dayStart = day.atStartOfDay(SUBMISSION_ZONE_ID).toOffsetDateTime();
+            OffsetDateTime dayEnd = day.plusDays(1).atStartOfDay(SUBMISSION_ZONE_ID).toOffsetDateTime();
+            long created = allTasks.stream().filter(t -> t.getCreatedAt() != null && !t.getCreatedAt().isBefore(dayStart) && t.getCreatedAt().isBefore(dayEnd)).count();
+            long completed = allTasks.stream().filter(t -> {
+                String st = t.getStatus() == null ? "" : t.getStatus().toLowerCase();
+                OffsetDateTime ts = t.getUpdatedAt() != null ? t.getUpdatedAt() : t.getCreatedAt();
+                return ("done".equals(st) || "completed".equals(st)) && ts != null && !ts.isBefore(dayStart) && ts.isBefore(dayEnd);
+            }).count();
+            dailyCounts.add(new TaskDtos.DailyCount(label, created, completed));
+        }
+        return new TaskDtos.DashboardStatsResponse(total, done, processing, failed, pending, totalPages, dailyCounts);
     }
 
     public List<TaskDtos.FolderSummaryResponse> listFolders() {
@@ -635,6 +800,7 @@ public class OcrTaskService {
                 snippet,
                 task.getErrorMessage(),
                 task.getProgressPercent(),
+                task.getAssigneeUsername(),
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );

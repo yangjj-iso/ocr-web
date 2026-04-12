@@ -31,7 +31,8 @@ from app.core.result_validation import normalize_result_pages, serialize_pages_t
 from app.domains.extraction import field_service
 from app.services.agent_ocr_workflow import run_hierarchical_ocr_detached
 from app.services.ocr_service import _run_ocr_document
-from config import CALLBACK_INLINE_RESULT_MAX_BYTES, CONTROL_PLANE_INTERNAL_TOKEN, WORKER_TEMP_DIR
+from config import CALLBACK_INLINE_RESULT_MAX_BYTES, WORKER_TEMP_DIR
+import app.config as _app_config
 
 try:
     from .callback_client import ControlPlaneCallbackClient, build_progress
@@ -66,6 +67,10 @@ except ImportError:  # pragma: no cover - script-mode fallback
 logger = logging.getLogger(__name__)
 
 
+def _control_plane_internal_token() -> str:
+    return (os.getenv("CONTROL_PLANE_INTERNAL_TOKEN") or getattr(_app_config, "CONTROL_PLANE_INTERNAL_TOKEN", "") or "").strip()
+
+
 def _normalize_mode(command: OcrTaskCommand) -> str:
     if command.execution.mode == "hierarchical_agent":
         return "layout"
@@ -82,6 +87,7 @@ def _map_archive_fields(fields: dict[str, Any]) -> ArchiveFieldsPayload:
         date=payload.get("日期", ""),
         pages=payload.get("页数", ""),
         classification=payload.get("密级", ""),
+        storage_path=payload.get("存放路径", ""),
         remarks=payload.get("备注", ""),
     )
 
@@ -104,7 +110,7 @@ async def _stage_input_file(command: OcrTaskCommand) -> tuple[str, bool]:
         temp_path = Path(temp_file.name)
         temp_file.close()
         headers: dict[str, str] = {}
-        client_token = (CONTROL_PLANE_INTERNAL_TOKEN or "").strip()
+        client_token = _control_plane_internal_token()
         if client_token:
             headers["Authorization"] = f"Bearer {client_token}"
         async with httpx.AsyncClient(timeout=command.execution.timeout_seconds) as client:
@@ -130,7 +136,7 @@ async def _stage_input_file(command: OcrTaskCommand) -> tuple[str, bool]:
     temp_path = Path(temp_file.name)
     temp_file.close()
     headers: dict[str, str] = {}
-    client_token = (CONTROL_PLANE_INTERNAL_TOKEN or "").strip()
+    client_token = _control_plane_internal_token()
     if file_url.lower().startswith(("http://", "https://")) and client_token:
         headers["Authorization"] = f"Bearer {client_token}"
     async with httpx.AsyncClient(timeout=command.execution.timeout_seconds) as client:

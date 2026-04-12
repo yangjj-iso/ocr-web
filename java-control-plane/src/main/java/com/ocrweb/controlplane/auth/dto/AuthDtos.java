@@ -13,9 +13,25 @@ public final class AuthDtos {
     public record LoginRequest(String username, String password) {
     }
 
+    public record ChangePasswordRequest(
+            @NotBlank String currentPassword,
+            @NotBlank @Size(min = 6, max = 200) String newPassword
+    ) {
+    }
+
+    public record UpdateDisplayNameRequest(String displayName) {
+    }
+
     public record RegisterRequest(
-            @NotBlank @Size(min = 3, max = 120) String username,
-            @NotBlank @Size(min = 6, max = 200) String password
+            @NotBlank @Size(min = 2, max = 60) String realName,
+            @NotBlank @Size(min = 2, max = 60) String username,
+            @NotBlank @Size(min = 6, max = 200) String password,
+            String requestedRole
+    ) {
+    }
+
+    public record ResetPasswordRequest(
+            @NotBlank @Size(min = 6, max = 200) String newPassword
     ) {
     }
 
@@ -25,7 +41,9 @@ public final class AuthDtos {
             String username,
             boolean isAdmin,
             String userStatus,
-            String defaultUsername
+            String defaultUsername,
+            String role,
+            String displayName
     ) {
     }
 
@@ -33,7 +51,8 @@ public final class AuthDtos {
             boolean authenticated,
             String username,
             boolean isAdmin,
-            String userStatus
+            String userStatus,
+            String role
     ) {
     }
 
@@ -47,6 +66,8 @@ public final class AuthDtos {
     public record PendingUserItem(
             Long id,
             String username,
+            String displayName,
+            String role,
             String status,
             OffsetDateTime createdAt
     ) {

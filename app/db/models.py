@@ -24,10 +24,69 @@ class AppUser(Base):
     password_hash: Mapped[str] = mapped_column(String(500), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending/active/rejected
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # role: admin / operator / searcher
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="operator")
+    display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class UserQuota(Base):
+    """Per-operator file processing quota."""
+    __tablename__ = "user_quotas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    quota_per_import: Mapped[int] = mapped_column(Integer, nullable=False, default=200)
+    quota_total: Mapped[int] = mapped_column(Integer, nullable=False, default=2000)
+    quota_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class BatchAssignment(Base):
+    """Admin assigns a batch (or subset of files) to an operator."""
+    __tablename__ = "batch_assignments"
+    __table_args__ = (
+        Index("ix_batch_assignments_operator_id", "operator_id"),
+        Index("ix_batch_assignments_batch_id", "batch_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    admin_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    operator_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OperationLog(Base):
+    """Immutable audit trail — one row per user action."""
+    __tablename__ = "operation_logs"
+    __table_args__ = (
+        Index("ix_operation_logs_user_id", "user_id"),
+        Index("ix_operation_logs_created_at", "created_at"),
+        Index("ix_operation_logs_action_type", "action_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    ip_address: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class OCRTask(Base):
@@ -76,6 +135,7 @@ class ArchiveRecord(Base):
     pages: Mapped[str | None] = mapped_column(String(20), nullable=True)          # 页数
     classification: Mapped[str | None] = mapped_column(String(50), nullable=True) # 密级
     remarks: Mapped[str | None] = mapped_column(String(1000), nullable=True)      # 备注
+    storage_path: Mapped[str | None] = mapped_column(String(1000), nullable=True) # 存放路径（需求11）
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

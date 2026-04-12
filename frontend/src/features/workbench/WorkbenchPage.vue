@@ -92,11 +92,105 @@
               <p class="mt-0.5 truncate text-xs gov-muted">按提交快速回看处理记录</p>
             </div>
           </button>
+
+          <button
+            class="group flex w-full items-center gap-3 rounded-lg px-3 py-4 text-left transition-all"
+            :class="selectedTab === 'assigned'
+              ? 'bg-green-50 ring-1 ring-green-200'
+              : 'hover:bg-slate-50'"
+            @click="selectedTab = 'assigned'; loadAssignedTasks()"
+          >
+            <div
+              class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg transition-colors relative"
+              :class="selectedTab === 'assigned'
+                ? 'bg-emerald-600 text-white'
+                : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200'"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+              <span v-if="assignedPending > 0" class="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] text-white font-bold">{{ assignedPending }}</span>
+            </div>
+            <div class="min-w-0 flex-1">
+              <span class="text-sm font-semibold text-[var(--gov-text)]">我的任务</span>
+              <p class="mt-0.5 truncate text-xs gov-muted">管理员分配的待处理批次</p>
+            </div>
+          </button>
+
+          <router-link
+            to="/storage"
+            class="group flex w-full items-center gap-3 rounded-lg px-3 py-4 text-left transition-all hover:bg-slate-50"
+          >
+            <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-slate-200 transition-colors">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+            </div>
+            <div class="min-w-0 flex-1">
+              <span class="text-sm font-semibold text-[var(--gov-text)]">存放区</span>
+              <p class="mt-0.5 truncate text-xs gov-muted">目录树浏览归档存放路径</p>
+            </div>
+          </router-link>
         </div>
       </nav>
+
+      <!-- Operator quota bar at sidebar bottom -->
+      <div v-if="myQuota && !authState.isAdmin.value" class="border-t border-[var(--gov-border)] p-3">
+        <p class="mb-1 text-[10px] font-semibold text-[var(--gov-text-muted)] uppercase tracking-wide">本月配额</p>
+        <div class="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+          <div
+            class="h-full rounded-full transition-all"
+            :class="quotaPercent >= 90 ? 'bg-red-400' : quotaPercent >= 70 ? 'bg-amber-400' : 'bg-emerald-500'"
+            :style="{ width: quotaPercent + '%' }"
+          />
+        </div>
+        <p class="mt-1 text-[10px] text-[var(--gov-text-muted)]">
+          已用 {{ myQuota.quota_used }} / {{ myQuota.quota_total }}，单次上限 {{ myQuota.quota_per_import }}
+        </p>
+      </div>
     </aside>
 
     <main id="batch-workbench" class="min-w-0 flex-1 overflow-y-auto bg-[var(--gov-surface-muted)] p-6">
+      <!-- Assigned tasks panel -->
+      <div v-show="selectedTab === 'assigned'" class="gov-panel overflow-hidden">
+        <div class="border-b border-[var(--gov-border)] bg-emerald-50 px-5 py-4 flex items-center justify-between">
+          <div>
+            <h3 class="text-lg font-semibold text-[var(--gov-text)]">我的任务</h3>
+            <p class="mt-1 text-xs gov-muted">管理员分配给我的批次，点击批次 ID 可进入分析</p>
+          </div>
+          <button class="text-xs text-[var(--gov-primary)] hover:underline" @click="loadAssignedTasks">刷新</button>
+        </div>
+        <div class="bg-white">
+          <div v-if="assignedLoading" class="py-10 text-center text-sm text-[var(--gov-text-muted)]">加载中…</div>
+          <div v-else-if="!assignedTasks.length" class="py-10 text-center text-sm text-[var(--gov-text-muted)]">暂无分配任务</div>
+          <table v-else class="w-full text-sm">
+            <thead class="bg-slate-50 border-b border-[var(--gov-border)]">
+              <tr>
+                <th class="px-5 py-2.5 text-left text-xs font-medium text-[var(--gov-text-muted)]">批次 ID</th>
+                <th class="px-5 py-2.5 text-left text-xs font-medium text-[var(--gov-text-muted)]">文件数</th>
+                <th class="px-5 py-2.5 text-left text-xs font-medium text-[var(--gov-text-muted)]">状态</th>
+                <th class="px-5 py-2.5 text-left text-xs font-medium text-[var(--gov-text-muted)]">备注</th>
+                <th class="px-5 py-2.5 text-left text-xs font-medium text-[var(--gov-text-muted)]">分配时间</th>
+                <th class="px-5 py-2.5 text-left text-xs font-medium text-[var(--gov-text-muted)]">操作</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-[var(--gov-border)]">
+              <tr v-for="t in assignedTasks" :key="t.id" class="hover:bg-slate-50">
+                <td class="px-5 py-3 font-mono text-xs text-[var(--gov-primary)]">{{ t.batch_id }}</td>
+                <td class="px-5 py-3">{{ t.file_count }}</td>
+                <td class="px-5 py-3">
+                  <span :class="assignedStatusClass(t.status)" class="rounded-full px-2 py-0.5 text-xs font-medium">{{ assignedStatusLabel(t.status) }}</span>
+                </td>
+                <td class="px-5 py-3 text-xs text-[var(--gov-text-muted)]">{{ t.note || '—' }}</td>
+                <td class="px-5 py-3 text-xs text-[var(--gov-text-muted)] whitespace-nowrap">{{ fmtAssignDate(t.created_at) }}</td>
+                <td class="px-5 py-3">
+                  <button
+                    class="text-xs text-[var(--gov-primary)] hover:underline"
+                    @click="openAssignedBatch(t.batch_id)"
+                  >查看批次</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <BufferZone
         v-for="model in models"
         v-show="selectedTab === model.mode"
@@ -440,6 +534,22 @@
         </div>
       </div>
     </main>
+
+    <MergeResultModal
+      :visible="historyMergeVisible"
+      :merge-result="historyMergeResult"
+      :metrics="historyMetrics"
+      :metrics-loading="historyMetricsLoading"
+      :metrics-error="historyMetricsError"
+      :loading-merge="historyMergeLoading"
+      :merge-error="historyMergeError"
+      :refreshing="historyMergeRefreshing"
+      @close="historyMergeVisible = false"
+      @recompute="handleHistoryMergeRecompute"
+      @open-batch-insights="handleHistoryMergeOpenInsights"
+      @open-boundary-review="handleHistoryMergeOpenReview"
+      @open-task="handleHistoryMergeOpenTask"
+    />
   </div>
 </template>
 
@@ -449,6 +559,7 @@ import { useRouter } from 'vue-router'
 
 import BufferZone from '@/components/BufferZone.vue'
 import HistoryList from '@/components/HistoryList.vue'
+import MergeResultModal from '@/components/MergeResultModal.vue'
 import {
   aiMergeExtractBatch,
   askBatchQuestion,
@@ -456,12 +567,75 @@ import {
   getBatchQaHistory,
   getTaskSubmissions,
 } from '@/api/ocr.js'
+import { getMyQuota, getMyAssignments } from '@/api/admin.js'
 import { getModeMeta } from '@/constants/uiCopy.js'
 import { getAiAnswerSourceLabel, normalizeAiErrorMessage, useAiCapabilityState } from '@/composables/useAiCapabilityState.js'
+import { useAuthState } from '@/composables/useAuthState.js'
 import { buildMergedDocumentViews } from '@/utils/mergeDocumentDisplay.js'
 
 const router = useRouter()
 const historyRef = ref(null)
+const authState = useAuthState()
+
+// ── History merge modal ───────────────────────────────────────────────────
+const historyMergeVisible = ref(false)
+const historyMergeResult = ref(null)
+const historyMergeLoading = ref(false)
+const historyMergeError = ref('')
+const historyMergeRefreshing = ref(false)
+const historyMetrics = ref(null)
+const historyMetricsLoading = ref(false)
+const historyMetricsError = ref('')
+const historyMergeBatchId = ref('')
+
+// ── Operator quota ─────────────────────────────────────────────────────────
+const myQuota = ref(null)
+const quotaPercent = computed(() => {
+  if (!myQuota.value || myQuota.value.quota_total <= 0) return 0
+  return Math.min(100, Math.round((myQuota.value.quota_used / myQuota.value.quota_total) * 100))
+})
+
+async function loadMyQuota() {
+  try {
+    const { data } = await getMyQuota()
+    myQuota.value = data
+  } catch { /* silent */ }
+}
+
+// ── Assigned tasks ─────────────────────────────────────────────────────────
+const assignedTasks = ref([])
+const assignedLoading = ref(false)
+const assignedPending = computed(() => assignedTasks.value.filter(t => t.status === 'pending').length)
+
+async function loadAssignedTasks() {
+  assignedLoading.value = true
+  try {
+    const { data } = await getMyAssignments()
+    assignedTasks.value = data.items || []
+  } catch { /* silent */ } finally {
+    assignedLoading.value = false
+  }
+}
+
+function assignedStatusClass(s) {
+  return {
+    pending: 'bg-yellow-50 text-yellow-700',
+    processing: 'bg-blue-50 text-blue-700',
+    done: 'bg-green-50 text-green-700',
+    cancelled: 'bg-slate-100 text-slate-500',
+  }[s] || 'bg-slate-100 text-slate-500'
+}
+function assignedStatusLabel(s) {
+  return { pending: '待处理', processing: '处理中', done: '已完成', cancelled: '已取消' }[s] || s
+}
+function fmtAssignDate(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return `${d.toLocaleDateString('zh-CN')} ${d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+}
+function openAssignedBatch(batchId) {
+  router.push({ path: `/batch-insights/${encodeURIComponent(batchId)}` })
+}
 const _storedTab = sessionStorage.getItem('ocr:selectedTab')
 const selectedTab = ref(_storedTab || 'vl')
 watch(selectedTab, (v) => sessionStorage.setItem('ocr:selectedTab', v))
@@ -847,8 +1021,77 @@ async function handleHistoryBatchContext(payload = {}) {
 async function handleHistoryViewBatch(payload = {}) {
   const batchId = payload?.batchId
   if (!batchId) return
-  await aiCapability.refreshAiCapability({ passive: false, batchId })
-  router.push({ path: `/batch-insights/${encodeURIComponent(batchId)}` })
+
+  historyMergeBatchId.value = batchId
+  historyMergeVisible.value = true
+  historyMergeLoading.value = true
+  historyMergeError.value = ''
+  historyMergeResult.value = null
+  historyMetrics.value = null
+  historyMetricsError.value = ''
+
+  try {
+    const { data } = await aiMergeExtractBatch(batchId, {
+      include_evidence: true,
+      persist: false,
+      force_refresh: false,
+    })
+    historyMergeResult.value = data
+  } catch (error) {
+    historyMergeError.value = normalizeAiErrorMessage(error, '智能整合数据暂时无法获取，请稍后重试。')
+  } finally {
+    historyMergeLoading.value = false
+  }
+
+  if (historyMergeResult.value) {
+    historyMetricsLoading.value = true
+    try {
+      const { data } = await getBatchEvaluationMetrics(batchId, { forceRefresh: false })
+      historyMetrics.value = data
+    } catch (error) {
+      historyMetricsError.value = normalizeAiErrorMessage(error, '质量概览暂时无法获取。')
+    } finally {
+      historyMetricsLoading.value = false
+    }
+  }
+}
+
+async function handleHistoryMergeRecompute() {
+  const batchId = historyMergeBatchId.value
+  if (!batchId) return
+  historyMergeRefreshing.value = true
+  try {
+    const { data } = await aiMergeExtractBatch(batchId, {
+      include_evidence: true,
+      persist: false,
+      force_refresh: true,
+    })
+    historyMergeResult.value = data
+    historyMetricsLoading.value = true
+    try {
+      const { data: mData } = await getBatchEvaluationMetrics(batchId, { forceRefresh: true })
+      historyMetrics.value = mData
+    } catch { /* silent */ } finally { historyMetricsLoading.value = false }
+  } catch (error) {
+    historyMergeError.value = normalizeAiErrorMessage(error, '重新分析失败。')
+  } finally {
+    historyMergeRefreshing.value = false
+  }
+}
+
+function handleHistoryMergeOpenTask(taskId) {
+  historyMergeVisible.value = false
+  router.push({ path: `/result/${taskId}`, query: { batch_id: historyMergeBatchId.value } })
+}
+
+function handleHistoryMergeOpenInsights() {
+  historyMergeVisible.value = false
+  router.push({ path: `/batch-insights/${encodeURIComponent(historyMergeBatchId.value)}` })
+}
+
+function handleHistoryMergeOpenReview() {
+  historyMergeVisible.value = false
+  router.push({ path: `/batch-insights/${encodeURIComponent(historyMergeBatchId.value)}`, query: { tab: 'truth' } })
 }
 
 async function submitAssistantQa() {
@@ -909,6 +1152,8 @@ function handleViewResult(payload) {
 }
 
 onMounted(async () => {
+  loadMyQuota()
+  loadAssignedTasks()
   if (latestBatchId.value) {
     await aiCapability.refreshAiCapability({ passive: false, batchId: latestBatchId.value })
     if (selectedTab.value === 'assistant') {

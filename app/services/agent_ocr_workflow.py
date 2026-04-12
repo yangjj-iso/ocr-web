@@ -1737,6 +1737,10 @@ async def node_pause_for_human_review(state: BatchSupervisorState) -> dict[str, 
 
 async def node_final_archiver_and_quality(state: BatchSupervisorState) -> dict[str, Any]:
     merged_fields = _normalize_fields(state.get("merged_fields"))
+    # Auto-generate storage path from archive number
+    if not merged_fields.get("存放路径") and merged_fields.get("档号"):
+        from app.services.excel_export import _archive_no_to_storage_path
+        merged_fields["存放路径"] = _archive_no_to_storage_path(merged_fields["档号"])
     combined_pages = normalize_result_pages(state.get("combined_pages") or [])
     overall_confidence = _clamp_confidence(state.get("overall_confidence"))
     issues = _dedupe_issues([str(item) for item in (state.get("issues") or [])])

@@ -31,6 +31,12 @@ public class AppUserEntity {
     @Column(name = "is_admin", nullable = false)
     private boolean isAdmin = false;
 
+    @Column(nullable = false, length = 20)
+    private String role = "operator";
+
+    @Column(name = "display_name", length = 120)
+    private String displayName;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;
@@ -73,6 +79,22 @@ public class AppUserEntity {
 
     public void setAdmin(boolean admin) {
         isAdmin = admin;
+    }
+
+    public String getRole() {
+        return role == null || role.isBlank() ? "operator" : role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
+    }
+
+    public String getDisplayName() {
+        return displayName;
+    }
+
+    public void setDisplayName(String displayName) {
+        this.displayName = displayName;
     }
 
     public OffsetDateTime getCreatedAt() {

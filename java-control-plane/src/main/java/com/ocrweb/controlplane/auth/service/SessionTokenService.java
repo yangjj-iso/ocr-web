@@ -24,13 +24,14 @@ public class SessionTokenService {
         this.objectMapper = objectMapper.copy().configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
     }
 
-    public String createSessionToken(String username, Long userId, boolean isAdmin, String userStatus) {
+    public String createSessionToken(String username, Long userId, boolean isAdmin, String userStatus, String role) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("sub", username);
         payload.put("exp", Instant.now().getEpochSecond() + authProperties.getSessionTtl());
         payload.put("uid", userId);
         payload.put("is_admin", isAdmin);
         payload.put("user_status", userStatus == null || userStatus.isBlank() ? "active" : userStatus);
+        payload.put("role", role == null || role.isBlank() ? (isAdmin ? "admin" : "operator") : role);
         String encodedPayload = Base64.getUrlEncoder().withoutPadding().encodeToString(writeJson(payload));
         return encodedPayload + "." + sign(encodedPayload);
     }
@@ -63,7 +64,8 @@ public class SessionTokenService {
                     asString(payload.get("sub"), ""),
                     asBoolean(payload.get("is_admin")),
                     userStatus,
-                    asNullableLong(payload.get("uid"))
+                    asNullableLong(payload.get("uid")),
+                    asString(payload.get("role"), "operator")
             );
         } catch (Exception error) {
             return null;

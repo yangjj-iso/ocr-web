@@ -34,9 +34,49 @@ public final class TaskDtos {
             String snippet,
             String errorMessage,
             Double progressPercent,
+            String assigneeUsername,
             OffsetDateTime createdAt,
             OffsetDateTime updatedAt
     ) {
+    }
+
+    public record SearchResultResponse(
+            Long id,
+            String filename,
+            String filePath,
+            String batchId,
+            String fileType,
+            String mode,
+            String status,
+            Integer pageCount,
+            String snippet,
+            OffsetDateTime createdAt,
+            // archive fields
+            String archiveNo,
+            String docNo,
+            String responsible,
+            String title,
+            String date,
+            String classification,
+            String storagePath
+    ) {
+    }
+
+    public record SearchResponse(long total, List<SearchResultResponse> items) {
+    }
+
+    public record DashboardStatsResponse(
+            long totalTasks,
+            long doneTasks,
+            long processingTasks,
+            long failedTasks,
+            long pendingTasks,
+            long totalPages,
+            List<DailyCount> dailyCounts
+    ) {
+    }
+
+    public record DailyCount(String date, long created, long completed) {
     }
 
     public record TaskDetailResponse(
@@ -192,6 +232,20 @@ public final class TaskDtos {
     }
 
     public record HumanReviewResumeRequest(JsonNode resumePayload) {
+    }
+
+    public record AssignTasksRequest(
+            @JsonProperty("task_ids") @NotEmpty List<Long> taskIds,
+            @JsonProperty("assignee_username") @NotBlank String assigneeUsername
+    ) {
+    }
+
+    public record SubmitBatchRequest(
+            @JsonProperty("task_ids") @NotEmpty List<Long> taskIds
+    ) {
+    }
+
+    public record BatchOperationResponse(int affected, String message) {
     }
 
     public record TaskUpdateRequest(

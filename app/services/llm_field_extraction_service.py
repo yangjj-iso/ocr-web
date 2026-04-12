@@ -22,7 +22,8 @@ except ImportError:  # pragma: no cover - import guard for incomplete environmen
 
 
 ARCHIVE_FIELDS = ["档号", "文号", "责任者", "题名", "日期", "页数", "密级", "备注"]
-_LLM_PREFERRED_FIELDS: frozenset[str] = frozenset({"题名", "责任者", "备注"})
+_LLM_PREFERRED_FIELDS: frozenset[str] = frozenset({"题名", "备注"})
+_MANUAL_REVIEW_FIELDS: frozenset[str] = frozenset()
 TITLE_TYPES = {"title", "doc_title", "paragraph_title", "content_title", "abstract_title", "reference_title"}
 DOC_NO_PATTERN = re.compile(
     r"[\u4e00-\u9fa5A-Za-z]{2,20}(?:[\[\(（]?\d{4}[\]\)）]?)\s*(?:第\s*)?\d+\s*号"
@@ -43,16 +44,26 @@ def _blank_fields() -> dict[str, str]:
 
 
 def _resolve_llm_runtime_config() -> dict[str, Any]:
-    base_url = os.getenv("LLM_BASE_URL", "").strip() or MINIMAX_BASE_URL
-    api_key = os.getenv("LLM_API_KEY", "").strip() or MINIMAX_API_KEY
-    model = os.getenv("LLM_MODEL", "").strip() or MINIMAX_MODEL
+    llm_base_url = os.getenv("LLM_BASE_URL", "").strip()
+    llm_api_key = os.getenv("LLM_API_KEY", "").strip()
+    llm_model = os.getenv("LLM_MODEL", "").strip()
     timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "").strip()
     try:
         timeout_seconds = float(timeout_raw) if timeout_raw else float(MINIMAX_TIMEOUT_SECONDS)
     except ValueError:
         timeout_seconds = float(MINIMAX_TIMEOUT_SECONDS)
 
-    enabled = MINIMAX_ENABLED or bool(base_url and api_key and model)
+    if MINIMAX_ENABLED:
+        base_url = MINIMAX_BASE_URL
+        api_key = MINIMAX_API_KEY
+        model = MINIMAX_MODEL
+        enabled = True
+    else:
+        base_url = llm_base_url or MINIMAX_BASE_URL
+        api_key = llm_api_key or MINIMAX_API_KEY
+        model = llm_model or MINIMAX_MODEL
+        enabled = bool(base_url and api_key and model)
+
     return {
         "enabled": enabled,
         "base_url": base_url.rstrip("/"),
@@ -393,6 +404,15 @@ def merge_rule_and_llm_fields(
             recommended[field] = rule_value
             continue
 
+        if field in _MANUAL_REVIEW_FIELDS:
+            recommended[field] = ""
+            conflicts[field] = {
+                "rule": rule_value,
+                "llm": llm_value,
+                "evidence": _coerce_string((llm_fields.get("evidence") or {}).get(field)),
+            }
+            continue
+
         if field in _LLM_PREFERRED_FIELDS:
             recommended[field] = llm_value
         else:
@@ -402,6 +422,13 @@ def merge_rule_and_llm_fields(
             "llm": llm_value,
             "evidence": _coerce_string((llm_fields.get("evidence") or {}).get(field)),
         }
+
+    # Pass through auto-generated fields from rule engine that LLM does not extract
+    for key in ("存放路径",):
+        if key not in recommended or not recommended[key]:
+            rule_val = _coerce_string(rule_fields.get(key))
+            if rule_val:
+                recommended[key] = rule_val
 
     return recommended, conflicts
 

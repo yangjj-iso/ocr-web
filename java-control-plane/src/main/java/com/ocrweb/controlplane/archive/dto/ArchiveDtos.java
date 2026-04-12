@@ -23,6 +23,7 @@ public final class ArchiveDtos {
             String pages,
             String classification,
             String remarks,
+            String storagePath,
             OffsetDateTime createdAt
     ) {
     }
@@ -51,6 +52,50 @@ public final class ArchiveDtos {
             String folder,
             int count,
             List<FolderScanFile> files
+    ) {
+    }
+
+    public record BatchUpdateRequest(
+            List<Long> ids,
+            String responsible,
+            String classification,
+            String remarks,
+            String date,
+            @JsonAlias("storage_path") String storagePath
+    ) {
+    }
+
+    public record BatchUpdateResponse(int updated) {
+    }
+
+    public record PageFile(
+            Long taskId,
+            String filename,
+            String status,
+            String fileType
+    ) {
+    }
+
+    public record StoragePathRecordsResponse(
+            int recordCount,
+            List<ArchiveRecordResponse> records,
+            List<PageFile> pageFiles
+    ) {
+    }
+
+    public record StorageTreeNode(
+            String name,
+            String path,
+            String type,
+            int recordCount,
+            List<StorageTreeNode> children
+    ) {
+    }
+
+    public record StorageTreeResponse(
+            List<StorageTreeNode> tree,
+            int totalPaths,
+            int totalRecords
     ) {
     }
 }

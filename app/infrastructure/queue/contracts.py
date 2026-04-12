@@ -131,6 +131,7 @@ class ArchiveFieldsPayload(BaseModel):
     date: str = ""
     pages: str = ""
     classification: str = ""
+    storage_path: str = ""
     remarks: str = ""
 
 

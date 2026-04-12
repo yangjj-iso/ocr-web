@@ -30,7 +30,9 @@
           <table class="w-full text-left text-sm">
             <thead class="bg-[var(--gov-surface-muted)] text-[var(--gov-text-muted)]">
               <tr>
-                <th class="px-3 py-2">账号</th>
+                <th class="px-3 py-2">真实姓名</th>
+                <th class="px-3 py-2">工号</th>
+                <th class="px-3 py-2">申请角色</th>
                 <th class="px-3 py-2">申请时间</th>
                 <th class="px-3 py-2">状态</th>
                 <th class="px-3 py-2 text-right">操作</th>
@@ -38,7 +40,13 @@
             </thead>
             <tbody>
               <tr v-for="item in users" :key="item.id" class="border-t border-[var(--gov-border)]">
-                <td class="px-3 py-2 text-[var(--gov-text)]">{{ item.username }}</td>
+                <td class="px-3 py-2 font-medium text-[var(--gov-text)]">{{ item.display_name || item.username }}</td>
+                <td class="px-3 py-2 font-mono text-xs text-[var(--gov-text-muted)]">{{ item.username }}</td>
+                <td class="px-3 py-2">
+                  <span class="rounded px-1.5 py-0.5 text-xs font-medium" :class="item.role === 'searcher' ? 'bg-slate-100 text-slate-600' : 'bg-blue-50 text-blue-600'">
+                    {{ item.role === 'searcher' ? '检索者' : '签录员' }}
+                  </span>
+                </td>
                 <td class="px-3 py-2 gov-muted">{{ item.created_at ? formatTime(item.created_at) : '-' }}</td>
                 <td class="px-3 py-2">
                   <span class="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-700">待审核</span>

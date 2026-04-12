@@ -4,11 +4,15 @@ import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
 const outputDir = process.env.VITE_OUTPUT_DIR || 'dist'
-const devApiTarget =
+const controlPlaneTarget =
   process.env.VITE_DEV_API_PROXY_TARGET ||
   process.env.VITE_CONTROL_PLANE_API_BASE_URL ||
-  process.env.VITE_API_BASE_URL ||
   'http://localhost:8080'
+
+const aiApiTarget =
+  process.env.VITE_AI_API_PROXY_TARGET ||
+  process.env.VITE_AI_API_BASE_URL ||
+  'http://localhost:8001'
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
@@ -20,10 +24,9 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': {
-        target: devApiTarget,
-        changeOrigin: true,
-      },
+      '/api/admin': { target: aiApiTarget, changeOrigin: true },
+      '/api/operator': { target: aiApiTarget, changeOrigin: true },
+      '/api': { target: controlPlaneTarget, changeOrigin: true },
     },
   },
   build: {

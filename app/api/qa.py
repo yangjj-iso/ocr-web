@@ -1,15 +1,12 @@
 """Batch QA routes."""
 
+from importlib import import_module
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, raise_for_error, require_auth
-from app.application.workflows.qa import (
-    answer_question,
-    get_metrics,
-    list_history,
-    submit_feedback,
-)
+from app.core.auth import require_operator_access
 from app.schemas.qa import (
     BatchQAFeedbackRequest,
     BatchQAFeedbackResponse,
@@ -19,10 +16,14 @@ from app.schemas.qa import (
     BatchQAResponse,
 )
 
+
+def _compat_routes():
+    return import_module("app.api.routes")
+
 router = APIRouter(
     prefix="/api/ocr",
     tags=["QA"],
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_auth), Depends(require_operator_access)],
 )
 
 
@@ -37,12 +38,13 @@ async def batch_qa(
         raise HTTPException(status_code=400, detail="question must not be empty.")
 
     try:
-        payload = await answer_question(
+        compat = _compat_routes()
+        payload = await compat.answer_batch_question(
+            db,
             batch_id=batch_id,
             question=question,
             top_k=body.top_k,
             persist=body.persist,
-            db=db,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -62,11 +64,12 @@ async def batch_qa_history(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        payload = await list_history(
+        compat = _compat_routes()
+        payload = await compat.get_batch_qa_history(
+            db,
             batch_id=batch_id,
             page=page,
             page_size=page_size,
-            db=db,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -83,7 +86,9 @@ async def batch_qa_feedback(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        payload = await submit_feedback(
+        compat = _compat_routes()
+        payload = await compat.submit_batch_qa_feedback(
+            db,
             batch_id=batch_id,
             qa_id=qa_id,
             rating=body.rating,
@@ -91,7 +96,6 @@ async def batch_qa_feedback(
             comment=body.comment,
             corrected_answer=body.corrected_answer,
             corrected_evidence=[item.model_dump(mode="python") for item in body.corrected_evidence],
-            db=db,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -106,7 +110,8 @@ async def batch_qa_feedback(
 @router.get("/batches/{batch_id}/qa/metrics", response_model=BatchQAMetricsResponse)
 async def batch_qa_metrics(batch_id: str, db: AsyncSession = Depends(get_db)):
     try:
-        payload = await get_metrics(batch_id=batch_id, db=db)
+        compat = _compat_routes()
+        payload = await compat.get_batch_qa_metrics(db, batch_id=batch_id)
     except Exception as error:  # noqa: BLE001
         raise_for_error(error)
     return payload

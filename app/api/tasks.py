@@ -48,6 +48,7 @@ from app.schemas.tasks import (
     TaskProgressResponse,
 )
 from app.domains.batch_ai import batch_ai_service
+from app.core.auth import require_operator_access
 from config import MAX_FILE_SIZE
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ async def upload_and_enqueue(
     output_dir: str = Query(""),
     batch_id: str = Query(""),
     response: Response = None,
+    _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
     logger.warning(
@@ -116,6 +118,7 @@ async def upload_from_path(
     output_dir: str = Query(""),
     batch_id: str = Query(""),
     response: Response = None,
+    _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
     logger.warning(
@@ -196,7 +199,12 @@ async def get_task(task_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/tasks/{task_id}", response_model=OCRTaskDetail)
-async def update_task(task_id: int, body: dict, db: AsyncSession = Depends(get_db)):
+async def update_task(
+    task_id: int,
+    body: dict,
+    _current: dict = Depends(require_operator_access),
+    db: AsyncSession = Depends(get_db),
+):
     try:
         task, state = await update_task_result(task_id=task_id, body=body, db=db)
     except Exception as error:  # noqa: BLE001
@@ -212,7 +220,11 @@ async def update_task(task_id: int, body: dict, db: AsyncSession = Depends(get_d
 
 
 @router.delete("/tasks/{task_id}")
-async def remove_task(task_id: int, db: AsyncSession = Depends(get_db)):
+async def remove_task(
+    task_id: int,
+    _current: dict = Depends(require_operator_access),
+    db: AsyncSession = Depends(get_db),
+):
     deleted, affected_batch_ids = await delete_task_with_cache_context(task_id=task_id, db=db)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -224,6 +236,7 @@ async def remove_task(task_id: int, db: AsyncSession = Depends(get_db)):
 @router.delete("/tasks/by-folder")
 async def delete_tasks_for_folder(
     folder: str = Query(...),
+    _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
     deleted, affected_batch_ids = await delete_tasks_by_folder_with_cache_context(folder=folder, db=db)
@@ -238,6 +251,7 @@ async def delete_tasks_for_folder(
 async def export_task(
     task_id: int,
     fmt: str = Query("txt", pattern="^(txt|json)$"),
+    _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
     payload, payload_type = await build_task_export_payload(task_id=task_id, fmt=fmt, db=db)

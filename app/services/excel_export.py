@@ -11,7 +11,7 @@ from openpyxl.styles import Font, Alignment
 
 logger = logging.getLogger(__name__)
 
-HEADERS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '备注']
+HEADERS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '存放路径', '备注']
 
 DEFAULT_EXCEL_NAME = '归档文件目录.xlsx'
 
@@ -39,6 +39,30 @@ PERIOD_DOC_NO_PATTERNS = (
     re.compile(r'(第\s*\d+\s*期)'),
 )
 ISSUED_BY_PATTERN = re.compile(r'([\u4e00-\u9fa5A-Za-z0-9·（）()]{4,40}(?:' + ORG_SUFFIX_PATTERN + r'))\s*\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日\s*(?:印发|发布|下发)')
+
+def _archive_no_to_storage_path(archive_no: str) -> str:
+    """Convert archive number to 5-level storage path.
+
+    Examples:
+        WS·2024·D30-0156  → /WS/2024/D30/0156
+        WS.2024.D10-0001  → /WS/2024/D10/0001
+        KJ-A-2023-B1-0005 → /KJ/A/2023/B1/0005
+    """
+    if not archive_no:
+        return ""
+    normalized = archive_no.strip().replace('·', '.').replace('•', '.').replace('・', '.')
+    # WS.2024.D30-0156 pattern
+    m = re.match(r'^([A-Za-z]{2})[.]?(\d{4})[.]?([A-Za-z]\d+[A-Za-z]?)[-.]?(\d+)$', normalized)
+    if m:
+        category, year, retention, item_no = m.groups()
+        item_no = item_no.zfill(4)
+        return f"/{category.upper()}/{year}/{retention.upper()}/{item_no}"
+    # KJ-A-2023-B1-0005 pattern
+    parts = re.split(r'[-.]', normalized)
+    if len(parts) >= 5:
+        return '/' + '/'.join(p.upper() if not p.isdigit() else p.zfill(4) if i == len(parts) - 1 else p for i, p in enumerate(parts[:5]))
+    return ""
+
 
 def _extract_archive_number_from_path(file_path: str) -> str:
     """Parse folder hierarchy to extract archive number.
@@ -268,7 +292,7 @@ def _extract_date_candidates(text: str) -> list[str]:
         day = int(match.group(3))
         if not (1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
             continue
-        value = f'{year:04d}-{month:02d}-{day:02d}'
+        value = f'{year:04d}{month:02d}{day:02d}'
         if value not in values:
             values.append(value)
     return values
@@ -463,55 +487,115 @@ def _clean_org_name(text: str) -> str:
         return clean
     return ''
 
-def _extract_responsible_candidates(text: str) -> list[str]:
+def _extract_responsible_candidates(text: str) -> list[tuple[str, str]]:
+    """Return list of (candidate, source_type) tuples.
+    source_type: 'party' | 'head' | 'full' | 'issued' | 'fragment'
+    """
     clean = _clean_line_text(text)
     candidates = []
+    seen = set()
     party_match = re.match(r'^[甲乙丙丁]方[:：]\s*([\u4e00-\u9fa5A-Za-z0-9·（）()]+(?:有限公司|集团有限公司|集团|公司|委员会|办公室|档案局|档案馆|政府|中心|银行|局|厅|部|院|馆))', clean)
     if party_match:
         candidate = _clean_org_name(party_match.group(1))
-        if candidate:
-            candidates.append(candidate)
-    for pattern in (RESP_HEAD_PATTERN, RESP_FULL_PATTERN, RESP_FRAGMENT_PATTERN):
-        for match in pattern.finditer(clean):
-            candidate = _clean_org_name(match.group(1))
-            if candidate and candidate not in candidates:
-                candidates.append(candidate)
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'party'))
+            seen.add(candidate)
+    issued_match = ISSUED_BY_PATTERN.search(clean)
+    if issued_match:
+        candidate = _clean_org_name(issued_match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'issued'))
+            seen.add(candidate)
+    for match in RESP_HEAD_PATTERN.finditer(clean):
+        candidate = _clean_org_name(match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'head'))
+            seen.add(candidate)
+    for match in RESP_FULL_PATTERN.finditer(clean):
+        candidate = _clean_org_name(match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'full'))
+            seen.add(candidate)
+    for match in RESP_FRAGMENT_PATTERN.finditer(clean):
+        candidate = _clean_org_name(match.group(1))
+        if candidate and candidate not in seen:
+            candidates.append((candidate, 'fragment'))
+            seen.add(candidate)
     return candidates
+
+def _has_adjacent_issued_footer(item: dict, items: list[dict]) -> bool:
+    """Check if there's a nearby footer/line item on the same page containing '年...印发'.
+
+    Handles the common case where OCR splits the org name and '印发' date
+    into separate items, e.g.:
+      footer y=0.92: "重庆XX公司综合部"
+      footer y=0.93: "2024年6月18日印发"
+    """
+    for other in items:
+        if other is item:
+            continue
+        if other['page_index'] != item['page_index']:
+            continue
+        if abs(other['y_ratio'] - item['y_ratio']) > 0.06:
+            continue
+        if re.search(r'\d{4}\s*年.*?(?:印发|发布|下发)', other['text']):
+            return True
+    return False
+
 
 def _extract_responsible(items: list[dict], doc_no: str) -> str:
     best_value = ''
     best_score = -10**9
     for item in items:
-        for candidate in _extract_responsible_candidates(item['text']):
+        for candidate, source_type in _extract_responsible_candidates(item['text']):
             score = 0
-            if item['page_index'] == 0 and item['y_ratio'] < 0.35:
-                score += 8
+            # ── Strong prerequisite evidence (甲方/乙方, 盖章, 印发) ──
+            if source_type == 'party':
+                score += 25
+            if source_type == 'issued':
+                score += 20
+            if item['type'] == 'seal':
+                score += 18
+            if any(word in item['text'] for word in ('盖章', '印章', '公章')):
+                score += 15
+            if any(word in item['text'] for word in ('发文单位', '发文机关', '主送')):
+                score += 15
+            if any(word in item['text'] for word in ('印发', '发布', '下发')):
+                score += 10
+            # ── Adjacent footer "印发" detection (split footer) ──
+            if item['type'] in ('footer', 'line') and item['y_ratio'] > 0.8 and _has_adjacent_issued_footer(item, items):
+                score += 22
+            # ── Position signals ──
             if item['page_index'] == item['page_total'] - 1 and item['y_ratio'] > 0.55:
                 score += 12
-            if item['page_index'] == item['page_total'] - 1 and ISSUED_BY_PATTERN.search(item['text']):
-                score += 15
-            if item['type'] == 'seal':
-                score += 5
-            if any(word in item['text'] for word in ('盖章', '印章', '公章')):
+            if item['page_index'] == 0 and item['y_ratio'] < 0.35:
                 score += 4
-            if any(word in item['text'] for word in ('印发', '发布', '下发')):
+            # ── Pattern quality ──
+            if source_type == 'head':
                 score += 6
-            if RESP_HEAD_PATTERN.search(item['text']):
-                score += 6
-            if RESP_FULL_PATTERN.search(_clean_line_text(item['text'])):
+            if source_type == 'full':
                 score += 4
+            if source_type == 'fragment':
+                score -= 5
+            # ── Length heuristics ──
             if 4 <= len(candidate) <= 24:
                 score += 3
             if len(candidate) > 32:
                 score -= 2
+            # ── Negative signals: title-position text is likely not the responsible party ──
+            if item['page_index'] == 0 and 0.15 < item['y_ratio'] < 0.45 and item.get('type') in TITLE_TYPES:
+                score -= 12
+            if any(kw in item['text'] for kw in TITLE_KEYWORDS) and source_type == 'fragment':
+                score -= 10
             if _extract_doc_no_from_text(item['text']):
-                score -= 2
-            if any(word in candidate for word in ('附件', '目录', '日期')):
-                score -= 4
+                score -= 3
+            if any(word in candidate for word in ('附件', '目录', '日期', '编号')):
+                score -= 8
             if score > best_score:
                 best_score = score
                 best_value = candidate
-    if best_value:
+    # Require minimum confidence: fragment-only low-score matches are unreliable
+    if best_value and best_score >= 3:
         return best_value
     if doc_no:
         match = re.match(r'([\u4e00-\u9fa5A-Za-z]{2,20})', doc_no)
@@ -633,6 +717,84 @@ def _extract_classification(items: list[dict], full_text: str) -> str:
     match = CLASSIFICATION_PATTERN.search(_normalize_search_text(full_text)[:600])
     return match.group(1) if match else ''
 
+# 通用归档页表格标签 → 标准字段映射
+# 归档页（公文处理单/发文处理单/收文登记等）可能出现在文件首页或末页
+_TABLE_LABEL_MAP: dict[str, str] = {
+    # 题名
+    "文件标题": "题名", "标题": "题名", "题名": "题名", "事由": "题名",
+    "文件名称": "题名", "公文标题": "题名",
+    # 文号
+    "原文号": "文号", "文号": "文号", "发文字号": "文号", "发文号": "文号",
+    "来文文号": "文号", "来文字号": "文号",
+    # 责任者
+    "来文单位": "责任者", "发文单位": "责任者", "发文机关": "责任者",
+    "主送单位": "责任者", "责任者": "责任者", "来文机关": "责任者",
+    "印发单位": "责任者", "制发单位": "责任者",
+    # 日期
+    "收文日期": "日期", "成文日期": "日期", "发文日期": "日期",
+    "印发日期": "日期", "签发日期": "日期",
+    # 密级
+    "密级": "密级", "秘密等级": "密级", "机密等级": "密级",
+    # 备注
+    "备注": "备注",
+}
+
+# 用于从合并单元格（标签与值连写）中提取值的前缀列表
+_TABLE_LABEL_PREFIXES = sorted(_TABLE_LABEL_MAP.keys(), key=len, reverse=True)
+
+
+def _extract_from_table_data(result_json) -> dict[str, str]:
+    """从 result_json 中的表格区域提取归档页结构化字段（fallback 用）。
+
+    扫描所有页面的 table 类型 region，根据 _TABLE_LABEL_MAP
+    将表格单元格中的标签映射为标准归档字段。
+    支持多列表格布局（如 [标签, 值, 标签, 值]）和标签值合并单元格。
+    """
+    table_fields: dict[str, str] = {}
+    if not result_json:
+        return table_fields
+
+    pages = result_json if isinstance(result_json, list) else [result_json]
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for region in page.get("regions", []):
+            if region.get("type") != "table":
+                continue
+            table_data = region.get("table_data")
+            if not isinstance(table_data, list):
+                continue
+            for row in table_data:
+                if not isinstance(row, list) or len(row) < 2:
+                    continue
+                # 遍历行中的标签-值对（支持 [label, val, label, val, ...] 布局）
+                i = 0
+                while i < len(row):
+                    cell_text = str(row[i]).strip()
+                    # Case 1: cell is a known label, next cell is the value
+                    if i + 1 < len(row):
+                        target_field = _TABLE_LABEL_MAP.get(cell_text)
+                        if target_field:
+                            cell_value = str(row[i + 1]).strip()
+                            if cell_value and cell_value != "-":
+                                if target_field not in table_fields:
+                                    table_fields[target_field] = cell_value
+                            i += 2
+                            continue
+                    # Case 2: cell starts with a known label (merged label+value)
+                    matched_prefix = False
+                    for prefix in _TABLE_LABEL_PREFIXES:
+                        if cell_text.startswith(prefix) and len(cell_text) > len(prefix):
+                            target_field = _TABLE_LABEL_MAP[prefix]
+                            cell_value = cell_text[len(prefix):].strip()
+                            if cell_value and target_field not in table_fields:
+                                table_fields[target_field] = cell_value
+                            matched_prefix = True
+                            break
+                    i += 1
+    return table_fields
+
+
 def extract_fields(filename: str, full_text: str, result_json, page_count: int, *, file_path: str = "") -> dict:
     """
     核心业务：从 OCR 结果中提取关键业务字段（用于后续的报表生成）。
@@ -663,6 +825,9 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int, 
     # --- 档号：从文件名 + 文件夹路径提取 ---
     fields["档号"] = _extract_archive_number(filename, file_path)
 
+    # --- 存放路径：从档号自动生成 5 级目录 ---
+    fields["存放路径"] = _archive_no_to_storage_path(fields["档号"])
+
     # --- 文号 ---
     items = _collect_items(result_json, full_text)
     fields["文号"] = _extract_doc_no(items, lines)
@@ -678,6 +843,23 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int, 
 
     # --- 密级 ---
     fields["密级"] = _extract_classification(items, full_text)
+
+    # --- 表格数据（归档页/公文处理单的结构化字段） ---
+    # 策略：如果表格提取到 3+ 个字段 → 该页是归档表单，表格值可信度高，可覆盖噪声
+    #       否则仅作为 fallback 补充空字段（源文件内容优先）
+    table_fields = _extract_from_table_data(result_json)
+    is_archive_form = len(table_fields) >= 3
+    for field_name, value in table_fields.items():
+        if not value or field_name not in fields:
+            continue
+        if is_archive_form:
+            # 归档表单：表格数据覆盖（但保留档号等非表格字段）
+            if field_name != "档号":
+                fields[field_name] = value
+        else:
+            # 非归档表单：仅补充空字段
+            if not fields[field_name]:
+                fields[field_name] = value
 
     return fields
 
