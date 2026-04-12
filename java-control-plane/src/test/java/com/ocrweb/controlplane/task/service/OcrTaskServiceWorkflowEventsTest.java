@@ -3,6 +3,7 @@ package com.ocrweb.controlplane.task.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ocrweb.controlplane.archive.service.ArchiveRecordService;
+import com.ocrweb.controlplane.auth.service.UserQuotaService;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.task.domain.TaskCallbackEventEntity;
 import com.ocrweb.controlplane.task.dto.TaskDtos;
@@ -28,6 +29,7 @@ class OcrTaskServiceWorkflowEventsTest {
     private final TaskStorageService storageService = mock(TaskStorageService.class);
     private final TaskCommandProducer taskCommandProducer = mock(TaskCommandProducer.class);
     private final ArchiveRecordService archiveRecordService = mock(ArchiveRecordService.class);
+    private final UserQuotaService userQuotaService = mock(UserQuotaService.class);
 
     private final OcrTaskService service = new OcrTaskService(
             taskRepository,
@@ -35,6 +37,7 @@ class OcrTaskServiceWorkflowEventsTest {
             storageService,
             taskCommandProducer,
             archiveRecordService,
+            userQuotaService,
             objectMapper
     );
 

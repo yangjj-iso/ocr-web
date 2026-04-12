@@ -29,6 +29,7 @@ ocr:
       - /api/auth/login
       - /api/auth/register
       - /api/auth/logout
+      - /api/dev/dashboard
     cors-allowed-origins:
       - ${OCR_CORS_ALLOWED_ORIGIN_1:http://localhost:3000}
       - ${OCR_CORS_ALLOWED_ORIGIN_2:http://127.0.0.1:3000}
@@ -45,6 +46,14 @@ ocr:
     cookie-secure: ${AUTH_COOKIE_SECURE:false}
     cookie-same-site: ${AUTH_COOKIE_SAMESITE:lax}
     session-ttl: ${AUTH_SESSION_TTL:28800}
+  dev-dashboard:
+    enabled: ${DEV_DASHBOARD_ENABLED:true}
+    username: ${DEV_DASHBOARD_USERNAME:}
+    password: ${DEV_DASHBOARD_PASSWORD:}
+    cookie-name: ${DEV_DASHBOARD_COOKIE_NAME:ocr_dev_dashboard_session}
+    session-ttl: ${DEV_DASHBOARD_SESSION_TTL:28800}
+    celery-queue: ${CELERY_TASK_QUEUE:ocr.compute.internal.queue}
+    python-metrics-path: ${DEV_DASHBOARD_PYTHON_METRICS_PATH:/internal/api/v1/worker/metrics}
   storage:
     backend: ${OCR_STORAGE_BACKEND:s3}
     upload-dir: ${OCR_STORAGE_UPLOAD_DIR:./uploads-java}

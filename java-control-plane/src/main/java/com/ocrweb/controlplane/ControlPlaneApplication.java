@@ -3,6 +3,7 @@ package com.ocrweb.controlplane;
 import com.ocrweb.controlplane.config.AiServiceProperties;
 import com.ocrweb.controlplane.config.AuthProperties;
 import com.ocrweb.controlplane.config.ControlPlaneSecurityProperties;
+import com.ocrweb.controlplane.config.DevDashboardProperties;
 import com.ocrweb.controlplane.config.InternalApiProperties;
 import com.ocrweb.controlplane.config.LocalPathProperties;
 import com.ocrweb.controlplane.config.ProcessingProperties;
@@ -20,6 +21,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         InternalApiProperties.class,
         AiServiceProperties.class,
         AuthProperties.class,
+        DevDashboardProperties.class,
         LocalPathProperties.class,
         ControlPlaneSecurityProperties.class,
         RateLimitProperties.class,

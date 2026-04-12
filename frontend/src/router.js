@@ -9,6 +9,7 @@ import { SearchView, SearcherHomeView } from './features/search/index.js'
 import { StorageAreaView } from './features/storage/index.js'
 import BatchImportPage from './features/admin/BatchImportPage.vue'
 import { HomeView } from './features/workbench/index.js'
+import DevDashboardPage from './features/dev/DevDashboardPage.vue'
 
 const routes = [
   { path: '/', name: 'Home', component: HomeView },
@@ -25,6 +26,7 @@ const routes = [
   { path: '/profile', name: 'Profile', component: ProfilePage },
   { path: '/admin/review', name: 'AdminReview', component: AdminReviewView, meta: { requiresAdmin: true } },
   { path: '/batch-import', name: 'BatchImport', component: BatchImportPage, meta: { requiresAdmin: true } },
+  { path: '/dev/dashboard', name: 'DevDashboard', component: DevDashboardPage, meta: { public: true } },
 ]
 
 const router = createRouter({

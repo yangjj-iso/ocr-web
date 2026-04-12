@@ -15,6 +15,7 @@ from app.api.evaluation import router as evaluation_router
 from app.api.files import router as files_router
 from app.api.qa import router as qa_router
 from app.api.tasks import router as tasks_router
+from app.api.worker_metrics import router as worker_metrics_router
 from app.services.archive_service import save_archive_record
 from app.services.batch_evaluation_service import (
     get_batch_evaluation_ai_report,
@@ -47,6 +48,7 @@ router.include_router(evaluation_router)
 router.include_router(files_router)
 router.include_router(admin_router)
 router.include_router(operator_router)
+router.include_router(worker_metrics_router)
 
 __all__ = [
     "answer_batch_question",
