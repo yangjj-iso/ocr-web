@@ -172,11 +172,10 @@
 
 <script setup>
 import { onMounted, ref, computed } from 'vue'
-import { uploadOnly, assignTasks, getTaskFileUrl, listTasks } from '@/api/ocr.js'
+import { uploadOnly, assignTasks, getTaskFileUrl, listTasks, listMyAssignedTasks, submitBatch } from '@/api/ocr.js'
 import { listUsers } from '@/api/admin.js'
 import { useAuthState } from '@/composables/useAuthState.js'
 import TreeNode from '@/features/storage/TreeNode.vue'
-import { listMyAssignedTasks } from '@/api/ocr.js'
 
 const uploading = ref(false)
 const uploadProgress = ref({ done: 0, total: 0 })
@@ -193,8 +192,12 @@ const folderInput = ref(null)
 const submittingBatch = ref(false)
 
 const authState = useAuthState()
-const isAdmin = computed(() => authState.status.value?.is_admin)
-const isCataloger = computed(() => authState.status.value?.role === 'operator' || authState.status.value?.is_admin)
+const isAdmin = computed(() => Boolean(authState.auth.value?.is_admin))
+const isCataloger = computed(() => authState.auth.value?.role === 'operator' || Boolean(authState.auth.value?.is_admin))
+
+function taskPath(task) {
+  return String(task?.filename || task?.file_path || task?.filePath || '').trim()
+}
 
 function fileUrl(taskId) {
   return getTaskFileUrl(taskId)
@@ -326,13 +329,15 @@ async function loadUploadedTasks() {
       const resp = await listTasks({ status: 'uploaded', page_size: 2000 })
       data = resp.data
     }
-    uploadedFiles.value = (data.tasks || []).map((t) => ({
+    const taskItems = Array.isArray(data?.tasks) ? data.tasks : Array.isArray(data?.items) ? data.items : []
+    uploadedFiles.value = taskItems.map((t) => ({
       id: t.id,
-      filename: t.filename || t.file_path || '',
-      status: t.status,
-      assignee_username: t.assignee_username || '',
+      filename: taskPath(t),
+      status: t.status || '',
+      assignee_username: t.assignee_username || t.assigneeUsername || '',
     }))
-  } catch {
+  } catch (error) {
+    console.error('Load uploaded tasks failed:', error)
     uploadedFiles.value = []
   } finally {
     loadingTasks.value = false

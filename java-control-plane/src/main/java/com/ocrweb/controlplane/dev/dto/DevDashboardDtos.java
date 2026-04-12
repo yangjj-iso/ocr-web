@@ -21,6 +21,7 @@ public final class DevDashboardDtos {
             TaskSummary tasks,
             WorkflowSummary workflow,
             List<QueueInfo> queues,
+            List<ResourceStatus> resources,
             List<TaskItem> queuedTasks,
             List<TaskItem> processingTasks,
             List<TaskItem> recentTasks,
@@ -69,6 +70,22 @@ public final class DevDashboardDtos {
             boolean available,
             String detail
     ) {
+    }
+
+    public record ResourceStatus(
+            String key,
+            String label,
+            String controlGroup,
+            String controlGroupLabel,
+            String state,
+            String detail,
+            String target,
+            long latencyMs,
+            List<ResourceMetric> metrics
+    ) {
+    }
+
+    public record ResourceMetric(String label, String value) {
     }
 
     public record TaskItem(

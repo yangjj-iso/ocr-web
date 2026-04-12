@@ -274,6 +274,7 @@ function assignStatusClass(status) {
     pending: 'bg-yellow-50 text-yellow-700',
     processing: 'bg-blue-50 text-blue-700',
     done: 'bg-green-50 text-green-700',
+    failed: 'bg-red-50 text-red-600',
     cancelled: 'bg-slate-100 text-slate-500',
   }[status] || 'bg-slate-100 text-slate-500'
 }
@@ -283,6 +284,7 @@ function assignStatusLabel(status) {
     pending: '待处理',
     processing: '处理中',
     done: '已完成',
+    failed: '失败',
     cancelled: '已取消',
   }[status] || status
 }
