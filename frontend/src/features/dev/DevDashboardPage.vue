@@ -42,6 +42,7 @@
               <button class="gov-btn-secondary" :disabled="dashboardRefreshing" @click="refreshDashboard">
                 {{ dashboardRefreshing ? '刷新中...' : '全部刷新' }}
               </button>
+              <button v-if="activeView !== 'all'" class="gov-btn-secondary" @click="showAllPanels">显示全部</button>
               <button class="gov-btn-secondary" @click="handleLogout">退出</button>
             </div>
           </div>
@@ -52,7 +53,66 @@
         {{ dashboardError }}
       </div>
 
-      <div class="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div class="flex flex-col gap-4 xl:flex-row xl:items-start">
+        <aside
+          :class="sidebarCollapsed ? 'xl:w-[92px]' : 'xl:w-[300px]'"
+          class="xl:sticky xl:top-4 xl:flex-shrink-0 transition-all duration-200"
+        >
+          <div class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div class="border-b border-slate-200 px-3 py-3">
+              <div class="flex items-center justify-between gap-2">
+                <div v-if="!sidebarCollapsed">
+                  <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Navigation</p>
+                  <h2 class="mt-1 text-sm font-semibold text-slate-900">控制台抽屉</h2>
+                </div>
+                <button
+                  type="button"
+                  class="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 text-sm text-slate-600 transition hover:border-emerald-200 hover:text-emerald-700"
+                  @click="toggleSidebar"
+                >
+                  {{ sidebarCollapsed ? '›' : '‹' }}
+                </button>
+              </div>
+            </div>
+
+            <div class="space-y-3 p-3">
+              <section
+                v-for="group in drawerGroups"
+                :key="group.key"
+                class="overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+              >
+                <button
+                  type="button"
+                  class="flex w-full items-center justify-between gap-2 px-3 py-3 text-left"
+                  @click="toggleDrawer(group.key)"
+                >
+                  <div class="min-w-0">
+                    <p class="text-xs font-semibold text-slate-800">{{ sidebarCollapsed ? group.shortLabel : group.label }}</p>
+                    <p v-if="!sidebarCollapsed && group.description" class="mt-1 text-[11px] leading-5 text-slate-500">{{ group.description }}</p>
+                  </div>
+                  <span v-if="!sidebarCollapsed" class="text-xs text-slate-400">{{ drawerState[group.key] ? '−' : '+' }}</span>
+                </button>
+
+                <div v-if="!sidebarCollapsed && drawerState[group.key]" class="border-t border-slate-200 bg-white p-2">
+                  <button
+                    v-for="item in group.items"
+                    :key="item.key"
+                    type="button"
+                    :class="isDrawerItemActive(item) ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-emerald-50 hover:text-emerald-700'"
+                    class="mb-1 flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition last:mb-0"
+                    @click="navigateDrawerItem(item)"
+                  >
+                    <span class="min-w-0 truncate">{{ item.label }}</span>
+                    <span v-if="item.badge" class="ml-3 rounded-md bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-500">{{ item.badge }}</span>
+                  </button>
+                </div>
+              </section>
+            </div>
+          </div>
+        </aside>
+
+        <div class="min-w-0 flex-1">
+      <div v-if="isPanelVisible('panel-kpis')" id="panel-kpis" class="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <div v-for="item in kpis" :key="item.label" class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-3 shadow-sm">
           <p class="text-xs text-[var(--gov-text-muted)]">{{ item.label }}</p>
           <p class="mt-2 text-2xl font-bold text-[var(--gov-text)]">{{ item.value }}</p>
@@ -60,8 +120,63 @@
         </div>
       </div>
 
-      <div class="grid gap-4 lg:grid-cols-[1fr_360px]">
-        <section class="rounded-lg border border-[var(--gov-border)] bg-white shadow-sm">
+      <section v-if="isPanelVisible('panel-resources')" id="panel-resources" class="mb-4 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div class="border-b border-slate-200 px-4 py-3">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900">基础资源与接口</h2>
+              <p class="mt-1 text-xs text-slate-500">Redis、MinIO、MQ 和各类 API 的当前状态，点卡片就能定位到对应配置组。</p>
+            </div>
+          </div>
+        </div>
+        <div class="grid gap-4 p-4 md:grid-cols-2 xl:grid-cols-3">
+          <article
+            v-for="resource in metrics?.resources || []"
+            :key="resource.key"
+            class="rounded-lg border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-4 shadow-sm transition hover:border-emerald-200"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{{ resource.control_group_label }}</p>
+                <h3 class="mt-1 text-base font-semibold text-slate-900">{{ resource.label }}</h3>
+              </div>
+              <span :class="resourceStateClass(resource.state)" class="rounded-md px-2 py-1 text-[11px] font-semibold">
+                {{ resourceStateLabel(resource.state) }}
+              </span>
+            </div>
+
+            <p class="mt-3 break-all rounded-lg bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-500">
+              {{ resource.target || '未配置地址' }}
+            </p>
+            <p class="mt-3 text-sm leading-6 text-slate-600">{{ resource.detail || '等待探测' }}</p>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <span v-if="resource.latency_ms" class="rounded-md bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700">
+                {{ resource.latency_ms }} ms
+              </span>
+              <span
+                v-for="metric in resource.metrics || []"
+                :key="`${resource.key}-${metric.label}`"
+                class="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700"
+              >
+                {{ metric.label }} {{ metric.value }}
+              </span>
+            </div>
+
+            <button
+              v-if="resource.control_group"
+              type="button"
+              class="mt-4 inline-flex items-center rounded-md border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 transition hover:border-emerald-200 hover:text-emerald-700"
+              @click="focusEnvironmentGroup(resource.control_group)"
+            >
+              打开配置
+            </button>
+          </article>
+        </div>
+      </section>
+
+      <div v-if="showOverviewGrid" :class="singleOverviewPanel ? 'grid gap-4' : 'grid gap-4 lg:grid-cols-[1fr_360px]'">
+        <section v-if="isPanelVisible('panel-queues')" id="panel-queues" class="rounded-lg border border-[var(--gov-border)] bg-white shadow-sm">
           <div class="border-b border-[var(--gov-border)] px-4 py-3">
             <h2 class="text-sm font-semibold text-[var(--gov-text)]">工作队列</h2>
           </div>
@@ -94,7 +209,7 @@
           </div>
         </section>
 
-        <section class="rounded-lg border border-[var(--gov-border)] bg-white p-4 shadow-sm">
+        <section v-if="isPanelVisible('panel-python')" id="panel-python" class="rounded-lg border border-[var(--gov-border)] bg-white p-4 shadow-sm">
           <h2 class="text-sm font-semibold text-[var(--gov-text)]">Python 计算侧</h2>
           <div class="mt-3 space-y-3 text-sm">
             <div class="flex items-center justify-between">
@@ -118,13 +233,17 @@
         </section>
       </div>
 
-      <div class="mt-4 grid gap-4 lg:grid-cols-2">
-        <TaskListPanel title="正在排队的任务" :tasks="metrics?.queued_tasks || []" empty-text="当前没有排队任务" />
-        <TaskListPanel title="正在处理的任务" :tasks="metrics?.processing_tasks || []" empty-text="当前没有处理中的任务" />
+      <div v-if="showTaskGrid" :class="singleTaskPanel ? 'mt-4 grid gap-4' : 'mt-4 grid gap-4 lg:grid-cols-2'">
+        <div v-if="isPanelVisible('panel-queued')" id="panel-queued">
+          <TaskListPanel title="正在排队的任务" :tasks="metrics?.queued_tasks || []" empty-text="当前没有排队任务" />
+        </div>
+        <div v-if="isPanelVisible('panel-processing')" id="panel-processing">
+          <TaskListPanel title="正在处理的任务" :tasks="metrics?.processing_tasks || []" empty-text="当前没有处理中的任务" />
+        </div>
       </div>
 
-      <div class="mt-4 grid gap-4 lg:grid-cols-2">
-        <section class="rounded-lg border border-[var(--gov-border)] bg-white shadow-sm">
+      <div v-if="showAnalyticsGrid" :class="singleAnalyticsPanel ? 'mt-4 grid gap-4' : 'mt-4 grid gap-4 lg:grid-cols-2'">
+        <section v-if="isPanelVisible('panel-status')" id="panel-status" class="rounded-lg border border-[var(--gov-border)] bg-white shadow-sm">
           <div class="border-b border-[var(--gov-border)] px-4 py-3">
             <h2 class="text-sm font-semibold text-[var(--gov-text)]">任务状态分布</h2>
           </div>
@@ -136,7 +255,7 @@
           </div>
         </section>
 
-        <section class="rounded-lg border border-[var(--gov-border)] bg-white shadow-sm">
+        <section v-if="isPanelVisible('panel-duration')" id="panel-duration" class="rounded-lg border border-[var(--gov-border)] bg-white shadow-sm">
           <div class="border-b border-[var(--gov-border)] px-4 py-3">
             <h2 class="text-sm font-semibold text-[var(--gov-text)]">按模式统计平均耗时</h2>
           </div>
@@ -151,8 +270,8 @@
         </section>
       </div>
 
-      <div class="mt-4 grid gap-4 xl:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.18fr)]">
-        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div v-if="showDetailGrid" :class="singleDetailPanel ? 'mt-4 grid gap-4' : 'mt-4 grid gap-4 xl:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.18fr)]'">
+        <section v-if="isPanelVisible('panel-recent-tasks')" id="panel-recent-tasks" class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <div class="border-b border-slate-200 px-4 py-3">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -203,7 +322,7 @@
           <div v-else class="px-4 py-10 text-center text-sm text-slate-500">暂无最近更新任务</div>
         </section>
 
-        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <section v-if="isPanelVisible('panel-task-detail')" id="panel-task-detail" class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <div class="border-b border-slate-200 px-4 py-3">
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -270,11 +389,11 @@
         </section>
       </div>
 
-      <section class="mt-4 rounded-lg border border-slate-200 bg-white shadow-sm">
+      <section v-if="showEnvironmentPanel" id="panel-environment" class="mt-4 rounded-lg border border-slate-200 bg-white shadow-sm">
         <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
           <div>
             <h2 class="text-sm font-semibold text-slate-900">运行环境</h2>
-            <p class="mt-1 text-xs text-slate-500">修改后写回 .env，并对新请求立即生效。</p>
+            <p class="mt-1 text-xs text-slate-500">修改后写回 .env；标记为“即时生效”的配置会立刻用于新请求，其余配置需要对应服务重启。</p>
           </div>
           <div class="flex gap-2">
             <button class="gov-btn-secondary" :disabled="environmentLoading" @click="loadEnvironment">
@@ -294,10 +413,23 @@
         </div>
 
         <div class="grid gap-4 p-4 xl:grid-cols-2">
-          <section v-for="group in environment?.groups || []" :key="group.key" class="rounded-lg border border-slate-200 bg-slate-50">
+          <section
+            v-for="group in visibleEnvironmentGroups"
+            :id="`environment-group-${group.key}`"
+            :key="group.key"
+            class="rounded-lg border border-slate-200 bg-slate-50"
+          >
             <div class="border-b border-slate-200 px-4 py-3">
-              <h3 class="text-sm font-semibold text-slate-900">{{ group.label }}</h3>
-              <p class="mt-1 text-xs text-slate-500">{{ group.description }}</p>
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 class="text-sm font-semibold text-slate-900">{{ group.label }}</h3>
+                  <p class="mt-1 text-xs text-slate-500">{{ group.description }}</p>
+                </div>
+                <div class="flex flex-wrap gap-2 text-[11px] font-semibold">
+                  <span class="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700">即时生效 {{ countRuntimeApplied(group) }}</span>
+                  <span class="rounded-md bg-amber-50 px-2 py-1 text-amber-700">需重启 {{ countRestartRequired(group) }}</span>
+                </div>
+              </div>
             </div>
             <div class="grid gap-3 p-4">
               <article v-for="field in group.fields" :key="field.key" class="rounded-lg border border-slate-200 bg-white px-3 py-3">
@@ -306,7 +438,12 @@
                     <p class="text-sm font-semibold text-slate-900">{{ field.label }}</p>
                     <p class="mt-1 text-xs leading-5 text-slate-500">{{ field.description }}</p>
                   </div>
-                  <span v-if="field.runtime_applied" class="rounded-md bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">即时生效</span>
+                  <span
+                    :class="field.runtime_applied ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'"
+                    class="rounded-md px-2 py-1 text-[11px] font-semibold"
+                  >
+                    {{ field.runtime_applied ? '即时生效' : '需重启' }}
+                  </span>
                 </div>
 
                 <div class="mt-3">
@@ -325,18 +462,21 @@
 
                 <p class="mt-2 text-[11px] text-slate-500">
                   {{ field.sensitive ? (field.configured ? '当前已有值，留空不会覆盖。' : '当前未配置。') : `当前值：${displayEnvironmentFieldValue(field)}` }}
+                  <span v-if="!field.runtime_applied" class="ml-2 text-amber-700">保存后需重启相关服务。</span>
                 </p>
               </article>
             </div>
           </section>
         </div>
       </section>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, h, nextTick, onMounted, reactive, ref } from 'vue'
 import {
   getDevDashboardEnvironment,
   getDevDashboardMetrics,
@@ -365,9 +505,17 @@ const metrics = ref(null)
 const environment = ref(null)
 const selectedTask = ref(null)
 const taskLookupId = ref('')
+const sidebarCollapsed = ref(false)
+const activeView = ref('all')
 
 const loginForm = reactive({ username: '', password: '' })
 const environmentDraft = reactive({})
+const drawerState = reactive({
+  overview: true,
+  tasks: true,
+  analytics: true,
+  runtime: true,
+})
 
 const queueBacklog = computed(() => (metrics.value?.queues || []).reduce((sum, queue) => sum + Number(queue.message_count || 0), 0))
 const pythonMetrics = computed(() => metrics.value?.python_metrics || { available: false, detail: '' })
@@ -384,6 +532,82 @@ const kpis = computed(() => [
   { label: '处理中', value: metrics.value?.tasks?.processing || 0, sub: 'running / worker accepted' },
   { label: '失败任务', value: metrics.value?.tasks?.failed || 0, sub: `${metrics.value?.tasks?.done || 0} 已完成` },
 ])
+
+const drawerGroups = computed(() => {
+  const resources = metrics.value?.resources || []
+  const healthyResources = resources.filter((item) => item.state === 'up' || item.state === 'configured' || item.state === 'local').length
+  const envGroups = (environment.value?.groups || []).map((group) => ({
+    key: `environment-${group.key}`,
+    label: group.label,
+    type: 'environment',
+    target: group.key,
+    badge: `${countRuntimeApplied(group)}/${group.fields?.length || 0}`,
+  }))
+
+  return [
+    {
+      key: 'overview',
+      shortLabel: '总览',
+      label: '系统总览',
+      description: '资源、队列与 Python 计算侧。',
+      items: [
+        { key: 'panel-kpis', label: '总览指标', type: 'panel', target: 'panel-kpis', badge: `${metrics.value?.tasks?.total || 0}` },
+        { key: 'panel-resources', label: '基础资源与接口', type: 'panel', target: 'panel-resources', badge: `${healthyResources}/${resources.length || 0}` },
+        { key: 'panel-queues', label: '工作队列', type: 'panel', target: 'panel-queues', badge: `${metrics.value?.queues?.length || 0}` },
+        { key: 'panel-python', label: 'Python 计算侧', type: 'panel', target: 'panel-python', badge: pythonMetrics.value.available ? '已连通' : '待检查' },
+      ],
+    },
+    {
+      key: 'tasks',
+      shortLabel: '任务',
+      label: '任务追踪',
+      description: '排队、处理中与任务详情。',
+      items: [
+        { key: 'panel-queued', label: '正在排队', type: 'panel', target: 'panel-queued', badge: `${metrics.value?.tasks?.pending || 0}` },
+        { key: 'panel-processing', label: '正在处理', type: 'panel', target: 'panel-processing', badge: `${metrics.value?.tasks?.processing || 0}` },
+        { key: 'panel-recent-tasks', label: '最近更新任务', type: 'panel', target: 'panel-recent-tasks', badge: `${metrics.value?.recent_tasks?.length || 0}` },
+        { key: 'panel-task-detail', label: '任务详情', type: 'panel', target: 'panel-task-detail', badge: selectedTask.value?.task?.id ? `#${selectedTask.value.task.id}` : '' },
+      ],
+    },
+    {
+      key: 'analytics',
+      shortLabel: '统计',
+      label: '统计分析',
+      description: '状态分布与模式耗时。',
+      items: [
+        { key: 'panel-status', label: '任务状态分布', type: 'panel', target: 'panel-status', badge: `${metrics.value?.tasks?.by_status?.length || 0}` },
+        { key: 'panel-duration', label: '按模式统计耗时', type: 'panel', target: 'panel-duration', badge: `${metrics.value?.workflow?.by_mode?.length || 0}` },
+      ],
+    },
+    {
+      key: 'runtime',
+      shortLabel: '配置',
+      label: '运行环境',
+      description: '环境总览与分组配置。',
+      items: [
+        { key: 'panel-environment', label: '环境总览', type: 'panel', target: 'panel-environment', badge: `${environment.value?.groups?.length || 0}组` },
+        ...envGroups,
+      ],
+    },
+  ]
+})
+
+const visibleEnvironmentGroups = computed(() => {
+  const groups = environment.value?.groups || []
+  if (!activeView.value.startsWith('environment:')) return groups
+  const target = activeView.value.replace('environment:', '')
+  return groups.filter((group) => group.key === target)
+})
+
+const showOverviewGrid = computed(() => ['panel-queues', 'panel-python', 'all'].includes(activeView.value))
+const singleOverviewPanel = computed(() => ['panel-queues', 'panel-python'].includes(activeView.value))
+const showTaskGrid = computed(() => ['panel-queued', 'panel-processing', 'all'].includes(activeView.value))
+const singleTaskPanel = computed(() => ['panel-queued', 'panel-processing'].includes(activeView.value))
+const showAnalyticsGrid = computed(() => ['panel-status', 'panel-duration', 'all'].includes(activeView.value))
+const singleAnalyticsPanel = computed(() => ['panel-status', 'panel-duration'].includes(activeView.value))
+const showDetailGrid = computed(() => ['panel-recent-tasks', 'panel-task-detail', 'all'].includes(activeView.value))
+const singleDetailPanel = computed(() => ['panel-recent-tasks', 'panel-task-detail'].includes(activeView.value))
+const showEnvironmentPanel = computed(() => activeView.value === 'all' || activeView.value === 'panel-environment' || activeView.value.startsWith('environment:'))
 
 const environmentDirty = computed(() => {
   const groups = environment.value?.groups || []
@@ -508,7 +732,7 @@ async function saveEnvironment() {
     const { data } = await updateDevDashboardEnvironment({ values })
     environment.value = data
     hydrateEnvironmentDraft(data)
-    environmentSuccess.value = '运行环境已保存，新请求已开始使用最新配置。'
+    environmentSuccess.value = '运行环境已保存；即时生效项已用于新请求，其余项在相关服务重启后生效。'
     await loadMetrics()
   } catch (error) {
     environmentError.value = error?.response?.data?.detail || '运行环境保存失败'
@@ -572,9 +796,58 @@ async function openTaskFromLookup() {
   await openTask(taskId)
 }
 
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
+function toggleDrawer(groupKey) {
+  if (sidebarCollapsed.value) {
+    sidebarCollapsed.value = false
+    drawerState[groupKey] = true
+    return
+  }
+  drawerState[groupKey] = !drawerState[groupKey]
+}
+
+async function navigateDrawerItem(item) {
+  if (!item) return
+  if (item.type === 'environment') {
+    activeView.value = `environment:${item.target}`
+    await nextTick()
+    focusEnvironmentGroup(item.target)
+    return
+  }
+  activeView.value = item.target
+  await nextTick()
+  scrollToPanel(item.target)
+}
+
+function scrollToPanel(panelId) {
+  const section = document.getElementById(panelId)
+  if (!section) return
+  section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function showAllPanels() {
+  activeView.value = 'all'
+}
+
+function isPanelVisible(panelId) {
+  return activeView.value === 'all' || activeView.value === panelId
+}
+
+function isDrawerItemActive(item) {
+  if (!item) return false
+  if (item.type === 'environment') {
+    return activeView.value === `environment:${item.target}`
+  }
+  return activeView.value === item.target
+}
+
 function fieldInputType(field) {
   if (field.sensitive) return 'password'
   if (field.type === 'number') return 'number'
+  if (field.type === 'url') return 'url'
   return 'text'
 }
 
@@ -593,6 +866,38 @@ function statusBadgeClass(status) {
     failed: 'bg-rose-50 text-rose-700',
     human_review: 'bg-violet-50 text-violet-700',
   }[status] || 'bg-slate-100 text-slate-700'
+}
+
+function resourceStateClass(state) {
+  return {
+    up: 'bg-emerald-50 text-emerald-700',
+    configured: 'bg-sky-50 text-sky-700',
+    local: 'bg-violet-50 text-violet-700',
+    missing: 'bg-slate-100 text-slate-600',
+    down: 'bg-rose-50 text-rose-700',
+  }[state] || 'bg-slate-100 text-slate-700'
+}
+
+function resourceStateLabel(state) {
+  return {
+    up: '已连通',
+    configured: '已配置',
+    local: '本地模式',
+    missing: '未配置',
+    down: '异常',
+  }[state] || '未知'
+}
+
+function focusEnvironmentGroup(groupKey) {
+  scrollToPanel(`environment-group-${groupKey}`)
+}
+
+function countRuntimeApplied(group) {
+  return (group?.fields || []).filter((field) => field.runtime_applied).length
+}
+
+function countRestartRequired(group) {
+  return (group?.fields || []).filter((field) => !field.runtime_applied).length
 }
 
 function formatDuration(ms) {

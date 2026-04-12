@@ -6,6 +6,8 @@ import com.ocrweb.controlplane.config.ControlPlaneSecurityProperties;
 import com.ocrweb.controlplane.config.DevDashboardProperties;
 import com.ocrweb.controlplane.config.DotenvFileSupport;
 import com.ocrweb.controlplane.config.InternalApiProperties;
+import com.ocrweb.controlplane.config.RabbitMqProperties;
+import com.ocrweb.controlplane.config.StorageProperties;
 import com.ocrweb.controlplane.dev.dto.DevDashboardDtos;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
@@ -30,7 +32,9 @@ public class DevDashboardRuntimeService {
             new RuntimeFieldDefinition("DEV_DASHBOARD_COOKIE_NAME", "后台 Cookie 名", "dashboard", "开发后台会话 Cookie。", "text", false, true),
             new RuntimeFieldDefinition("DEV_DASHBOARD_SESSION_TTL", "后台会话时长", "dashboard", "单位秒。", "number", false, true),
             new RuntimeFieldDefinition("DEV_DASHBOARD_PYTHON_METRICS_PATH", "Python 指标路径", "dashboard", "控制面拉取 Python 指标的路径。", "text", false, true),
-            new RuntimeFieldDefinition("CELERY_TASK_QUEUE", "Celery 队列名", "dashboard", "监控面板展示的 Python 侧队列。", "text", false, true),
+            new RuntimeFieldDefinition("WORKER_METRICS_ENABLED", "Worker 指标开关", "dashboard", "Python Worker 暴露指标接口的开关。", "boolean", false, false),
+            new RuntimeFieldDefinition("WORKER_METRICS_HOST", "Worker 指标主机", "dashboard", "Python Worker 指标绑定地址。", "text", false, false),
+            new RuntimeFieldDefinition("WORKER_METRICS_PORT", "Worker 指标端口", "dashboard", "Python Worker 指标绑定端口。", "number", false, false),
 
             new RuntimeFieldDefinition("OCR_AI_BASE_URL", "AI 服务地址", "ai", "Java 控制面请求 Python AI 的根地址。", "url", false, true),
             new RuntimeFieldDefinition("OCR_AI_HEALTH_PATH", "AI 健康检查路径", "ai", "健康探测使用的接口路径。", "text", false, true),
@@ -39,6 +43,69 @@ public class DevDashboardRuntimeService {
 
             new RuntimeFieldDefinition("OCR_INTERNAL_API_TOKEN", "内部 API Token", "internal", "Java 调 Python 内部指标接口使用。", "password", true, true),
             new RuntimeFieldDefinition("OCR_CONTROL_PLANE_BASE_URL", "控制面基地址", "internal", "内部回调与链路引用使用。", "url", false, true),
+            new RuntimeFieldDefinition("CONTROL_PLANE_BASE_URL", "Python 回调控制面地址", "internal", "Python Worker 回调 Java 控制面使用。", "url", false, false),
+            new RuntimeFieldDefinition("CONTROL_PLANE_INTERNAL_TOKEN", "Python 回调 Token", "internal", "Python Worker 回调控制面鉴权。", "password", true, false),
+            new RuntimeFieldDefinition("CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS", "回调超时", "internal", "Python Worker 回调控制面的超时秒数。", "number", false, false),
+            new RuntimeFieldDefinition("CONTROL_PLANE_VERIFY_TLS", "回调验证 TLS", "internal", "Python Worker 调控制面时是否校验证书。", "boolean", false, false),
+
+            new RuntimeFieldDefinition("SPRING_RABBITMQ_HOST", "RabbitMQ 主机", "mq", "Java 控制面连接 RabbitMQ 的地址。", "text", false, false),
+            new RuntimeFieldDefinition("SPRING_RABBITMQ_PORT", "RabbitMQ 端口", "mq", "Java 控制面连接 RabbitMQ 的端口。", "number", false, false),
+            new RuntimeFieldDefinition("SPRING_RABBITMQ_USERNAME", "RabbitMQ 用户名", "mq", "Java 控制面连接 RabbitMQ 的账号。", "text", false, false),
+            new RuntimeFieldDefinition("SPRING_RABBITMQ_PASSWORD", "RabbitMQ 密码", "mq", "Java 控制面连接 RabbitMQ 的密码。", "password", true, false),
+            new RuntimeFieldDefinition("SPRING_RABBITMQ_VHOST", "RabbitMQ VHost", "mq", "Java 控制面连接 RabbitMQ 的虚拟主机。", "text", false, false),
+            new RuntimeFieldDefinition("MQ_BROKER_URL", "Worker Broker URL", "mq", "Python Worker / publisher 使用的 Broker 地址。", "password", true, false),
+            new RuntimeFieldDefinition("MQ_COMMAND_EXCHANGE", "命令交换机", "mq", "Java 投递 OCR 命令使用的交换机。", "text", false, true),
+            new RuntimeFieldDefinition("MQ_COMMAND_QUEUE", "命令队列", "mq", "Java/Python 共用的任务入口队列。", "text", false, true),
+            new RuntimeFieldDefinition("MQ_COMMAND_ROUTING_KEY", "命令 Routing Key", "mq", "Java 投递 OCR 命令使用的 Routing Key。", "text", false, true),
+            new RuntimeFieldDefinition("MQ_COMMAND_DLX", "死信交换机", "mq", "RabbitMQ 死信交换机。", "text", false, true),
+            new RuntimeFieldDefinition("MQ_COMMAND_DLQ", "死信队列", "mq", "RabbitMQ 死信队列。", "text", false, true),
+            new RuntimeFieldDefinition("MQ_PREFETCH_COUNT", "MQ Prefetch", "mq", "Python Worker 预取数量。", "number", false, false),
+            new RuntimeFieldDefinition("CELERY_BROKER_URL", "Celery Broker URL", "mq", "Celery Worker 连接 RabbitMQ 的地址。", "password", true, false),
+            new RuntimeFieldDefinition("CELERY_TASK_EXCHANGE", "Celery 交换机", "mq", "Celery 任务交换机。", "text", false, false),
+            new RuntimeFieldDefinition("CELERY_TASK_QUEUE", "Celery 队列", "mq", "Celery Worker 消费的计算队列。", "text", false, true),
+            new RuntimeFieldDefinition("CELERY_TASK_ROUTING_KEY", "Celery Routing Key", "mq", "Celery 任务 Routing Key。", "text", false, false),
+
+            new RuntimeFieldDefinition("OCR_STORAGE_BACKEND", "存储后端", "storage", "对象存储后端，当前推荐 s3 / MinIO。", "text", false, false),
+            new RuntimeFieldDefinition("OCR_STORAGE_UPLOAD_DIR", "本地上传目录", "storage", "仅 local 后端使用。", "text", false, false),
+            new RuntimeFieldDefinition("OCR_STORAGE_ENDPOINT", "MinIO / S3 Endpoint", "storage", "对象存储访问入口。", "url", false, true),
+            new RuntimeFieldDefinition("OCR_STORAGE_BUCKET", "存储 Bucket", "storage", "源文件与归档对象所在的 Bucket。", "text", false, true),
+            new RuntimeFieldDefinition("OCR_STORAGE_REGION", "存储 Region", "storage", "S3 Signature V4 Region。", "text", false, true),
+            new RuntimeFieldDefinition("OCR_STORAGE_ACCESS_KEY", "存储 Access Key", "storage", "对象存储访问账号。", "text", false, true),
+            new RuntimeFieldDefinition("OCR_STORAGE_SECRET_KEY", "存储 Secret Key", "storage", "对象存储访问密钥。", "password", true, true),
+            new RuntimeFieldDefinition("OCR_STORAGE_KEY_PREFIX", "对象 Key 前缀", "storage", "上传对象统一前缀。", "text", false, true),
+            new RuntimeFieldDefinition("OCR_STORAGE_PATH_STYLE", "Path Style", "storage", "MinIO / S3 是否使用 path-style。", "boolean", false, true),
+
+            new RuntimeFieldDefinition("REDIS_URL", "Redis URL", "redis", "缓存与去重所使用的 Redis 连接串。", "password", true, false),
+            new RuntimeFieldDefinition("LANGGRAPH_CHECKPOINTER_BACKEND", "LangGraph Checkpointer", "redis", "memory / postgres / redis。", "text", false, false),
+            new RuntimeFieldDefinition("LANGGRAPH_CHECKPOINTER_DSN", "Checkpointer DSN", "redis", "LangGraph Postgres Checkpointer DSN。", "password", true, false),
+            new RuntimeFieldDefinition("LANGGRAPH_CHECKPOINTER_REDIS_URL", "Checkpointer Redis URL", "redis", "LangGraph Redis Checkpointer 地址。", "password", true, false),
+            new RuntimeFieldDefinition("LANGGRAPH_HITL_ENABLED", "人工复核中断", "redis", "LangGraph 是否启用 HITL 中断。", "boolean", false, false),
+            new RuntimeFieldDefinition("LANGGRAPH_HUMAN_REVIEW_INTERRUPT_THRESHOLD", "复核中断阈值", "redis", "LangGraph 人工复核阈值。", "number", false, false),
+
+            new RuntimeFieldDefinition("OCR_LAYOUT_BACKEND", "版面后端", "layout-api", "local / api。", "text", false, false),
+            new RuntimeFieldDefinition("OCR_LAYOUT_API_URL", "版面 API 地址", "layout-api", "远程版面解析接口地址。", "url", false, false),
+            new RuntimeFieldDefinition("OCR_LAYOUT_API_TOKEN", "版面 API Token", "layout-api", "远程版面解析接口鉴权。", "password", true, false),
+            new RuntimeFieldDefinition("OCR_LAYOUT_API_TIMEOUT_SECONDS", "版面 API 超时", "layout-api", "远程版面解析超时秒数。", "number", false, false),
+            new RuntimeFieldDefinition("OCR_LAYOUT_API_USE_DOC_ORIENTATION_CLASSIFY", "版面方向分类", "layout-api", "是否启用方向分类参数。", "boolean", false, false),
+            new RuntimeFieldDefinition("OCR_LAYOUT_API_USE_DOC_UNWARPING", "版面文档矫正", "layout-api", "是否启用文档矫正参数。", "boolean", false, false),
+            new RuntimeFieldDefinition("OCR_LAYOUT_API_USE_CHART_RECOGNITION", "版面图表识别", "layout-api", "是否启用图表识别参数。", "boolean", false, false),
+
+            new RuntimeFieldDefinition("LLM_BASE_URL", "LLM Base URL", "llm-api", "OpenAI 兼容 LLM 服务入口。", "url", false, false),
+            new RuntimeFieldDefinition("LLM_API_KEY", "LLM API Key", "llm-api", "OpenAI 兼容 LLM 鉴权密钥。", "password", true, false),
+            new RuntimeFieldDefinition("LLM_MODEL", "LLM Model", "llm-api", "文本抽取使用的模型名。", "text", false, false),
+            new RuntimeFieldDefinition("LLM_TIMEOUT_SECONDS", "LLM 超时", "llm-api", "文本 LLM 请求超时秒数。", "number", false, false),
+            new RuntimeFieldDefinition("LLM_MAX_INPUT_CHARS", "LLM 最大输入", "llm-api", "单次文本送入 LLM 的字符上限。", "number", false, false),
+            new RuntimeFieldDefinition("VISION_LLM_BASE_URL", "视觉 LLM Base URL", "llm-api", "视觉模型服务入口。", "url", false, false),
+            new RuntimeFieldDefinition("VISION_LLM_API_KEY", "视觉 LLM API Key", "llm-api", "视觉模型鉴权密钥。", "password", true, false),
+            new RuntimeFieldDefinition("VISION_LLM_MODEL", "视觉 LLM Model", "llm-api", "视觉模型名称。", "text", false, false),
+            new RuntimeFieldDefinition("VISION_LLM_TIMEOUT_SECONDS", "视觉 LLM 超时", "llm-api", "视觉模型请求超时秒数。", "number", false, false),
+            new RuntimeFieldDefinition("MINIMAX_ENABLED", "旧 MiniMax 开关", "llm-api", "旧版提取链路是否启用 MiniMax。", "boolean", false, false),
+            new RuntimeFieldDefinition("MINIMAX_API_KEY", "旧 MiniMax API Key", "llm-api", "旧版提取链路鉴权密钥。", "password", true, false),
+            new RuntimeFieldDefinition("MINIMAX_BASE_URL", "旧 MiniMax Base URL", "llm-api", "旧版提取链路服务入口。", "url", false, false),
+            new RuntimeFieldDefinition("MINIMAX_MODEL", "旧 MiniMax Model", "llm-api", "旧版提取链路模型名。", "text", false, false),
+            new RuntimeFieldDefinition("MINIMAX_TIMEOUT_SECONDS", "旧 MiniMax 超时", "llm-api", "旧版提取链路超时秒数。", "number", false, false),
+            new RuntimeFieldDefinition("BAIDU_API_KEY", "百度 API Key", "llm-api", "百度文档解析接口账号。", "password", true, false),
+            new RuntimeFieldDefinition("BAIDU_SECRET_KEY", "百度 Secret Key", "llm-api", "百度文档解析接口密钥。", "password", true, false),
 
             new RuntimeFieldDefinition("OCR_REQUIRE_USER_AUTH", "强制业务登录", "auth", "关闭后业务接口不再要求主系统登录。", "boolean", false, true),
             new RuntimeFieldDefinition("AUTH_ENABLED", "业务认证开关", "auth", "主系统登录模块开关。", "boolean", false, true),
@@ -53,7 +120,12 @@ public class DevDashboardRuntimeService {
 
     private static final List<GroupDefinition> GROUPS = List.of(
             new GroupDefinition("dashboard", "开发后台运行环境", "影响 /dev/dashboard 的登录、指标抓取和队列展示。"),
+            new GroupDefinition("mq", "消息队列 / RabbitMQ", "统一管理 Java 控制面、Python Worker 与 Celery 的 RabbitMQ 配置。"),
+            new GroupDefinition("storage", "MinIO / 对象存储", "上传文件、源文件代理与对象存储访问入口。"),
+            new GroupDefinition("redis", "Redis / 工作流缓存", "缓存、LangGraph Checkpointer 与人工复核中断控制。"),
             new GroupDefinition("ai", "AI 服务连接", "面板更新后，新请求会立即使用新的 AI 连接配置。"),
+            new GroupDefinition("layout-api", "版面解析 API", "远程版面解析接口、鉴权与请求参数。"),
+            new GroupDefinition("llm-api", "LLM / 视觉模型接口", "OpenAI 兼容接口、MiniMax 兼容链路和百度文档解析配置。"),
             new GroupDefinition("internal", "内部调用", "控制面与 Python 内部接口通信使用的配置。"),
             new GroupDefinition("auth", "业务认证", "修改后新登录和新请求立即按最新规则执行。")
     );
@@ -62,6 +134,8 @@ public class DevDashboardRuntimeService {
     private final DevDashboardProperties devDashboardProperties;
     private final AiServiceProperties aiServiceProperties;
     private final InternalApiProperties internalApiProperties;
+    private final RabbitMqProperties rabbitMqProperties;
+    private final StorageProperties storageProperties;
     private final AuthProperties authProperties;
     private final ControlPlaneSecurityProperties securityProperties;
 
@@ -70,6 +144,8 @@ public class DevDashboardRuntimeService {
             DevDashboardProperties devDashboardProperties,
             AiServiceProperties aiServiceProperties,
             InternalApiProperties internalApiProperties,
+            RabbitMqProperties rabbitMqProperties,
+            StorageProperties storageProperties,
             AuthProperties authProperties,
             ControlPlaneSecurityProperties securityProperties
     ) {
@@ -77,6 +153,8 @@ public class DevDashboardRuntimeService {
         this.devDashboardProperties = devDashboardProperties;
         this.aiServiceProperties = aiServiceProperties;
         this.internalApiProperties = internalApiProperties;
+        this.rabbitMqProperties = rabbitMqProperties;
+        this.storageProperties = storageProperties;
         this.authProperties = authProperties;
         this.securityProperties = securityProperties;
     }
@@ -200,6 +278,22 @@ public class DevDashboardRuntimeService {
 
                 case "OCR_INTERNAL_API_TOKEN" -> internalApiProperties.setToken(entry.getValue());
                 case "OCR_CONTROL_PLANE_BASE_URL" -> internalApiProperties.setBaseUrl(entry.getValue());
+
+                case "MQ_COMMAND_EXCHANGE" -> rabbitMqProperties.setExchange(entry.getValue());
+                case "MQ_COMMAND_QUEUE" -> rabbitMqProperties.setQueue(entry.getValue());
+                case "MQ_COMMAND_ROUTING_KEY" -> rabbitMqProperties.setRoutingKey(entry.getValue());
+                case "MQ_COMMAND_DLX" -> rabbitMqProperties.setDeadLetterExchange(entry.getValue());
+                case "MQ_COMMAND_DLQ" -> rabbitMqProperties.setDeadLetterQueue(entry.getValue());
+
+                case "OCR_STORAGE_BACKEND" -> storageProperties.setBackend(entry.getValue());
+                case "OCR_STORAGE_UPLOAD_DIR" -> storageProperties.setUploadDir(entry.getValue());
+                case "OCR_STORAGE_ENDPOINT" -> storageProperties.setEndpoint(entry.getValue());
+                case "OCR_STORAGE_BUCKET" -> storageProperties.setBucket(entry.getValue());
+                case "OCR_STORAGE_REGION" -> storageProperties.setRegion(entry.getValue());
+                case "OCR_STORAGE_ACCESS_KEY" -> storageProperties.setAccessKey(entry.getValue());
+                case "OCR_STORAGE_SECRET_KEY" -> storageProperties.setSecretKey(entry.getValue());
+                case "OCR_STORAGE_KEY_PREFIX" -> storageProperties.setKeyPrefix(entry.getValue());
+                case "OCR_STORAGE_PATH_STYLE" -> storageProperties.setPathStyle(parseBoolean(entry.getValue()));
 
                 case "OCR_REQUIRE_USER_AUTH" -> securityProperties.setRequireUserAuth(parseBoolean(entry.getValue()));
                 case "AUTH_ENABLED" -> authProperties.setEnabled(parseBoolean(entry.getValue()));
