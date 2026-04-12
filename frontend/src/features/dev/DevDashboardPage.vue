@@ -1,5 +1,5 @@
 <template>
-  <div class="min-h-[calc(100vh-56px)] bg-[var(--gov-bg)] px-4 py-5 sm:px-6">
+  <div class="min-h-screen bg-[var(--gov-bg)] px-4 py-5 sm:px-6">
     <div v-if="!authenticated" class="mx-auto flex min-h-[calc(100vh-120px)] max-w-md items-center">
       <form class="w-full rounded-lg border border-[var(--gov-border)] bg-white p-6 shadow-sm" @submit.prevent="submitLogin">
         <p class="text-xs font-semibold text-[var(--gov-primary)]">DEV DASHBOARD</p>

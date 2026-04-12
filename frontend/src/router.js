@@ -26,7 +26,7 @@ const routes = [
   { path: '/profile', name: 'Profile', component: ProfilePage },
   { path: '/admin/review', name: 'AdminReview', component: AdminReviewView, meta: { requiresAdmin: true } },
   { path: '/batch-import', name: 'BatchImport', component: BatchImportPage, meta: { requiresAdmin: true } },
-  { path: '/dev/dashboard', name: 'DevDashboard', component: DevDashboardPage, meta: { public: true } },
+  { path: '/dev/dashboard', name: 'DevDashboard', component: DevDashboardPage, meta: { public: true, standalone: true } },
 ]
 
 const router = createRouter({
@@ -43,6 +43,10 @@ function roleBasedHome(status) {
 }
 
 router.beforeEach(async (to) => {
+  if (to.meta?.standalone && to.meta?.public) {
+    return true
+  }
+
   const status = await authState.refreshAuthStatus()
   if (!status.enabled) {
     if (to.name === 'Login' || to.name === 'Register') {

@@ -1,6 +1,6 @@
 <template>
-  <div class="gov-shell">
-    <header v-if="!isAuthPage" class="gov-header">
+  <div :class="isStandalonePage ? 'min-h-screen' : 'gov-shell'">
+    <header v-if="showAppHeader" class="gov-header">
       <div class="mx-auto flex max-w-[1600px] items-center justify-between px-6 py-3">
         <div class="flex items-center space-x-3">
           <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-[var(--gov-primary)] to-indigo-600 shadow-sm">
@@ -110,6 +110,8 @@ const router = useRouter()
 const authState = useAuthState()
 
 const isAuthPage = computed(() => route.name === 'Login' || route.name === 'Register')
+const isStandalonePage = computed(() => route.meta?.standalone === true)
+const showAppHeader = computed(() => !isStandalonePage.value && !isAuthPage.value)
 
 const showMainNav = computed(() => {
   if (!authState.isAuthEnabled.value) return true
@@ -160,6 +162,8 @@ async function handleLogout() {
 }
 
 onMounted(() => {
-  authState.refreshAuthStatus()
+  if (!isStandalonePage.value) {
+    authState.refreshAuthStatus()
+  }
 })
 </script>
