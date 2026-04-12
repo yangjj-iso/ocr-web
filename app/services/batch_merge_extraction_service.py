@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import re
 from collections import defaultdict
@@ -9,6 +10,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,7 +62,12 @@ from app.utils.image_sequence_pdf import _compute_layout_signature
 from config import (
     BOUNDARY_GROUP_PDF_OUTPUT_DIRNAME,
     BOUNDARY_SIMILARITY_THRESHOLD,
+    CONTROL_PLANE_BASE_URL,
+    CONTROL_PLANE_INTERNAL_TOKEN,
+    CONTROL_PLANE_VERIFY_TLS,
+    LOCAL_PATH_ROOTS,
     MINIMAX_BATCH_CONCURRENCY,
+    WORKER_TEMP_DIR,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +149,90 @@ class _UnionFind:
 
 def _coerce_text(value: Any) -> str:
     return shared_coerce_text(value)
+
+
+def _candidate_local_paths(root: Path, key: str, bucket: str) -> list[Path]:
+    normalized_key = key.replace("\\", "/").lstrip("/")
+    if not normalized_key:
+        return []
+
+    candidates = [root / normalized_key]
+    first_segment = normalized_key.split("/", 1)[0]
+    if first_segment and root.name.lower() == first_segment.lower() and root.parent != root:
+        candidates.append(root.parent / normalized_key)
+    if bucket:
+        candidates.append(root / bucket / normalized_key)
+        if root.name.lower() == bucket.lower() and root.parent != root:
+            candidates.append(root.parent / bucket / normalized_key)
+    return candidates
+
+
+def _safe_cache_suffix(filename: str) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+        return suffix
+    return ".bin"
+
+
+def _download_task_source_file(task: OCRTask) -> Path | None:
+    task_id = getattr(task, "id", None)
+    object_key = _coerce_text(getattr(task, "storage_object_key", ""))
+    storage_provider = _coerce_text(getattr(task, "storage_provider", "")).lower()
+    if not task_id or storage_provider not in {"s3", "minio", "oss"} or not object_key:
+        return None
+
+    cache_key = hashlib.sha256(f"{task_id}:{object_key}".encode("utf-8")).hexdigest()[:24]
+    target_dir = WORKER_TEMP_DIR / "boundary-source-files"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / f"task-{task_id}-{cache_key}{_safe_cache_suffix(_coerce_text(task.filename))}"
+    if target_path.exists() and target_path.stat().st_size > 0:
+        return target_path
+
+    url = f"{CONTROL_PLANE_BASE_URL}/internal/api/v1/ocr/tasks/{task_id}/source-file"
+    headers: dict[str, str] = {}
+    if CONTROL_PLANE_INTERNAL_TOKEN:
+        headers["Authorization"] = f"Bearer {CONTROL_PLANE_INTERNAL_TOKEN}"
+    try:
+        with httpx.Client(timeout=60, verify=CONTROL_PLANE_VERIFY_TLS) as client:
+            response = client.get(url, headers=headers)
+            response.raise_for_status()
+        target_path.write_bytes(response.content)
+        return target_path
+    except Exception:
+        logger.warning("Failed to download source file for task=%s from control plane.", task_id, exc_info=True)
+        target_path.unlink(missing_ok=True)
+        return None
+
+
+def _resolve_task_file_path(task: OCRTask) -> Path:
+    raw_path = _coerce_text(task.file_path)
+    if raw_path:
+        direct_path = Path(raw_path)
+        if direct_path.exists():
+            return direct_path
+
+    bucket = _coerce_text(getattr(task, "storage_bucket", ""))
+    keys = [
+        _coerce_text(getattr(task, "storage_object_key", "")),
+        raw_path,
+        _coerce_text(task.filename),
+    ]
+    seen: set[str] = set()
+    for key in keys:
+        normalized_key = key.replace("\\", "/").lstrip("/")
+        if not normalized_key or normalized_key in seen:
+            continue
+        seen.add(normalized_key)
+        for root in LOCAL_PATH_ROOTS:
+            for candidate in _candidate_local_paths(root, normalized_key, bucket):
+                if candidate.exists():
+                    return candidate
+
+    downloaded_path = _download_task_source_file(task)
+    if downloaded_path is not None:
+        return downloaded_path
+
+    return Path(raw_path or _coerce_text(task.filename))
 
 
 def _normalize_text(value: Any) -> str:
@@ -393,7 +484,7 @@ def _apply_boundary_pdf_exports(
                 pages = []
                 break
 
-            image_path = Path(_coerce_text(task.file_path))
+            image_path = _resolve_task_file_path(task)
             if not image_path.exists():
                 warnings.append(f"{group['suggested_pdf_filename']}: 找不到源图片 {image_path}，未导出 PDF。")
                 pages = []
@@ -811,7 +902,7 @@ def _build_visual_group_hints(candidates: list[TaskCandidate]) -> tuple[dict[int
     for candidate in candidates:
         if not candidate.visual_prefix or candidate.visual_page_no is None:
             continue
-        if not Path(candidate.task.file_path).exists():
+        if not _resolve_task_file_path(candidate.task).exists():
             continue
         sequence_candidates[candidate.visual_prefix].append(candidate)
 
@@ -823,7 +914,7 @@ def _build_visual_group_hints(candidates: list[TaskCandidate]) -> tuple[dict[int
 
         for candidate in ordered_members:
             try:
-                image_path = Path(candidate.task.file_path)
+                image_path = _resolve_task_file_path(candidate.task)
                 layout_hash, row_profile, col_profile, ink_ratio = _compute_layout_signature(image_path)
                 fingerprint = PageFingerprint(
                     path=image_path,

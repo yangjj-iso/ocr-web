@@ -7,9 +7,9 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://154.219.109.125:${POSTGRES_PORT:5432}/ocr_db}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5432}/ocr_db}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:StrongPass_123!}
+    password: ${SPRING_DATASOURCE_PASSWORD:123456}
   jpa:
     hibernate:
       ddl-auto: update
@@ -48,8 +48,8 @@ ocr:
     session-ttl: ${AUTH_SESSION_TTL:28800}
   dev-dashboard:
     enabled: ${DEV_DASHBOARD_ENABLED:true}
-    username: ${DEV_DASHBOARD_USERNAME:}
-    password: ${DEV_DASHBOARD_PASSWORD:}
+    username: ${DEV_DASHBOARD_USERNAME:devadmin}
+    password: ${DEV_DASHBOARD_PASSWORD:change-me-dev-dashboard}
     cookie-name: ${DEV_DASHBOARD_COOKIE_NAME:ocr_dev_dashboard_session}
     session-ttl: ${DEV_DASHBOARD_SESSION_TTL:28800}
     celery-queue: ${CELERY_TASK_QUEUE:ocr.compute.internal.queue}
@@ -58,10 +58,10 @@ ocr:
     backend: ${OCR_STORAGE_BACKEND:s3}
     upload-dir: ${OCR_STORAGE_UPLOAD_DIR:./uploads-java}
     bucket: ${OCR_STORAGE_BUCKET:ocr-source}
-    endpoint: ${OCR_STORAGE_ENDPOINT:http://154.219.109.125:9000}
+    endpoint: ${OCR_STORAGE_ENDPOINT:http://127.0.0.1:9000}
     region: ${OCR_STORAGE_REGION:us-east-1}
-    access-key: ${OCR_STORAGE_ACCESS_KEY:minioadmin}
-    secret-key: ${OCR_STORAGE_SECRET_KEY:change_me_minio}
+    access-key: ${OCR_STORAGE_ACCESS_KEY:admin}
+    secret-key: ${OCR_STORAGE_SECRET_KEY:admin123456}
     key-prefix: ${OCR_STORAGE_KEY_PREFIX:uploads}
     path-style: ${OCR_STORAGE_PATH_STYLE:true}
   local-path:

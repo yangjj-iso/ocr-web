@@ -25,23 +25,31 @@
       </form>
     </div>
 
-    <div v-else class="mx-auto max-w-[1480px]">
-      <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p class="text-xs font-semibold text-[var(--gov-primary)]">DEV DASHBOARD</p>
-          <h1 class="mt-1 text-2xl font-bold text-[var(--gov-text)]">工作流与队列监控</h1>
-          <p class="mt-1 text-sm text-[var(--gov-text-muted)]">Java 控制面汇总任务状态、RabbitMQ 队列和 Python 计算侧指标。</p>
+    <div v-else class="mx-auto max-w-[1540px]">
+      <section class="mb-4 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div class="bg-[linear-gradient(135deg,#f8fafc_0%,#eef6f2_48%,#fff7ed_100%)] px-5 py-5 sm:px-6">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="max-w-3xl">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Dev Console</p>
+              <h1 class="mt-2 text-3xl font-bold text-slate-900">运行环境与任务控制台</h1>
+              <p class="mt-2 text-sm leading-6 text-slate-600">在同一个面板里查看队列、任务、工作流时长，并实时调整当前运行环境。</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="rounded-lg border border-slate-200 bg-white/90 px-3 py-2 text-xs text-slate-500">
+                <div>指标刷新 {{ formatTime(metrics?.generated_at) }}</div>
+                <div class="mt-1">环境文件 {{ environment?.env_file_path || '.env' }}</div>
+              </div>
+              <button class="gov-btn-secondary" :disabled="dashboardRefreshing" @click="refreshDashboard">
+                {{ dashboardRefreshing ? '刷新中...' : '全部刷新' }}
+              </button>
+              <button class="gov-btn-secondary" @click="handleLogout">退出</button>
+            </div>
+          </div>
         </div>
-        <div class="flex gap-2">
-          <button class="gov-btn-secondary" :disabled="metricsLoading" @click="loadMetrics">
-            {{ metricsLoading ? '刷新中...' : '刷新' }}
-          </button>
-          <button class="gov-btn-secondary" @click="handleLogout">退出</button>
-        </div>
-      </div>
+      </section>
 
-      <div v-if="metricsError" class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-        {{ metricsError }}
+      <div v-if="dashboardError" class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        {{ dashboardError }}
       </div>
 
       <div class="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -142,6 +150,187 @@
           </div>
         </section>
       </div>
+
+      <div class="mt-4 grid gap-4 xl:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.18fr)]">
+        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div class="border-b border-slate-200 px-4 py-3">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 class="text-sm font-semibold text-slate-900">最近更新任务</h2>
+                <p class="mt-1 text-xs text-slate-500">可直接查看任务详情与工作流事件。</p>
+              </div>
+              <div class="flex gap-2">
+                <input
+                  v-model="taskLookupId"
+                  type="number"
+                  min="1"
+                  class="gov-input w-32"
+                  placeholder="任务 ID"
+                  @keydown.enter.prevent="openTaskFromLookup"
+                />
+                <button class="gov-btn-secondary" :disabled="taskLoading || !taskLookupId" @click="openTaskFromLookup">
+                  查看
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="metrics?.recent_tasks?.length" class="max-h-[620px] divide-y divide-slate-200 overflow-y-auto">
+            <button
+              v-for="task in metrics.recent_tasks"
+              :key="task.id"
+              type="button"
+              class="block w-full px-4 py-3 text-left transition hover:bg-slate-50"
+              :class="selectedTask?.task?.id === task.id ? 'bg-emerald-50/60' : ''"
+              @click="openTask(task.id, task)"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="truncate text-sm font-semibold text-slate-900">{{ task.filename || `Task #${task.id}` }}</p>
+                  <p class="mt-1 font-mono text-[11px] text-slate-500">#{{ task.id }} · {{ task.mode || '-' }} · {{ task.batch_id || '-' }}</p>
+                </div>
+                <span :class="statusBadgeClass(task.status)" class="rounded-md px-2 py-1 text-[11px] font-semibold">
+                  {{ statusLabel(task.status) }}
+                </span>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-3 text-xs text-slate-500">
+                <span>{{ formatTime(task.updated_at || task.created_at) }}</span>
+                <span>{{ formatAge(task.age_seconds) }}</span>
+                <span v-if="task.error_message" class="text-rose-600">存在错误信息</span>
+              </div>
+            </button>
+          </div>
+          <div v-else class="px-4 py-10 text-center text-sm text-slate-500">暂无最近更新任务</div>
+        </section>
+
+        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div class="border-b border-slate-200 px-4 py-3">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 class="text-sm font-semibold text-slate-900">任务详情</h2>
+                <p class="mt-1 text-xs text-slate-500">任务元数据、结果预览与工作流事件时间线。</p>
+              </div>
+              <span v-if="selectedTask?.task" :class="statusBadgeClass(selectedTask.task.status)" class="rounded-md px-2 py-1 text-xs font-semibold">
+                {{ statusLabel(selectedTask.task.status) }}
+              </span>
+            </div>
+          </div>
+
+          <div v-if="taskError" class="m-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {{ taskError }}
+          </div>
+
+          <div v-if="taskLoading" class="px-4 py-16 text-center text-sm text-slate-500">任务详情加载中...</div>
+
+          <div v-else-if="selectedTask?.task" class="max-h-[720px] overflow-y-auto px-4 py-4">
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div v-for="item in taskMetaItems" :key="item.label" class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                <p class="text-xs uppercase tracking-[0.14em] text-slate-500">{{ item.label }}</p>
+                <p class="mt-2 break-all text-sm font-medium text-slate-900">{{ item.value }}</p>
+              </div>
+            </div>
+
+            <div v-if="selectedTask.task.error_message" class="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {{ selectedTask.task.error_message }}
+            </div>
+
+            <section class="mt-4 rounded-lg border border-slate-200">
+              <div class="border-b border-slate-200 px-4 py-3">
+                <h3 class="text-sm font-semibold text-slate-900">全文预览</h3>
+              </div>
+              <div class="max-h-[220px] overflow-y-auto px-4 py-3 text-sm leading-6 text-slate-700">
+                <pre class="whitespace-pre-wrap break-words font-sans">{{ selectedTask.task.full_text || '暂无全文结果' }}</pre>
+              </div>
+            </section>
+
+            <section class="mt-4 rounded-lg border border-slate-200">
+              <div class="border-b border-slate-200 px-4 py-3">
+                <h3 class="text-sm font-semibold text-slate-900">工作流事件</h3>
+              </div>
+              <div v-if="selectedTask.workflow_events?.events?.length" class="divide-y divide-slate-200">
+                <div v-for="event in selectedTask.workflow_events.events" :key="`${event.event_id}-${event.created_at}`" class="px-4 py-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <p class="text-sm font-semibold text-slate-900">{{ event.event_type }}</p>
+                    <span class="font-mono text-[11px] text-slate-500">{{ formatTime(event.created_at || event.occurred_at) }}</span>
+                  </div>
+                  <p class="mt-1 break-all font-mono text-[11px] text-slate-500">{{ event.event_id }}</p>
+                  <pre class="mt-3 overflow-x-auto rounded-lg bg-slate-950/95 p-3 text-[11px] leading-5 text-slate-100">{{ stringifyJson(event.payload) }}</pre>
+                </div>
+              </div>
+              <div v-else class="px-4 py-8 text-center text-sm text-slate-500">暂无工作流事件</div>
+            </section>
+
+            <details class="mt-4 rounded-lg border border-slate-200" open>
+              <summary class="cursor-pointer list-none border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-900">结果 JSON</summary>
+              <pre class="max-h-[260px] overflow-auto px-4 py-3 text-[11px] leading-5 text-slate-700">{{ stringifyJson(selectedTask.task.result_json) }}</pre>
+            </details>
+          </div>
+
+          <div v-else class="px-4 py-16 text-center text-sm text-slate-500">从左侧选择任务，或输入任务 ID 查看详情。</div>
+        </section>
+      </div>
+
+      <section class="mt-4 rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-900">运行环境</h2>
+            <p class="mt-1 text-xs text-slate-500">修改后写回 .env，并对新请求立即生效。</p>
+          </div>
+          <div class="flex gap-2">
+            <button class="gov-btn-secondary" :disabled="environmentLoading" @click="loadEnvironment">
+              {{ environmentLoading ? '读取中...' : '重读环境' }}
+            </button>
+            <button class="gov-btn" :disabled="environmentSaving || !environmentDirty" @click="saveEnvironment">
+              {{ environmentSaving ? '保存中...' : '保存并应用' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="environmentError" class="mx-4 mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {{ environmentError }}
+        </div>
+        <div v-if="environmentSuccess" class="mx-4 mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          {{ environmentSuccess }}
+        </div>
+
+        <div class="grid gap-4 p-4 xl:grid-cols-2">
+          <section v-for="group in environment?.groups || []" :key="group.key" class="rounded-lg border border-slate-200 bg-slate-50">
+            <div class="border-b border-slate-200 px-4 py-3">
+              <h3 class="text-sm font-semibold text-slate-900">{{ group.label }}</h3>
+              <p class="mt-1 text-xs text-slate-500">{{ group.description }}</p>
+            </div>
+            <div class="grid gap-3 p-4">
+              <article v-for="field in group.fields" :key="field.key" class="rounded-lg border border-slate-200 bg-white px-3 py-3">
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold text-slate-900">{{ field.label }}</p>
+                    <p class="mt-1 text-xs leading-5 text-slate-500">{{ field.description }}</p>
+                  </div>
+                  <span v-if="field.runtime_applied" class="rounded-md bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">即时生效</span>
+                </div>
+
+                <div class="mt-3">
+                  <label v-if="field.type === 'boolean'" class="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2">
+                    <span class="text-sm text-slate-700">{{ environmentDraft[field.key] ? '已开启' : '已关闭' }}</span>
+                    <input v-model="environmentDraft[field.key]" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                  </label>
+                  <input
+                    v-else
+                    v-model="environmentDraft[field.key]"
+                    :type="fieldInputType(field)"
+                    class="gov-input w-full bg-white"
+                    :placeholder="field.placeholder || field.description"
+                  />
+                </div>
+
+                <p class="mt-2 text-[11px] text-slate-500">
+                  {{ field.sensitive ? (field.configured ? '当前已有值，留空不会覆盖。' : '当前未配置。') : `当前值：${displayEnvironmentFieldValue(field)}` }}
+                </p>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -149,10 +338,13 @@
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
 import {
+  getDevDashboardEnvironment,
   getDevDashboardMetrics,
   getDevDashboardSession,
+  getDevDashboardTask,
   loginDevDashboard,
   logoutDevDashboard,
+  updateDevDashboardEnvironment,
 } from '@/api/devDashboard.js'
 
 const configured = ref(false)
@@ -160,11 +352,22 @@ const authenticated = ref(false)
 const sessionChecked = ref(false)
 const loginLoading = ref(false)
 const loginError = ref('')
+const dashboardRefreshing = ref(false)
 const metricsLoading = ref(false)
-const metricsError = ref('')
+const dashboardError = ref('')
+const environmentLoading = ref(false)
+const environmentSaving = ref(false)
+const environmentError = ref('')
+const environmentSuccess = ref('')
+const taskLoading = ref(false)
+const taskError = ref('')
 const metrics = ref(null)
+const environment = ref(null)
+const selectedTask = ref(null)
+const taskLookupId = ref('')
 
 const loginForm = reactive({ username: '', password: '' })
+const environmentDraft = reactive({})
 
 const queueBacklog = computed(() => (metrics.value?.queues || []).reduce((sum, queue) => sum + Number(queue.message_count || 0), 0))
 const pythonMetrics = computed(() => metrics.value?.python_metrics || { available: false, detail: '' })
@@ -182,12 +385,36 @@ const kpis = computed(() => [
   { label: '失败任务', value: metrics.value?.tasks?.failed || 0, sub: `${metrics.value?.tasks?.done || 0} 已完成` },
 ])
 
+const environmentDirty = computed(() => {
+  const groups = environment.value?.groups || []
+  return groups.some((group) => group.fields.some((field) => hasFieldChanged(field)))
+})
+
+const taskMetaItems = computed(() => {
+  const task = selectedTask.value?.task
+  if (!task) return []
+  return [
+    { label: '任务 ID', value: task.id ?? '-' },
+    { label: '文件名', value: task.filename || '-' },
+    { label: '文件路径', value: task.file_path || '-' },
+    { label: '批次号', value: task.batch_id || '-' },
+    { label: '模式', value: task.mode || '-' },
+    { label: 'Trace ID', value: task.trace_id || '-' },
+    { label: '页数', value: task.page_count ?? 0 },
+    { label: '进度', value: `${Math.round(Number(task.progress_percent || 0))}%` },
+    { label: '工作流线程', value: task.workflow_thread_id || '-' },
+    { label: '复核状态', value: task.review_status || '-' },
+    { label: '创建时间', value: formatTime(task.created_at) },
+    { label: '更新时间', value: formatTime(task.updated_at) },
+  ]
+})
+
 async function refreshSession() {
   try {
     const { data } = await getDevDashboardSession()
     configured.value = !!data.configured
     authenticated.value = !!data.authenticated
-    if (authenticated.value) await loadMetrics()
+    if (authenticated.value) await refreshDashboard()
   } finally {
     sessionChecked.value = true
   }
@@ -200,7 +427,7 @@ async function submitLogin() {
     await loginDevDashboard(loginForm.username, loginForm.password)
     authenticated.value = true
     loginForm.password = ''
-    await loadMetrics()
+    await refreshDashboard()
   } catch (error) {
     loginError.value = error?.response?.data?.detail || '登录失败'
   } finally {
@@ -212,20 +439,160 @@ async function handleLogout() {
   await logoutDevDashboard().catch(() => null)
   authenticated.value = false
   metrics.value = null
+  environment.value = null
+  selectedTask.value = null
+  taskLookupId.value = ''
+}
+
+async function refreshDashboard() {
+  dashboardRefreshing.value = true
+  dashboardError.value = ''
+  environmentError.value = ''
+  environmentSuccess.value = ''
+  try {
+    await Promise.all([loadMetrics(), loadEnvironment()])
+  } catch (error) {
+    dashboardError.value = error?.response?.data?.detail || '控制台数据加载失败'
+  } finally {
+    dashboardRefreshing.value = false
+  }
 }
 
 async function loadMetrics() {
   metricsLoading.value = true
-  metricsError.value = ''
   try {
     const { data } = await getDevDashboardMetrics()
     metrics.value = data
   } catch (error) {
-    metricsError.value = error?.response?.data?.detail || '指标加载失败'
     if (error?.response?.status === 401) authenticated.value = false
+    throw error
   } finally {
     metricsLoading.value = false
   }
+}
+
+async function loadEnvironment() {
+  environmentLoading.value = true
+  try {
+    const { data } = await getDevDashboardEnvironment()
+    environment.value = data
+    hydrateEnvironmentDraft(data)
+  } catch (error) {
+    environmentError.value = error?.response?.data?.detail || '运行环境读取失败'
+    if (error?.response?.status === 401) authenticated.value = false
+    throw error
+  } finally {
+    environmentLoading.value = false
+  }
+}
+
+function hydrateEnvironmentDraft(snapshot) {
+  for (const key of Object.keys(environmentDraft)) delete environmentDraft[key]
+  for (const group of snapshot?.groups || []) {
+    for (const field of group.fields || []) {
+      environmentDraft[field.key] = field.type === 'boolean' ? field.value === 'true' : (field.value ?? '')
+    }
+  }
+}
+
+async function saveEnvironment() {
+  environmentSaving.value = true
+  environmentError.value = ''
+  environmentSuccess.value = ''
+  try {
+    const values = collectEnvironmentChanges()
+    if (!values.length) {
+      environmentSuccess.value = '当前没有需要保存的变更。'
+      return
+    }
+    const { data } = await updateDevDashboardEnvironment({ values })
+    environment.value = data
+    hydrateEnvironmentDraft(data)
+    environmentSuccess.value = '运行环境已保存，新请求已开始使用最新配置。'
+    await loadMetrics()
+  } catch (error) {
+    environmentError.value = error?.response?.data?.detail || '运行环境保存失败'
+    if (error?.response?.status === 401) authenticated.value = false
+  } finally {
+    environmentSaving.value = false
+  }
+}
+
+function collectEnvironmentChanges() {
+  const values = []
+  for (const group of environment.value?.groups || []) {
+    for (const field of group.fields || []) {
+      if (!hasFieldChanged(field)) continue
+      values.push({
+        key: field.key,
+        value: serializeFieldValue(field),
+      })
+    }
+  }
+  return values
+}
+
+function hasFieldChanged(field) {
+  const draftValue = environmentDraft[field.key]
+  if (field.type === 'boolean') {
+    return String(Boolean(draftValue)) !== String(field.value === 'true')
+  }
+  if (field.sensitive) {
+    return String(draftValue || '').trim().length > 0
+  }
+  return String(draftValue ?? '') !== String(field.value ?? '')
+}
+
+function serializeFieldValue(field) {
+  if (field.type === 'boolean') {
+    return environmentDraft[field.key] ? 'true' : 'false'
+  }
+  return String(environmentDraft[field.key] ?? '').trim()
+}
+
+async function openTask(taskId) {
+  if (!taskId) return
+  taskLoading.value = true
+  taskError.value = ''
+  taskLookupId.value = String(taskId)
+  try {
+    const { data } = await getDevDashboardTask(taskId)
+    selectedTask.value = data
+  } catch (error) {
+    taskError.value = error?.response?.data?.detail || '任务详情加载失败'
+    if (error?.response?.status === 401) authenticated.value = false
+  } finally {
+    taskLoading.value = false
+  }
+}
+
+async function openTaskFromLookup() {
+  const taskId = Number(taskLookupId.value)
+  if (!taskId) return
+  await openTask(taskId)
+}
+
+function fieldInputType(field) {
+  if (field.sensitive) return 'password'
+  if (field.type === 'number') return 'number'
+  return 'text'
+}
+
+function displayEnvironmentFieldValue(field) {
+  if (field.type === 'boolean') {
+    return field.value === 'true' ? 'true' : 'false'
+  }
+  return field.value || '未配置'
+}
+
+function statusBadgeClass(status) {
+  return {
+    pending: 'bg-amber-50 text-amber-700',
+    processing: 'bg-sky-50 text-sky-700',
+    done: 'bg-emerald-50 text-emerald-700',
+    failed: 'bg-rose-50 text-rose-700',
+    human_review: 'bg-violet-50 text-violet-700',
+  }[status] || 'bg-slate-100 text-slate-700'
 }
 
 function formatDuration(ms) {
@@ -248,6 +615,17 @@ function formatTime(value) {
   if (!value) return '-'
   const date = new Date(value)
   return `${date.toLocaleDateString('zh-CN')} ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+}
+
+function stringifyJson(value) {
+  if (!value || (typeof value === 'object' && Object.keys(value).length === 0)) {
+    return '暂无数据'
+  }
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }
 
 function statusLabel(status) {
