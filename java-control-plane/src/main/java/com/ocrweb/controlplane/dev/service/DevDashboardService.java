@@ -11,6 +11,7 @@ import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.task.domain.TaskCallbackEventEntity;
 import com.ocrweb.controlplane.task.repository.OcrTaskRepository;
 import com.ocrweb.controlplane.task.repository.TaskCallbackEventRepository;
+import com.ocrweb.controlplane.task.service.OcrTaskService;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.stereotype.Service;
@@ -44,9 +45,9 @@ public class DevDashboardService {
     private final DevDashboardProperties devDashboardProperties;
     private final AiServiceProperties aiServiceProperties;
     private final InternalApiProperties internalApiProperties;
+    private final OcrTaskService ocrTaskService;
     private final RabbitAdmin rabbitAdmin;
     private final ObjectMapper objectMapper;
-    private final HttpClient httpClient;
 
     public DevDashboardService(
             OcrTaskRepository taskRepository,
@@ -55,6 +56,7 @@ public class DevDashboardService {
             DevDashboardProperties devDashboardProperties,
             AiServiceProperties aiServiceProperties,
             InternalApiProperties internalApiProperties,
+            OcrTaskService ocrTaskService,
             ConnectionFactory connectionFactory,
             ObjectMapper objectMapper
     ) {
@@ -64,11 +66,9 @@ public class DevDashboardService {
         this.devDashboardProperties = devDashboardProperties;
         this.aiServiceProperties = aiServiceProperties;
         this.internalApiProperties = internalApiProperties;
+        this.ocrTaskService = ocrTaskService;
         this.rabbitAdmin = new RabbitAdmin(connectionFactory);
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(Math.max(1, aiServiceProperties.getConnectTimeoutSeconds())))
-                .build();
     }
 
     public DevDashboardDtos.DashboardSnapshot snapshot() {
@@ -81,7 +81,15 @@ public class DevDashboardService {
                 inspectQueues(),
                 aggregation.queuedTasks(),
                 aggregation.processingTasks(),
+                aggregation.recentTasks(),
                 fetchPythonMetrics()
+        );
+    }
+
+    public DevDashboardDtos.TaskInspector inspectTask(Long taskId) {
+        return new DevDashboardDtos.TaskInspector(
+                ocrTaskService.getTask(taskId),
+                ocrTaskService.getWorkflowEvents(taskId)
         );
     }
 
@@ -93,6 +101,7 @@ public class DevDashboardService {
         List<Long> terminalDurations = new ArrayList<>();
         List<DevDashboardDtos.TaskItem> queuedTasks = new ArrayList<>();
         List<DevDashboardDtos.TaskItem> processingTasks = new ArrayList<>();
+        List<DevDashboardDtos.TaskItem> recentTasks = new ArrayList<>();
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
 
         for (OcrTaskEntity task : tasks) {
@@ -118,10 +127,15 @@ public class DevDashboardService {
                         now
                 )));
             }
+            recentTasks.add(toTaskItem(task, status, secondsSince(
+                    task.getUpdatedAt() == null ? task.getCreatedAt() : task.getUpdatedAt(),
+                    now
+            )));
         }
 
         queuedTasks.sort(Comparator.comparing(DevDashboardDtos.TaskItem::createdAt, Comparator.nullsLast(Comparator.naturalOrder())));
         processingTasks.sort(Comparator.comparing(DevDashboardDtos.TaskItem::updatedAt, Comparator.nullsLast(Comparator.reverseOrder())));
+        recentTasks.sort(Comparator.comparing(DevDashboardDtos.TaskItem::updatedAt, Comparator.nullsLast(Comparator.reverseOrder())));
         List<Long> eventDurations = callbackEventRepository.findAll()
                 .stream()
                 .map(this::eventDurationMs)
@@ -171,7 +185,8 @@ public class DevDashboardService {
                 taskSummary,
                 workflowSummary,
                 queuedTasks.stream().limit(50).toList(),
-                processingTasks.stream().limit(50).toList()
+                processingTasks.stream().limit(50).toList(),
+                recentTasks.stream().limit(24).toList()
         );
     }
 
@@ -213,6 +228,9 @@ public class DevDashboardService {
                     .header("Authorization", "Bearer " + internalApiProperties.getToken())
                     .GET()
                     .build();
+            HttpClient httpClient = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(Math.max(1, aiServiceProperties.getConnectTimeoutSeconds())))
+                    .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 return new DevDashboardDtos.PythonMetrics(
@@ -244,12 +262,16 @@ public class DevDashboardService {
         return new DevDashboardDtos.TaskItem(
                 task.getId(),
                 normalizeValue(task.getFilename(), ""),
+                normalizeValue(task.getFilePath(), ""),
                 normalizeValue(task.getMode(), ""),
                 status,
                 normalizeValue(task.getBatchId(), ""),
                 normalizeValue(task.getTraceId(), ""),
                 task.getProgressPercent() == null ? 0.0 : task.getProgressPercent(),
                 normalizeValue(task.getSubmitterUsername(), ""),
+                task.getPageCount() == null ? 0 : task.getPageCount(),
+                normalizeValue(task.getErrorMessage(), ""),
+                normalizeValue(task.getWorkflowThreadId(), ""),
                 ageSeconds,
                 task.getCreatedAt(),
                 task.getUpdatedAt()
@@ -353,7 +375,8 @@ public class DevDashboardService {
             DevDashboardDtos.TaskSummary taskSummary,
             DevDashboardDtos.WorkflowSummary workflowSummary,
             List<DevDashboardDtos.TaskItem> queuedTasks,
-            List<DevDashboardDtos.TaskItem> processingTasks
+            List<DevDashboardDtos.TaskItem> processingTasks,
+            List<DevDashboardDtos.TaskItem> recentTasks
     ) {
     }
 }
