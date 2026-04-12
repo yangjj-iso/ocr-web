@@ -67,15 +67,59 @@ public class OcrTaskController {
         return taskService.getTask(taskService.submitExistingPath(request.filePath(), mode, batchId, currentUser).getId());
     }
 
+    @PostMapping("/upload-only")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public TaskDtos.TaskDetailResponse uploadOnly(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(name = "relative_path", defaultValue = "") String relativePath,
+            @RequestParam(name = "batch_id", defaultValue = "") String batchId,
+            HttpServletRequest request
+    ) throws IOException {
+        CurrentUser currentUser = authService.requireAdmin(request);
+        return taskService.getTask(taskService.uploadOnly(file, relativePath, batchId, currentUser).getId());
+    }
+
+    @PostMapping("/tasks/assign")
+    public TaskDtos.BatchOperationResponse assignTasks(
+            @Valid @RequestBody TaskDtos.AssignTasksRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        authService.requireAdmin(servletRequest);
+        int affected = taskService.assignTasks(request.taskIds(), request.assigneeUsername());
+        return new TaskDtos.BatchOperationResponse(affected, "已分配 " + affected + " 个任务");
+    }
+
+    @PostMapping("/tasks/submit-batch")
+    public TaskDtos.BatchOperationResponse submitBatch(
+            @Valid @RequestBody TaskDtos.SubmitBatchRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        authService.requireOperatorOrAdmin(servletRequest);
+        int affected = taskService.submitBatchForProcessing(request.taskIds());
+        return new TaskDtos.BatchOperationResponse(affected, "已提交 " + affected + " 个任务进行识别");
+    }
+
     @GetMapping("/tasks")
     public TaskDtos.TaskListResponse listTasks(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(name = "page_size", defaultValue = "20") int pageSize,
             @RequestParam(defaultValue = "") String folder,
             @RequestParam(name = "submission_id", defaultValue = "") String submissionId,
-            @RequestParam(name = "batch_id", defaultValue = "") String batchId
+            @RequestParam(name = "batch_id", defaultValue = "") String batchId,
+            @RequestParam(defaultValue = "") String status
     ) {
-        return taskService.listTasks(page, pageSize, folder, submissionId, batchId);
+        return taskService.listTasks(page, pageSize, folder, submissionId, batchId, status);
+    }
+
+    @GetMapping("/tasks/my-assigned")
+    public TaskDtos.TaskListResponse listMyAssignedTasks(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(name = "page_size", defaultValue = "20") int pageSize,
+            @RequestParam(defaultValue = "") String status,
+            HttpServletRequest request
+    ) {
+        CurrentUser currentUser = authService.requireAuthenticatedUser(request);
+        return taskService.listMyAssignedTasks(currentUser.username(), status, page, pageSize);
     }
 
     @GetMapping("/tasks/folders")

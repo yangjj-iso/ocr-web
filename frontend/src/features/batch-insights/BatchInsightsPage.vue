@@ -612,7 +612,7 @@ import {
 } from '@/composables/useAiCapabilityState.js'
 import { buildMergedDocumentViews, buildSourcePageSummary } from '@/utils/mergeDocumentDisplay.js'
 
-const ARCHIVE_FIELDS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '备注']
+const ARCHIVE_FIELDS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '存放路径', '备注']
 const ALLOWED_BATCH_INSIGHT_TABS = new Set(['overview', 'truth', 'metrics', 'qa'])
 
 const route = useRoute()

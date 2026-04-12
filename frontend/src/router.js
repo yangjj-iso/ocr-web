@@ -6,6 +6,8 @@ import { LoginView, RegisterView, AdminReviewView } from './features/auth/index.
 import { BatchInsightsView } from './features/batch-insights/index.js'
 import { FieldExtractionView, ResultView } from './features/result/index.js'
 import { SearchView, SearcherHomeView } from './features/search/index.js'
+import { StorageAreaView } from './features/storage/index.js'
+import BatchImportPage from './features/admin/BatchImportPage.vue'
 import { HomeView } from './features/workbench/index.js'
 
 const routes = [
@@ -18,9 +20,11 @@ const routes = [
   { path: '/login', name: 'Login', component: LoginView, meta: { public: true } },
   { path: '/register', name: 'Register', component: RegisterView, meta: { public: true } },
   { path: '/dashboard', name: 'Dashboard', component: DashboardView, meta: { requiresAdmin: true } },
+  { path: '/storage', name: 'StorageArea', component: StorageAreaView },
   { path: '/admin', name: 'AdminCenter', component: AdminCenterView, meta: { requiresAdmin: true } },
   { path: '/profile', name: 'Profile', component: ProfilePage },
   { path: '/admin/review', name: 'AdminReview', component: AdminReviewView, meta: { requiresAdmin: true } },
+  { path: '/batch-import', name: 'BatchImport', component: BatchImportPage, meta: { requiresAdmin: true } },
 ]
 
 const router = createRouter({

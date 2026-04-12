@@ -83,6 +83,7 @@ async def ensure_batch_for_folder(*, folder: str, db) -> tuple[str, bool]:
                 full_text or "",
                 result_json,
                 page_count or 0,
+                file_path=file_path or "",
             )
             await archive_service.save_archive_record(db, task_id, batch_id, folder, fields)
         return batch_id, True

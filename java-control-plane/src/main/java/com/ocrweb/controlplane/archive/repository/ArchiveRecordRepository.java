@@ -52,4 +52,21 @@ public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEnti
     long deleteByBatchId(String batchId);
 
     long deleteByTaskId(Long taskId);
+
+    @Query("select distinct r.storagePath from ArchiveRecordEntity r where r.storagePath is not null and r.storagePath <> ''")
+    List<String> findDistinctStoragePaths();
+
+    @Query("""
+            select r from ArchiveRecordEntity r
+            where r.storagePath = :storagePath
+            order by r.createdAt asc
+            """)
+    List<ArchiveRecordEntity> findByStoragePath(@Param("storagePath") String storagePath);
+
+    @Query("""
+            select r from ArchiveRecordEntity r
+            where r.storagePath like concat(:prefix, '%')
+            order by r.storagePath asc, r.createdAt asc
+            """)
+    List<ArchiveRecordEntity> findByStoragePathStartingWith(@Param("prefix") String prefix);
 }
