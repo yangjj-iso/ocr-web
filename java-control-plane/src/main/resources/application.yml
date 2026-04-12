@@ -7,9 +7,9 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5432}/ocr_db}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://154.219.109.125:${POSTGRES_PORT:5432}/ocr_db}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:123456}
+    password: ${SPRING_DATASOURCE_PASSWORD:StrongPass_123!}
   jpa:
     hibernate:
       ddl-auto: update
@@ -49,10 +49,10 @@ ocr:
     backend: ${OCR_STORAGE_BACKEND:s3}
     upload-dir: ${OCR_STORAGE_UPLOAD_DIR:./uploads-java}
     bucket: ${OCR_STORAGE_BUCKET:ocr-source}
-    endpoint: ${OCR_STORAGE_ENDPOINT:http://127.0.0.1:9000}
+    endpoint: ${OCR_STORAGE_ENDPOINT:http://154.219.109.125:9000}
     region: ${OCR_STORAGE_REGION:us-east-1}
-    access-key: ${OCR_STORAGE_ACCESS_KEY:admin}
-    secret-key: ${OCR_STORAGE_SECRET_KEY:admin123456}
+    access-key: ${OCR_STORAGE_ACCESS_KEY:minioadmin}
+    secret-key: ${OCR_STORAGE_SECRET_KEY:change_me_minio}
     key-prefix: ${OCR_STORAGE_KEY_PREFIX:uploads}
     path-style: ${OCR_STORAGE_PATH_STYLE:true}
   local-path:
