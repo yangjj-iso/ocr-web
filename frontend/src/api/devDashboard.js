@@ -14,3 +14,11 @@ export const loginDevDashboard = (username, password) =>
 export const logoutDevDashboard = () => devDashboardApi.post('/logout')
 
 export const getDevDashboardMetrics = () => devDashboardApi.get('/metrics')
+
+export const getDevDashboardEnvironment = () => devDashboardApi.get('/environment')
+
+export const updateDevDashboardEnvironment = (payload) =>
+  devDashboardApi.put('/environment', payload)
+
+export const getDevDashboardTask = (taskId) =>
+  devDashboardApi.get(`/tasks/${taskId}`)
