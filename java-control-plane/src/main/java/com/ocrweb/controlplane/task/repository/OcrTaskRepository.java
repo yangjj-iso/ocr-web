@@ -29,6 +29,29 @@ public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
     @Query("""
             select t
             from OcrTaskEntity t
+            where (:folder = '' or t.filePath like concat(:folder, '%'))
+              and (:batchId = '' or t.batchId = :batchId)
+              and lower(t.status) = lower(:status)
+            order by t.createdAt desc
+            """)
+    Page<OcrTaskEntity> findByFolderAndBatchIdAndStatus(
+            @Param("folder") String folder,
+            @Param("batchId") String batchId,
+            @Param("status") String status,
+            Pageable pageable
+    );
+
+    Page<OcrTaskEntity> findByAssigneeUsernameAndStatus(
+            String assigneeUsername,
+            String status,
+            Pageable pageable
+    );
+
+    List<OcrTaskEntity> findByAssigneeUsername(String assigneeUsername);
+
+    @Query("""
+            select t
+            from OcrTaskEntity t
             where lower(t.filename) like lower(concat('%', :keyword, '%'))
                or lower(coalesce(t.fullText, '')) like lower(concat('%', :keyword, '%'))
             order by t.createdAt desc
@@ -58,6 +81,12 @@ public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
             OffsetDateTime start,
             OffsetDateTime end
     );
+
+    @Query("select t.id, t.filename from OcrTaskEntity t")
+    List<Object[]> findAllIdAndFilename();
+
+    @Query("select t.id, t.filename, t.status, t.fileType from OcrTaskEntity t where t.id in :ids")
+    List<Object[]> findLightweightByIds(@Param("ids") List<Long> ids);
 
     long deleteByBatchId(String batchId);
 

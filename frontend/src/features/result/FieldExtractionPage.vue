@@ -183,6 +183,7 @@ const FIELD_LABELS = [
   { key: '日期', icon: '日' },
   { key: '页数', icon: '页' },
   { key: '密级', icon: '密' },
+  { key: '存放路径', icon: '路' },
   { key: '备注', icon: '注' },
 ]
 
@@ -195,6 +196,7 @@ function fieldIconClass(key) {
     '日期': 'bg-orange-100 text-orange-600',
     '页数': 'bg-slate-100 text-slate-500',
     '密级': 'bg-red-100 text-red-600',
+    '存放路径': 'bg-emerald-100 text-emerald-600',
     '备注': 'bg-gray-100 text-gray-500',
   }
   return map[key] || 'bg-slate-100 text-slate-500'

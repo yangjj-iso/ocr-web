@@ -37,6 +37,7 @@ async def save_archive_record(
     record.date = fields.get("日期", "") or ""
     record.pages = fields.get("页数", "") or ""
     record.classification = fields.get("密级", "") or ""
+    record.storage_path = fields.get("存放路径", "") or ""
     record.remarks = fields.get("备注", "") or ""
 
     await db.commit()
@@ -80,6 +81,7 @@ def records_to_excel(records: list[ArchiveRecord], output_path: str) -> str:
                 "日期": record.date or "",
                 "页数": record.pages or "",
                 "密级": record.classification or "",
+                "存放路径": record.storage_path or "",
                 "备注": record.remarks or "",
             },
         )
@@ -158,6 +160,7 @@ async def import_from_excel(db: AsyncSession, file_path: str, batch_id: str = ""
                 date=row.get("日期", ""),
                 pages=row.get("页数", ""),
                 classification=row.get("密级", ""),
+                storage_path=row.get("存放路径", ""),
                 remarks=row.get("备注", ""),
             )
         )

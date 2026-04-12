@@ -410,8 +410,8 @@ onMounted(async () => {
   ])
 
   const users = usersRes.data?.items || []
-  stats.value.totalUsers = users.length
-  stats.value.admins = users.filter((user) => user.role === 'admin').length
+  stats.value.totalUsers = users.length + 1
+  stats.value.admins = users.filter((user) => user.role === 'admin').length + 1
   stats.value.operators = users.filter((user) => user.role === 'operator').length
   stats.value.searchers = users.filter((user) => user.role === 'searcher').length
   stats.value.pendingUsers = (pendingRes.data?.items || []).length
@@ -425,12 +425,12 @@ onMounted(async () => {
 
   const taskStats = taskStatsRes.data
   if (taskStats) {
-    stats.value.totalTasks = taskStats.totalTasks || 0
-    stats.value.doneTasks = taskStats.doneTasks || 0
-    stats.value.processingTasks = taskStats.processingTasks || 0
-    stats.value.pendingTasks = taskStats.pendingTasks || 0
-    stats.value.failedTasks = taskStats.failedTasks || 0
-    cachedDailyCounts.value = taskStats.dailyCounts || []
+    stats.value.totalTasks = taskStats.total_tasks || 0
+    stats.value.doneTasks = taskStats.done_tasks || 0
+    stats.value.processingTasks = taskStats.processing_tasks || 0
+    stats.value.pendingTasks = taskStats.pending_tasks || 0
+    stats.value.failedTasks = taskStats.failed_tasks || 0
+    cachedDailyCounts.value = taskStats.daily_counts || []
   }
 
   roleChartData.value = {
@@ -463,9 +463,9 @@ watch(trendPeriod, async (period) => {
   const days = period === '30天' ? 30 : 7
   try {
     const { data } = await getDashboardStats(days)
-    if (data?.dailyCounts) {
-      cachedDailyCounts.value = data.dailyCounts
-      trendChartData.value = buildTrendChart(data.dailyCounts)
+    if (data?.daily_counts) {
+      cachedDailyCounts.value = data.daily_counts
+      trendChartData.value = buildTrendChart(data.daily_counts)
     }
   } catch {
     // Keep the previous chart if refresh fails.

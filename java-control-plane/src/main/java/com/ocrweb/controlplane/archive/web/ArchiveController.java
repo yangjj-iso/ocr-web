@@ -13,6 +13,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -88,6 +89,28 @@ public class ArchiveController {
     ) {
         authService.requireOperatorOrAdmin(request);
         return Map.of("deleted", archiveRecordService.deleteRecords(folder, firstText(batchId, legacyBatchId)));
+    }
+
+    @GetMapping("/storage-tree")
+    public ArchiveDtos.StorageTreeResponse getStorageTree(HttpServletRequest request) {
+        authService.requireOperatorOrAdmin(request);
+        return archiveRecordService.getStorageTree();
+    }
+
+    @GetMapping("/storage-tree/records")
+    public ArchiveDtos.StoragePathRecordsResponse getStorageTreeRecords(@RequestParam String path, HttpServletRequest request) {
+        authService.requireOperatorOrAdmin(request);
+        return archiveRecordService.getRecordsByStoragePath(path);
+    }
+
+    @PutMapping("/archive-records/batch-update")
+    public ArchiveDtos.BatchUpdateResponse batchUpdateArchiveRecords(
+            @RequestBody ArchiveDtos.BatchUpdateRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        authService.requireOperatorOrAdmin(servletRequest);
+        int updated = archiveRecordService.batchUpdateRecords(request);
+        return new ArchiveDtos.BatchUpdateResponse(updated);
     }
 
     @PostMapping("/folders/ensure-batch")

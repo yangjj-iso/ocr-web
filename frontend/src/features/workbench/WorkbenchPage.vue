@@ -114,6 +114,19 @@
               <p class="mt-0.5 truncate text-xs gov-muted">管理员分配的待处理批次</p>
             </div>
           </button>
+
+          <router-link
+            to="/storage"
+            class="group flex w-full items-center gap-3 rounded-lg px-3 py-4 text-left transition-all hover:bg-slate-50"
+          >
+            <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-slate-200 transition-colors">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+            </div>
+            <div class="min-w-0 flex-1">
+              <span class="text-sm font-semibold text-[var(--gov-text)]">存放区</span>
+              <p class="mt-0.5 truncate text-xs gov-muted">目录树浏览归档存放路径</p>
+            </div>
+          </router-link>
         </div>
       </nav>
 
