@@ -34,6 +34,7 @@ public final class TaskDtos {
             String snippet,
             String errorMessage,
             Double progressPercent,
+            String assigneeUsername,
             OffsetDateTime createdAt,
             OffsetDateTime updatedAt
     ) {
@@ -231,6 +232,20 @@ public final class TaskDtos {
     }
 
     public record HumanReviewResumeRequest(JsonNode resumePayload) {
+    }
+
+    public record AssignTasksRequest(
+            @JsonProperty("task_ids") @NotEmpty List<Long> taskIds,
+            @JsonProperty("assignee_username") @NotBlank String assigneeUsername
+    ) {
+    }
+
+    public record SubmitBatchRequest(
+            @JsonProperty("task_ids") @NotEmpty List<Long> taskIds
+    ) {
+    }
+
+    public record BatchOperationResponse(int affected, String message) {
     }
 
     public record TaskUpdateRequest(

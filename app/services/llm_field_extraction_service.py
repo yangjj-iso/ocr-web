@@ -423,6 +423,13 @@ def merge_rule_and_llm_fields(
             "evidence": _coerce_string((llm_fields.get("evidence") or {}).get(field)),
         }
 
+    # Pass through auto-generated fields from rule engine that LLM does not extract
+    for key in ("存放路径",):
+        if key not in recommended or not recommended[key]:
+            rule_val = _coerce_string(rule_fields.get(key))
+            if rule_val:
+                recommended[key] = rule_val
+
     return recommended, conflicts
 
 

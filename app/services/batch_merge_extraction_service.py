@@ -1243,6 +1243,45 @@ async def export_batch_merge_extract_excel(
     return resolved_path
 
 
+async def _writeback_recommended_fields(
+    db: AsyncSession,
+    batch_id: str,
+    groups: list[dict[str, Any]],
+    documents: list[dict[str, Any]],
+) -> None:
+    """Write recommended_fields from merge results back to all archive_records in each group."""
+    group_id_to_task_ids = {g["group_id"]: g.get("task_ids", []) for g in groups}
+    for doc in documents:
+        rec_fields = doc.get("recommended_fields")
+        if not rec_fields:
+            continue
+        task_ids = group_id_to_task_ids.get(doc.get("group_id", ""), [])
+        if not task_ids:
+            continue
+        try:
+            rows = (
+                await db.execute(
+                    select(ArchiveRecord).where(ArchiveRecord.task_id.in_(task_ids))
+                )
+            ).scalars().all()
+            for record in rows:
+                record.doc_no = rec_fields.get("文号", "") or ""
+                record.responsible = rec_fields.get("责任者", "") or ""
+                record.title = rec_fields.get("题名", "") or ""
+                record.date = rec_fields.get("日期", "") or ""
+                record.pages = rec_fields.get("页数", "") or ""
+                record.classification = rec_fields.get("密级", "") or ""
+                record.remarks = rec_fields.get("备注", "") or ""
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to write back recommended_fields for group %s in batch %s.",
+                doc.get("group_id"),
+                batch_id,
+                exc_info=True,
+            )
+
+
 async def batch_merge_extract_fields(
     db: AsyncSession,
     *,
@@ -1563,6 +1602,9 @@ async def batch_merge_extract_fields(
                 }
             )
 
+    # Write back recommended_fields to archive_records so storage area shows merged values
+    await _writeback_recommended_fields(db, batch_id, groups_payload, documents_payload)
+
     result = {
         "batch_id": batch_id,
         "groups": groups_payload,
@@ -1611,6 +1653,7 @@ async def get_batch_merge_extract_result(
                 current_tasks = None
             if current_tasks is None:
                 payload = deepcopy(cached)
+                await _writeback_recommended_fields(db, batch_id, cached.get("groups", []), cached.get("documents", []))
                 if not include_evidence:
                     _strip_evidence_in_result(payload)
                 return payload
@@ -1619,6 +1662,7 @@ async def get_batch_merge_extract_result(
                 cache_delete(cache_key)
             else:
                 payload = deepcopy(cached)
+                await _writeback_recommended_fields(db, batch_id, cached.get("groups", []), cached.get("documents", []))
                 if not include_evidence:
                     _strip_evidence_in_result(payload)
                 return payload

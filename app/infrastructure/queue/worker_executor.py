@@ -87,6 +87,7 @@ def _map_archive_fields(fields: dict[str, Any]) -> ArchiveFieldsPayload:
         date=payload.get("日期", ""),
         pages=payload.get("页数", ""),
         classification=payload.get("密级", ""),
+        storage_path=payload.get("存放路径", ""),
         remarks=payload.get("备注", ""),
     )
 

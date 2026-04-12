@@ -11,7 +11,7 @@ from openpyxl.styles import Font, Alignment
 
 logger = logging.getLogger(__name__)
 
-HEADERS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '备注']
+HEADERS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '存放路径', '备注']
 
 DEFAULT_EXCEL_NAME = '归档文件目录.xlsx'
 
@@ -39,6 +39,30 @@ PERIOD_DOC_NO_PATTERNS = (
     re.compile(r'(第\s*\d+\s*期)'),
 )
 ISSUED_BY_PATTERN = re.compile(r'([\u4e00-\u9fa5A-Za-z0-9·（）()]{4,40}(?:' + ORG_SUFFIX_PATTERN + r'))\s*\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日\s*(?:印发|发布|下发)')
+
+def _archive_no_to_storage_path(archive_no: str) -> str:
+    """Convert archive number to 5-level storage path.
+
+    Examples:
+        WS·2024·D30-0156  → /WS/2024/D30/0156
+        WS.2024.D10-0001  → /WS/2024/D10/0001
+        KJ-A-2023-B1-0005 → /KJ/A/2023/B1/0005
+    """
+    if not archive_no:
+        return ""
+    normalized = archive_no.strip().replace('·', '.').replace('•', '.').replace('・', '.')
+    # WS.2024.D30-0156 pattern
+    m = re.match(r'^([A-Za-z]{2})[.]?(\d{4})[.]?([A-Za-z]\d+[A-Za-z]?)[-.]?(\d+)$', normalized)
+    if m:
+        category, year, retention, item_no = m.groups()
+        item_no = item_no.zfill(4)
+        return f"/{category.upper()}/{year}/{retention.upper()}/{item_no}"
+    # KJ-A-2023-B1-0005 pattern
+    parts = re.split(r'[-.]', normalized)
+    if len(parts) >= 5:
+        return '/' + '/'.join(p.upper() if not p.isdigit() else p.zfill(4) if i == len(parts) - 1 else p for i, p in enumerate(parts[:5]))
+    return ""
+
 
 def _extract_archive_number_from_path(file_path: str) -> str:
     """Parse folder hierarchy to extract archive number.
@@ -268,7 +292,7 @@ def _extract_date_candidates(text: str) -> list[str]:
         day = int(match.group(3))
         if not (1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
             continue
-        value = f'{year:04d}-{month:02d}-{day:02d}'
+        value = f'{year:04d}{month:02d}{day:02d}'
         if value not in values:
             values.append(value)
     return values
@@ -800,6 +824,9 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int, 
 
     # --- 档号：从文件名 + 文件夹路径提取 ---
     fields["档号"] = _extract_archive_number(filename, file_path)
+
+    # --- 存放路径：从档号自动生成 5 级目录 ---
+    fields["存放路径"] = _archive_no_to_storage_path(fields["档号"])
 
     # --- 文号 ---
     items = _collect_items(result_json, full_text)

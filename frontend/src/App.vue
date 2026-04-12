@@ -41,6 +41,22 @@
               检索首页
             </router-link>
             <router-link
+              v-if="isAdmin || userRole === 'operator'"
+              to="/storage"
+              class="rounded-md px-3 py-1.5 text-sm transition"
+              :class="$route.path === '/storage' ? 'bg-[var(--gov-primary-soft)] font-medium text-[var(--gov-primary)]' : 'text-[var(--gov-text-muted)] hover:text-[var(--gov-text)]'"
+            >
+              存放区
+            </router-link>
+            <router-link
+              v-if="isAdmin"
+              to="/batch-import"
+              class="rounded-md px-3 py-1.5 text-sm transition"
+              :class="$route.path === '/batch-import' ? 'bg-[var(--gov-primary-soft)] font-medium text-[var(--gov-primary)]' : 'text-[var(--gov-text-muted)] hover:text-[var(--gov-text)]'"
+            >
+              批量导入
+            </router-link>
+            <router-link
               to="/search"
               class="rounded-md px-3 py-1.5 text-sm transition"
               :class="$route.path === '/search' ? 'bg-[var(--gov-primary-soft)] font-medium text-[var(--gov-primary)]' : 'text-[var(--gov-text-muted)] hover:text-[var(--gov-text)]'"

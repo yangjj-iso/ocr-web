@@ -103,6 +103,9 @@ public class OcrTaskEntity {
     @Column(name = "workflow_thread_id", length = 160)
     private String workflowThreadId;
 
+    @Column(name = "assignee_username", length = 120)
+    private String assigneeUsername;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;
@@ -321,6 +324,14 @@ public class OcrTaskEntity {
 
     public void setWorkflowThreadId(String workflowThreadId) {
         this.workflowThreadId = workflowThreadId;
+    }
+
+    public String getAssigneeUsername() {
+        return assigneeUsername;
+    }
+
+    public void setAssigneeUsername(String assigneeUsername) {
+        this.assigneeUsername = assigneeUsername;
     }
 
     public OffsetDateTime getCreatedAt() {
