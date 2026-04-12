@@ -5,29 +5,25 @@ import org.springframework.boot.env.EnvironmentPostProcessor;
 import org.springframework.core.Ordered;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
-import org.springframework.core.env.StandardEnvironment;
+
 import java.util.Map;
 
 public class DotenvEnvironmentPostProcessor implements EnvironmentPostProcessor, Ordered {
+    private static final String PROPERTY_SOURCE_NAME = "localDotenv";
+
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
-        Map<String, Object> values = DotenvFileSupport.loadDotenvValues();
-        if (values.isEmpty()) {
+        if (environment.getPropertySources().contains(PROPERTY_SOURCE_NAME)) {
             return;
         }
-        if (environment.getPropertySources().contains(DotenvFileSupport.PROPERTY_SOURCE_NAME)) {
-            environment.getPropertySources().remove(DotenvFileSupport.PROPERTY_SOURCE_NAME);
-        }
-        MapPropertySource propertySource = new MapPropertySource(DotenvFileSupport.PROPERTY_SOURCE_NAME, values);
-        if (environment.getPropertySources().contains(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME)) {
-            environment.getPropertySources().addAfter(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME, propertySource);
-        } else {
-            environment.getPropertySources().addFirst(propertySource);
+        Map<String, Object> values = DotenvFileSupport.loadLocalDotenv();
+        if (!values.isEmpty()) {
+            environment.getPropertySources().addLast(new MapPropertySource(PROPERTY_SOURCE_NAME, values));
         }
     }
 
     @Override
     public int getOrder() {
-        return Ordered.HIGHEST_PRECEDENCE + 20;
+        return Ordered.LOWEST_PRECEDENCE;
     }
 }

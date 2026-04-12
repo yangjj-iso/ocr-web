@@ -325,38 +325,6 @@ public class TaskStorageService {
         }
     }
 
-    public StorageProbe probe() {
-        long start = System.nanoTime();
-        if (isLocalBackend()) {
-            boolean exists = uploadRoot != null && Files.exists(uploadRoot);
-            return new StorageProbe(
-                    exists,
-                    exists ? "本地存储目录可用" : "本地存储目录不可用",
-                    uploadRoot == null ? "" : uploadRoot.toString(),
-                    elapsedMs(start)
-            );
-        }
-        try {
-            ensureRemoteConfigured();
-            URI bucketUri = buildBucketUri(properties.getBucket());
-            HttpRequest request = signedRequest("HEAD", bucketUri, EMPTY_BYTES, null);
-            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            int status = response.statusCode();
-            if (status >= 200 && status < 300) {
-                return new StorageProbe(true, "Bucket 可访问", bucketUri.toString(), elapsedMs(start));
-            }
-            if (status == 404) {
-                return new StorageProbe(false, "Bucket 不存在", bucketUri.toString(), elapsedMs(start));
-            }
-            return new StorageProbe(false, "Bucket 探测返回 HTTP " + status, bucketUri.toString(), elapsedMs(start));
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            return new StorageProbe(false, "存储探测被中断", safe(properties.getEndpoint()), elapsedMs(start));
-        } catch (Exception error) {
-            return new StorageProbe(false, error.getMessage(), safe(properties.getEndpoint()), elapsedMs(start));
-        }
-    }
-
     private boolean isLocalBackend() {
         return !"s3".equalsIgnoreCase(safe(properties.getBackend(), "local"));
     }
@@ -516,6 +484,4 @@ public class TaskStorageService {
     public record StoredFileResource(byte[] content, String contentType, String filename) {
     }
 
-    public record StorageProbe(boolean available, String detail, String target, long latencyMs) {
-    }
 }

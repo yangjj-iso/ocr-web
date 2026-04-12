@@ -39,15 +39,16 @@ public class RequestRateLimitingInterceptor implements HandlerInterceptor {
         if (path == null || !path.startsWith("/api/ocr/")) {
             return true;
         }
+        long windowSeconds = Math.max(1, rateLimitProperties.getWindowSeconds());
+        long currentWindow = Instant.now().getEpochSecond() / windowSeconds;
+        String bucket = bucketName(path);
+        String key = resolveClientKey(request) + "|" + bucket + "|" + currentWindow;
+        long count = counters.computeIfAbsent(key, unused -> new AtomicLong(0)).incrementAndGet();
+        cleanupOldWindows(currentWindow);
         int limit = resolveLimit(path);
         if (limit <= 0) {
             return true;
         }
-        long windowSeconds = Math.max(1, rateLimitProperties.getWindowSeconds());
-        long currentWindow = Instant.now().getEpochSecond() / windowSeconds;
-        String key = resolveClientKey(request) + "|" + bucketName(path) + "|" + currentWindow;
-        long count = counters.computeIfAbsent(key, unused -> new AtomicLong(0)).incrementAndGet();
-        cleanupOldWindows(currentWindow);
         if (count <= limit) {
             return true;
         }
@@ -65,6 +66,17 @@ public class RequestRateLimitingInterceptor implements HandlerInterceptor {
         return false;
     }
 
+    public RateLimitSnapshot snapshot() {
+        long windowSeconds = Math.max(1, rateLimitProperties.getWindowSeconds());
+        long currentWindow = Instant.now().getEpochSecond() / windowSeconds;
+        long requests = counters.entrySet()
+                .stream()
+                .filter(entry -> isWindow(entry, currentWindow))
+                .mapToLong(entry -> entry.getValue().get())
+                .sum();
+        return new RateLimitSnapshot(windowSeconds, requests, requests / (double) windowSeconds);
+    }
+
     private void cleanupOldWindows(long currentWindow) {
         if (counters.size() < 1024) {
             return;
@@ -80,6 +92,19 @@ public class RequestRateLimitingInterceptor implements HandlerInterceptor {
         try {
             long window = Long.parseLong(parts[parts.length - 1]);
             return window < thresholdWindow;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
+    private boolean isWindow(Map.Entry<String, AtomicLong> entry, long expectedWindow) {
+        String[] parts = entry.getKey().split("\\|");
+        if (parts.length < 3) {
+            return false;
+        }
+        try {
+            long window = Long.parseLong(parts[parts.length - 1]);
+            return window == expectedWindow;
         } catch (NumberFormatException ignored) {
             return false;
         }
@@ -119,4 +144,8 @@ public class RequestRateLimitingInterceptor implements HandlerInterceptor {
         }
         return String.valueOf(request.getRemoteAddr());
     }
+
+    public record RateLimitSnapshot(long windowSeconds, long requests, double qps) {
+    }
+
 }

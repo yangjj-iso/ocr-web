@@ -8,8 +8,8 @@ import { FieldExtractionView, ResultView } from './features/result/index.js'
 import { SearchView, SearcherHomeView } from './features/search/index.js'
 import { StorageAreaView } from './features/storage/index.js'
 import BatchImportPage from './features/admin/BatchImportPage.vue'
-import { HomeView } from './features/workbench/index.js'
 import DevDashboardPage from './features/dev/DevDashboardPage.vue'
+import { HomeView } from './features/workbench/index.js'
 
 const routes = [
   { path: '/', name: 'Home', component: HomeView },
@@ -43,9 +43,7 @@ function roleBasedHome(status) {
 }
 
 router.beforeEach(async (to) => {
-  if (to.meta?.standalone && to.meta?.public) {
-    return true
-  }
+  if (to.meta?.public && to.meta?.standalone) return true
 
   const status = await authState.refreshAuthStatus()
   if (!status.enabled) {

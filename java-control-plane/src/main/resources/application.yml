@@ -50,10 +50,13 @@ ocr:
     enabled: ${DEV_DASHBOARD_ENABLED:true}
     username: ${DEV_DASHBOARD_USERNAME:devadmin}
     password: ${DEV_DASHBOARD_PASSWORD:change-me-dev-dashboard}
+    two-factor-secret: ${DEV_DASHBOARD_2FA_SECRET:JBSWY3DPEHPK3PXP}
+    session-secret: ${DEV_DASHBOARD_SESSION_SECRET:change-this-dev-dashboard-session-secret}
     cookie-name: ${DEV_DASHBOARD_COOKIE_NAME:ocr_dev_dashboard_session}
+    cookie-secure: ${DEV_DASHBOARD_COOKIE_SECURE:false}
+    cookie-same-site: ${DEV_DASHBOARD_COOKIE_SAMESITE:lax}
     session-ttl: ${DEV_DASHBOARD_SESSION_TTL:28800}
-    celery-queue: ${CELERY_TASK_QUEUE:ocr.compute.internal.queue}
-    python-metrics-path: ${DEV_DASHBOARD_PYTHON_METRICS_PATH:/internal/api/v1/worker/metrics}
+    two-factor-window-steps: ${DEV_DASHBOARD_2FA_WINDOW_STEPS:1}
   storage:
     backend: ${OCR_STORAGE_BACKEND:s3}
     upload-dir: ${OCR_STORAGE_UPLOAD_DIR:./uploads-java}
