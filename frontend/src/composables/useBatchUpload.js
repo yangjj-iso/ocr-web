@@ -130,6 +130,7 @@ function summarizeQueues(queue, pathQueue) {
  * @returns {BatchUploadState & Record<string, any>}
  */
 export function useBatchUpload(mode, callbacks = {}) {
+  const enableAiMerge = callbacks.enableAiMerge !== false
   const queue = ref([])
   const pathQueue = ref([])
   const folderPath = ref('')
@@ -197,15 +198,15 @@ export function useBatchUpload(mode, callbacks = {}) {
 
   const updateUploadProgress = (handledCount, requestedCount) => {
     const ratio = requestedCount ? handledCount / requestedCount : 0
-    setImportState(IMPORT_STAGE.UPLOADING, `材料提交中（${handledCount}/${requestedCount}）`, 12 + ratio * 38)
+    setImportState(IMPORT_STAGE.UPLOADING, `任务提交中（${handledCount}/${requestedCount}）`, 12 + ratio * 38)
   }
 
   const updateProcessingProgress = (finishedCount, requestedCount, currentFailures = failedCount.value) => {
     const ratio = requestedCount ? finishedCount / requestedCount : 0
-    const failureSuffix = currentFailures ? `，异常 ${currentFailures}` : ''
+    const failureSuffix = currentFailures ? `，错误 ${currentFailures}` : ''
     setImportState(
       IMPORT_STAGE.PROCESSING,
-      `后台识别中（已完成 ${finishedCount}/${requestedCount}${failureSuffix}）`,
+      `任务处理中（已完成 ${finishedCount}/${requestedCount}${failureSuffix}）`,
       55 + ratio * 45
     )
   }
@@ -418,8 +419,8 @@ export function useBatchUpload(mode, callbacks = {}) {
       const delayMs = new Date(scheduledTime.value).getTime() - Date.now()
       if (delayMs > 0) {
         processing.value = true
-        setStatus('等待定时开始处理。')
-        setImportState(IMPORT_STAGE.READY, '已排队，等待定时开始处理。', 100)
+        setStatus('等待定时提交任务。')
+        setImportState(IMPORT_STAGE.READY, '已排队，等待定时提交任务。', 100)
         await delay(delayMs)
       }
     }
@@ -537,17 +538,17 @@ export function useBatchUpload(mode, callbacks = {}) {
 
     if (submissionFailures) {
       const detail = firstSubmissionError ? ` 原因：${firstSubmissionError}` : ''
-      setStatus(`本次处理已完成，但有 ${submissionFailures} 份材料处理异常。${detail}`, true)
+      setStatus(`本次任务已结束，但有 ${submissionFailures} 份材料出现错误。${detail}`, true)
       setImportState(
         IMPORT_STAGE.COMPLETED,
         submittedTaskIds.length
-          ? `处理完成，共核验 ${requestedCount} 份材料，其中 ${submissionFailures} 份需要复核。`
+          ? `任务完成，共核验 ${requestedCount} 份材料，其中 ${submissionFailures} 份出现错误。`
           : `材料未成功提交到后台。${firstSubmissionError || '请检查控制面、RabbitMQ 与 Worker 是否已启动。'}`,
         100
       )
     } else {
-      setStatus(`本次处理已完成，共纳入 ${submittedTaskIds.length} 份材料。`)
-      setImportState(IMPORT_STAGE.COMPLETED, `处理完成，共纳入 ${submittedTaskIds.length} 份材料。`, 100)
+      setStatus(`本次任务已完成，共纳入 ${submittedTaskIds.length} 份材料。`)
+      setImportState(IMPORT_STAGE.COMPLETED, `任务完成，共纳入 ${submittedTaskIds.length} 份材料。`, 100)
     }
 
     callbacks.onCompleted?.({
@@ -559,7 +560,7 @@ export function useBatchUpload(mode, callbacks = {}) {
       hasUsableResults,
     })
 
-    if (batchDone.value) {
+    if (batchDone.value && enableAiMerge) {
       runAiMergeExtract().catch(() => {})
     }
   }

@@ -1,5 +1,70 @@
 <template>
-  <div class="flex h-[calc(100vh-64px)] gap-0">
+  <main id="batch-workbench" class="min-h-[calc(100vh-64px)] overflow-y-auto bg-[var(--gov-surface-muted)] p-6">
+    <div class="mx-auto max-w-[1600px] space-y-5">
+      <section class="gov-panel overflow-hidden">
+        <div class="border-b border-[var(--gov-border)] bg-white px-5 py-5">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p class="text-xs font-semibold tracking-[0.14em] text-[var(--gov-primary)]">签录工作台</p>
+              <h2 class="mt-2 text-xl font-semibold text-[var(--gov-text)]">提交任务</h2>
+              <p class="mt-2 max-w-3xl text-sm leading-6 gov-muted">
+                只需要选择材料并提交任务，系统会统一进入后台队列处理，无需再选择综合识别、版式识别或文本识别。
+              </p>
+            </div>
+
+            <div v-if="myQuota && !authState.isAdmin.value" class="w-full max-w-sm rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-3">
+              <div class="mb-2 flex items-center justify-between">
+                <span class="text-xs font-semibold text-[var(--gov-text)]">本月配额</span>
+                <span class="text-xs gov-muted">{{ myQuota.quota_used }} / {{ myQuota.quota_total }}</span>
+              </div>
+              <div class="h-2 overflow-hidden rounded-full bg-white">
+                <div
+                  class="h-full rounded-full transition-all"
+                  :class="quotaPercent >= 90 ? 'bg-red-400' : quotaPercent >= 70 ? 'bg-amber-400' : 'bg-emerald-500'"
+                  :style="{ width: quotaPercent + '%' }"
+                />
+              </div>
+              <p class="mt-2 text-[11px] gov-muted">单次提交上限 {{ myQuota.quota_per_import }} 份材料</p>
+            </div>
+          </div>
+
+          <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div
+              v-for="item in taskStatusGuide"
+              :key="item.key"
+              class="rounded-lg border px-4 py-3"
+              :class="item.cardClass"
+            >
+              <div class="flex items-center gap-2">
+                <span class="h-2 w-2 rounded-full" :class="item.dotClass"></span>
+                <span class="text-sm font-semibold text-[var(--gov-text)]">{{ item.label }}</span>
+              </div>
+              <p class="mt-2 text-xs leading-5 gov-muted">{{ item.description }}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(440px,0.9fr)]">
+        <BufferZone
+          :model="taskSubmitModel"
+          :enable-ai-merge="false"
+          @start-batch="handleStartBatch"
+          @batch-completed="handleBatchCompleted"
+          @view-result="handleViewResult"
+        />
+
+        <TaskBoard
+          ref="taskBoardRef"
+          @view-result="handleViewResult"
+          @batch-context="handleHistoryBatchContext"
+          @view-batch="handleTaskBoardViewBatch"
+        />
+      </div>
+    </div>
+  </main>
+
+  <div v-if="false" class="flex h-[calc(100vh-64px)] gap-0">
     <aside class="flex w-[280px] flex-shrink-0 flex-col border-r border-[var(--gov-border)] bg-white">
       <nav class="flex flex-1 flex-col overflow-y-auto">
         <div class="border-b border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-5 py-4">
@@ -101,32 +166,21 @@
             @click="selectedTab = 'assigned'; loadAssignedTasks()"
           >
             <div
-              class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg transition-colors relative"
+              class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg transition-colors"
               :class="selectedTab === 'assigned'
                 ? 'bg-emerald-600 text-white'
                 : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200'"
             >
               <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
-              <span v-if="assignedPending > 0" class="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] text-white font-bold">{{ assignedPending }}</span>
             </div>
             <div class="min-w-0 flex-1">
-              <span class="text-sm font-semibold text-[var(--gov-text)]">我的任务</span>
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-semibold text-[var(--gov-text)]">我的任务</span>
+                <span v-if="assignedPending > 0" class="rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-600 leading-none">{{ assignedPending }}</span>
+              </div>
               <p class="mt-0.5 truncate text-xs gov-muted">管理员分配的待处理批次</p>
             </div>
           </button>
-
-          <router-link
-            to="/storage"
-            class="group flex w-full items-center gap-3 rounded-lg px-3 py-4 text-left transition-all hover:bg-slate-50"
-          >
-            <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 group-hover:bg-slate-200 transition-colors">
-              <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-            </div>
-            <div class="min-w-0 flex-1">
-              <span class="text-sm font-semibold text-[var(--gov-text)]">存放区</span>
-              <p class="mt-0.5 truncate text-xs gov-muted">目录树浏览归档存放路径</p>
-            </div>
-          </router-link>
         </div>
       </nav>
 
@@ -560,6 +614,7 @@ import { useRouter } from 'vue-router'
 import BufferZone from '@/components/BufferZone.vue'
 import HistoryList from '@/components/HistoryList.vue'
 import MergeResultModal from '@/components/MergeResultModal.vue'
+import TaskBoard from '@/components/TaskBoard.vue'
 import {
   aiMergeExtractBatch,
   askBatchQuestion,
@@ -575,7 +630,55 @@ import { buildMergedDocumentViews } from '@/utils/mergeDocumentDisplay.js'
 
 const router = useRouter()
 const historyRef = ref(null)
+const taskBoardRef = ref(null)
 const authState = useAuthState()
+
+const taskSubmitModel = {
+  mode: 'vl',
+  name: '提交任务',
+  desc: '统一提交档案材料，后台自动排队、处理并生成结果。',
+  icon: 'cloud',
+  color: 'blue',
+  badge: '',
+}
+
+const taskStatusGuide = [
+  {
+    key: 'submitting',
+    label: '提交中',
+    description: '材料正在上传并写入任务队列。',
+    cardClass: 'border-blue-100 bg-blue-50/70',
+    dotClass: 'bg-blue-500',
+  },
+  {
+    key: 'queued',
+    label: '排队中',
+    description: '任务已接收，等待后台资源调度。',
+    cardClass: 'border-slate-200 bg-slate-50',
+    dotClass: 'bg-slate-500',
+  },
+  {
+    key: 'processing',
+    label: '处理中',
+    description: '后台正在识别和整理材料。',
+    cardClass: 'border-amber-100 bg-amber-50/80',
+    dotClass: 'bg-amber-500',
+  },
+  {
+    key: 'done',
+    label: '完成',
+    description: '任务已完成，可查看识别结果。',
+    cardClass: 'border-emerald-100 bg-emerald-50/80',
+    dotClass: 'bg-emerald-500',
+  },
+  {
+    key: 'failed',
+    label: '错误',
+    description: '提交或处理失败，需要检查原因后重试。',
+    cardClass: 'border-red-100 bg-red-50/80',
+    dotClass: 'bg-red-500',
+  },
+]
 
 // ── History merge modal ───────────────────────────────────────────────────
 const historyMergeVisible = ref(false)
@@ -637,8 +740,7 @@ function fmtAssignDate(iso) {
 function openAssignedBatch(batchId) {
   router.push({ path: `/batch-insights/${encodeURIComponent(batchId)}` })
 }
-const _storedTab = sessionStorage.getItem('ocr:selectedTab')
-const selectedTab = ref(_storedTab || 'vl')
+const selectedTab = ref('submit')
 watch(selectedTab, (v) => sessionStorage.setItem('ocr:selectedTab', v))
 const aiCapability = useAiCapabilityState()
 
@@ -995,12 +1097,16 @@ async function onAssistantTabClick() {
 }
 
 function handleStartBatch() {
-  // 批量处理中不做被动评测探测，避免使用上一个批次触发无效请求噪音。
+  taskBoardRef.value?.refresh?.({ silent: true })
 }
 
 async function handleBatchCompleted(payload = {}) {
   historyRef.value?.refresh()
+  taskBoardRef.value?.refresh?.()
   if (!payload?.hasUsableResults || !payload?.batchId) {
+    return
+  }
+  if (selectedTab.value !== 'assistant') {
     return
   }
   await aiCapability.refreshAiCapability({ passive: false, batchId: payload.batchId })
@@ -1095,6 +1201,12 @@ function handleHistoryMergeOpenReview() {
   router.push({ path: `/batch-insights/${encodeURIComponent(historyMergeBatchId.value)}`, query: { tab: 'truth' } })
 }
 
+function handleTaskBoardViewBatch(payload = {}) {
+  const batchId = String(payload?.batchId || payload?.batch_id || '').trim()
+  if (!batchId) return
+  router.push({ path: `/batch-insights/${encodeURIComponent(batchId)}` })
+}
+
 async function submitAssistantQa() {
   if (!latestBatchId.value) {
     selectedTab.value = 'vl'
@@ -1152,19 +1264,7 @@ function handleViewResult(payload) {
   router.push({ path: `/result/${taskId}`, query })
 }
 
-onMounted(async () => {
+onMounted(() => {
   loadMyQuota()
-  loadAssignedTasks()
-  if (latestBatchId.value) {
-    await aiCapability.refreshAiCapability({ passive: false, batchId: latestBatchId.value })
-    if (selectedTab.value === 'assistant') {
-      await loadAssistantPreview()
-    }
-    return
-  }
-  await tryResolveBatchFromHistory()
-  if (selectedTab.value === 'assistant' && latestBatchId.value) {
-    await loadAssistantPreview()
-  }
 })
 </script>

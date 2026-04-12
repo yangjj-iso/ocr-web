@@ -1,152 +1,105 @@
 package com.ocrweb.controlplane.dev.dto;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.ocrweb.controlplane.task.dto.TaskDtos;
+import com.fasterxml.jackson.annotation.JsonAlias;
 
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 
 public final class DevDashboardDtos {
     private DevDashboardDtos() {
     }
 
-    public record LoginRequest(String username, String password) {
+    public record LoginRequest(String username, String password, @JsonAlias({"two_factor_code", "twoFactorCode"}) String twoFactorCode) {
     }
 
-    public record AuthStatus(boolean configured, boolean authenticated, String username) {
+    public record LoginResponse(boolean authenticated, String username, Instant expiresAt) {
     }
 
-    public record DashboardSnapshot(
-            OffsetDateTime generatedAt,
-            TaskSummary tasks,
-            WorkflowSummary workflow,
-            List<QueueInfo> queues,
-            List<ResourceStatus> resources,
-            List<TaskItem> queuedTasks,
-            List<TaskItem> processingTasks,
-            List<TaskItem> recentTasks,
-            PythonMetrics pythonMetrics
+    public record AuthStatusResponse(boolean enabled, boolean authenticated, String username, Instant expiresAt) {
+    }
+
+    public record SnapshotResponse(
+            Instant generatedAt,
+            InfraMetrics infra,
+            List<QueueMetric> queues,
+            List<MiddlewareMetric> middleware,
+            List<ModelMetric> models,
+            List<TaskItem> tasks
     ) {
     }
 
-    public record TaskSummary(
-            long total,
-            long done,
-            long processing,
-            long failed,
-            long pending,
-            long humanReview,
-            List<StatusCount> byStatus,
-            List<ModeStatusCount> byMode
+    public record InfraMetrics(
+            double qps,
+            long recentRequests,
+            long mqBacklog,
+            int mqConsumers,
+            double ackRate,
+            long activeTasks,
+            long totalUsers,
+            int cpuPercent,
+            int gpuPercent,
+            int memoryPercent,
+            int gpuMemoryPercent,
+            String workerStatus,
+            String cleanupNote
     ) {
     }
 
-    public record StatusCount(String status, long count) {
+    public record QueueMetric(String name, long messages, long ready, long unacked, double ackRate, int consumers) {
     }
 
-    public record ModeStatusCount(String mode, String status, long count) {
-    }
-
-    public record WorkflowSummary(
-            long averageCompletedDurationMs,
-            long averageTerminalDurationMs,
-            long p50CompletedDurationMs,
-            long p95CompletedDurationMs,
-            int completedSampleCount,
-            int terminalSampleCount,
-            long averageEventDurationMs,
-            int eventSampleCount,
-            List<ModeDuration> byMode
-    ) {
-    }
-
-    public record ModeDuration(String mode, long averageCompletedDurationMs, int sampleCount) {
-    }
-
-    public record QueueInfo(
+    public record MiddlewareMetric(
+            String id,
             String name,
-            long messageCount,
-            long consumerCount,
-            boolean available,
+            String status,
+            String summary,
+            List<MetricPair> metrics,
             String detail
     ) {
     }
 
-    public record ResourceStatus(
-            String key,
-            String label,
-            String controlGroup,
-            String controlGroupLabel,
-            String state,
-            String detail,
-            String target,
-            long latencyMs,
-            List<ResourceMetric> metrics
-    ) {
+    public record MetricPair(String label, String value) {
     }
 
-    public record ResourceMetric(String label, String value) {
+    public record ModelMetric(String name, long avgMs, long p95Ms, String gpuMemory) {
     }
 
     public record TaskItem(
-            Long id,
-            String filename,
-            String filePath,
-            String mode,
+            String id,
             String status,
-            String batchId,
-            String traceId,
-            Double progressPercent,
-            String submitterUsername,
-            Integer pageCount,
+            String mode,
+            long durationMs,
+            int retries,
+            String worker,
+            String fileName,
+            String previewUrl,
             String errorMessage,
-            String workflowThreadId,
-            long ageSeconds,
+            List<StageMetric> stages,
+            List<TaskEvent> events,
+            Map<String, Object> raw
+    ) {
+    }
+
+    public record StageMetric(String key, String label, long durationMs, String color) {
+    }
+
+    public record TaskEvent(String at, String name, String detail) {
+    }
+
+    public record RetryResponse(boolean ok, Long taskId, String status, String message) {
+    }
+
+    public record Session(String username, Instant expiresAt) {
+    }
+
+    public record TaskRuntimeView(
+            Long id,
+            String status,
+            String mode,
             OffsetDateTime createdAt,
             OffsetDateTime updatedAt
     ) {
-    }
-
-    public record PythonMetrics(boolean available, String detail, JsonNode payload) {
-    }
-
-    public record TaskInspector(
-            TaskDtos.TaskDetailResponse task,
-            TaskDtos.WorkflowEventsResponse workflowEvents
-    ) {
-    }
-
-    public record RuntimeEnvironmentSnapshot(
-            String envFilePath,
-            OffsetDateTime generatedAt,
-            List<EnvironmentGroup> groups
-    ) {
-    }
-
-    public record EnvironmentGroup(
-            String key,
-            String label,
-            String description,
-            List<EnvironmentField> fields
-    ) {
-    }
-
-    public record EnvironmentField(
-            String key,
-            String label,
-            String description,
-            String type,
-            boolean sensitive,
-            boolean configured,
-            boolean runtimeApplied,
-            String value,
-            String placeholder
-    ) {
-    }
-
-    public record EnvironmentUpdateRequest(List<EnvironmentValueUpdate> values) {
-    }
-
-    public record EnvironmentValueUpdate(String key, String value) {
     }
 }

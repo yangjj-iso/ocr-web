@@ -6,10 +6,6 @@
           <h1 class="text-xl font-bold text-[var(--gov-text)]">系统运行总览</h1>
           <p class="mt-0.5 text-xs text-[var(--gov-text-muted)]">实时监控平台运行数据 · {{ todayStr }}</p>
         </div>
-        <div class="flex gap-2">
-          <router-link to="/admin" class="gov-btn-secondary px-3 py-1.5 text-xs">用户管理</router-link>
-          <router-link to="/" class="gov-btn px-3 py-1.5 text-xs">签录工作台</router-link>
-        </div>
       </div>
 
       <div class="mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -32,8 +28,8 @@
         </div>
       </div>
 
-      <div class="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div class="col-span-2 rounded-xl border border-[var(--gov-border)] bg-white px-5 py-4 shadow-sm">
+      <div class="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div class="col-span-1 lg:col-span-2 rounded-xl border border-[var(--gov-border)] bg-white px-5 py-4 shadow-sm">
           <div class="mb-3 flex items-center justify-between">
             <h3 class="text-sm font-semibold text-[var(--gov-text)]">OCR 任务趋势</h3>
             <div class="flex gap-1">
@@ -64,77 +60,11 @@
             <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-slate-400" />检索员 {{ stats.searchers }}</span>
           </div>
         </div>
-      </div>
 
-      <div class="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div class="rounded-xl border border-[var(--gov-border)] bg-white px-5 py-4 shadow-sm">
           <h3 class="mb-3 text-sm font-semibold text-[var(--gov-text)]">任务状态分布</h3>
           <div class="h-[180px]">
             <Bar v-if="statusChartReady" :data="statusChartData" :options="statusChartOptions" />
-          </div>
-        </div>
-
-        <div class="rounded-xl border border-[var(--gov-border)] bg-white px-5 py-4 shadow-sm">
-          <h3 class="mb-3 text-sm font-semibold text-[var(--gov-text)]">最近动态</h3>
-          <div v-if="recentLogs.length === 0" class="flex flex-col items-center justify-center py-8 text-[var(--gov-text-muted)]">
-            <svg class="mb-2 h-8 w-8 opacity-30" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-              <path d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span class="text-xs">暂无操作记录</span>
-          </div>
-          <div v-else class="max-h-[200px] space-y-2.5 overflow-y-auto pr-1">
-            <div v-for="log in recentLogs" :key="log.id" class="flex items-start gap-2.5">
-              <div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white" :class="logBgClass(log.action_type)">
-                {{ (log.username || '?')[0] }}
-              </div>
-              <div class="min-w-0 flex-1">
-                <p class="text-xs text-[var(--gov-text)]">
-                  <strong>{{ log.username }}</strong>
-                  <span class="text-[var(--gov-text-muted)]"> {{ actionLabel(log.action_type) }}</span>
-                </p>
-                <p class="text-[10px] text-[var(--gov-text-muted)]">{{ fmtDate(log.created_at) }}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="space-y-4">
-          <div class="rounded-xl border border-[var(--gov-border)] bg-white px-5 py-4 shadow-sm">
-            <div class="mb-3 flex items-center justify-between">
-              <h3 class="text-sm font-semibold text-[var(--gov-text)]">系统状态</h3>
-              <button class="text-[10px] font-medium text-[var(--gov-primary)] hover:underline" @click="refreshSystemHealth">
-                刷新
-              </button>
-            </div>
-            <div class="space-y-3">
-              <div v-for="item in serviceHealthCards" :key="item.key" class="rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2">
-                <div class="flex items-center justify-between">
-                  <span class="text-xs text-[var(--gov-text-muted)]">{{ item.label }}</span>
-                  <span class="flex items-center gap-1 text-[10px] font-medium" :class="item.up ? 'text-emerald-600' : 'text-red-500'">
-                    <span class="h-1.5 w-1.5 rounded-full" :class="item.up ? 'bg-emerald-500 animate-pulse' : 'bg-red-400'" />
-                    {{ item.up ? '运行中' : '异常' }}
-                  </span>
-                </div>
-                <p class="mt-1 text-[10px] text-[var(--gov-text-muted)]">{{ item.detail }}</p>
-              </div>
-            </div>
-          </div>
-
-          <div class="rounded-xl border border-[var(--gov-border)] bg-gradient-to-br from-[var(--gov-primary)] to-indigo-600 px-5 py-4 shadow-sm">
-            <h3 class="mb-2 text-sm font-semibold text-white/90">待处理事项</h3>
-            <div class="space-y-1.5">
-              <router-link v-if="stats.pendingUsers > 0" to="/admin" class="flex items-center justify-between rounded-lg bg-white/15 px-3 py-2 text-xs text-white transition hover:bg-white/25">
-                <span>{{ stats.pendingUsers }} 个账号待审核</span>
-                <span class="text-white/60">→</span>
-              </router-link>
-              <router-link v-if="stats.activeAssignments > 0" to="/admin" class="flex items-center justify-between rounded-lg bg-white/15 px-3 py-2 text-xs text-white transition hover:bg-white/25">
-                <span>{{ stats.activeAssignments }} 个分配仍在处理中</span>
-                <span class="text-white/60">→</span>
-              </router-link>
-              <div v-if="stats.pendingUsers === 0 && stats.activeAssignments === 0" class="rounded-lg bg-white/10 px-3 py-2 text-center text-xs text-white/70">
-                当前没有待处理事项
-              </div>
-            </div>
           </div>
         </div>
       </div>
