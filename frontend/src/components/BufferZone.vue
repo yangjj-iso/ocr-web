@@ -136,21 +136,25 @@
           </div>
         </div>
 
-        <div v-if="totalCount" class="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+        <div v-if="totalCount" class="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
           <div class="rounded-xl border border-[var(--gov-border)] bg-white px-3 py-2">
-            <p class="gov-muted">批次总量</p>
+            <p class="gov-muted">提交总量</p>
             <p class="mt-1 font-semibold text-[var(--gov-text)]">{{ totalCount }} 份</p>
           </div>
           <div class="rounded-xl border border-emerald-100 bg-emerald-50/70 px-3 py-2">
-            <p class="text-emerald-700/80">已完成</p>
+            <p class="text-emerald-700/80">完成</p>
             <p class="mt-1 font-semibold text-emerald-700">{{ completedCount }} 份</p>
           </div>
           <div class="rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2">
             <p class="text-blue-700/80">处理中</p>
-            <p class="mt-1 font-semibold text-blue-700">{{ activeProcessingCount }} 份</p>
+            <p class="mt-1 font-semibold text-blue-700">{{ processingCount }} 份</p>
+          </div>
+          <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+            <p class="text-slate-600">排队中</p>
+            <p class="mt-1 font-semibold text-slate-700">{{ pendingCount }} 份</p>
           </div>
           <div class="rounded-xl border border-amber-100 bg-amber-50/70 px-3 py-2">
-            <p class="text-amber-700/80">异常数</p>
+            <p class="text-amber-700/80">错误</p>
             <p class="mt-1 font-semibold text-amber-700">{{ failedCount }} 份</p>
           </div>
         </div>
@@ -163,7 +167,7 @@
       <div class="mb-2 flex items-center justify-between">
         <div>
           <span class="text-xs font-medium gov-muted">
-            待处理明细（{{ queue.length + pathQueue.length }} 份 / {{ dirGroupedFiles.length + dirGroupedPathFiles.length }} 个目录）
+            待提交明细（{{ queue.length + pathQueue.length }} 份 / {{ dirGroupedFiles.length + dirGroupedPathFiles.length }} 个目录）
           </span>
           <p class="mt-1 text-[11px] gov-muted">点击目录名展开文件列表；可整个目录删除。</p>
         </div>
@@ -273,7 +277,14 @@
       </button>
 
       <div v-if="batchDone && lastBatchId && !processing" class="space-y-2">
-        <div class="flex items-center gap-2 rounded-lg border px-3 py-2 text-xs" :class="aiMerging ? 'border-violet-200 bg-violet-50' : aiMergeError ? 'border-amber-200 bg-amber-50' : aiMergeResult ? 'border-emerald-200 bg-emerald-50' : 'border-[var(--gov-border)] bg-[var(--gov-surface-muted)]'">
+        <div
+          v-if="!enableAiMerge"
+          class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700"
+        >
+          任务已提交并处理完成，可在右侧任务界面查看每个文件的状态和结果。
+        </div>
+
+        <div v-if="enableAiMerge" class="flex items-center gap-2 rounded-lg border px-3 py-2 text-xs" :class="aiMerging ? 'border-violet-200 bg-violet-50' : aiMergeError ? 'border-amber-200 bg-amber-50' : aiMergeResult ? 'border-emerald-200 bg-emerald-50' : 'border-[var(--gov-border)] bg-[var(--gov-surface-muted)]'">
           <span v-if="aiMerging" class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-violet-400 border-t-transparent"></span>
           <span v-else-if="aiMergeResult" class="text-emerald-600">&#10003;</span>
           <span v-else-if="aiMergeError" class="text-amber-600">&#9888;</span>
@@ -299,7 +310,7 @@
           </button>
         </div>
 
-        <div class="grid grid-cols-2 gap-2">
+        <div v-if="enableAiMerge" class="grid grid-cols-2 gap-2">
           <button class="rounded-lg bg-emerald-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105" @click="doExportExcel">
             导出本次归档
           </button>
@@ -473,9 +484,16 @@ import { useRouter } from 'vue-router'
 import { useBatchUpload } from '../composables/useBatchUpload.js'
 import { buildMergedDocumentViews } from '../utils/mergeDocumentDisplay.js'
 
-const props = defineProps({ model: Object })
+const props = defineProps({
+  model: Object,
+  enableAiMerge: {
+    type: Boolean,
+    default: true,
+  },
+})
 const emit = defineEmits(['start-batch', 'batch-completed', 'view-result'])
 const router = useRouter()
+const enableAiMerge = computed(() => props.enableAiMerge !== false)
 
 const COLOR_MAP = {
   cyan: {
@@ -555,6 +573,7 @@ const {
   toggleQueueExpanded,
   toggleViewMode,
 } = useBatchUpload(props.model.mode, {
+  enableAiMerge: props.enableAiMerge,
   onSubmitted: () => emit('start-batch'),
   onCompleted: (payload) => emit('batch-completed', payload),
 })
@@ -645,26 +664,26 @@ const stageMeta = computed(() => {
       }
     case 'uploading':
       return {
-        eyebrow: '材料提交',
-        title: '正在提交材料',
-        description: '材料正在进入后台队列，请保持页面开启。',
+        eyebrow: '提交中',
+        title: '正在提交任务',
+        description: '材料正在上传并写入后台任务队列，请保持页面开启。',
       }
     case 'processing':
       return {
-        eyebrow: '后台识别',
-        title: '正在识别处理中',
-        description: '系统正在后台完成识别和归档整理，可先查看阶段进度。',
+        eyebrow: '处理中',
+        title: '后台正在处理任务',
+        description: '系统正在后台完成识别和整理，可先查看阶段进度。',
       }
     case 'completed':
       return {
-        eyebrow: '处理完成',
-        title: '本次处理已完成',
-        description: '可以导出目录清单、查看批次概览或继续发起智能整合。',
+        eyebrow: '完成',
+        title: '本次任务已完成',
+        description: '可以在任务界面查看每个文件的状态和结果。',
       }
     default:
       return {
-        eyebrow: '批量处理',
-        title: '等待导入材料',
+        eyebrow: '任务提交',
+        title: '等待选择材料',
         description: '支持本地文件、目录和授权路径导入，系统会先整理摘要再展示明细。',
       }
   }
@@ -672,11 +691,11 @@ const stageMeta = computed(() => {
 
 const actionButtonLabel = computed(() => {
   if (processing.value) {
-    if (importStage.value === 'uploading') return '材料提交中…'
-    if (importStage.value === 'processing') return '后台识别中…'
+    if (importStage.value === 'uploading') return '任务提交中…'
+    if (importStage.value === 'processing') return '任务处理中…'
     return '处理中…'
   }
-  return scheduledTime.value ? '定时开始处理' : '开始处理'
+  return scheduledTime.value ? '定时提交任务' : '提交任务'
 })
 
 function fieldEntries(fields) {

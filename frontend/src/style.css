@@ -1,18 +1,18 @@
 @import "tailwindcss";
 
 :root {
-  --gov-bg: #f4f7fb;
+  --gov-bg: #f8fafc;
   --gov-surface: #ffffff;
   --gov-surface-muted: #f7f9fc;
-  --gov-border: #d6deea;
-  --gov-border-strong: #bcc8d8;
-  --gov-text: #1f2f46;
-  --gov-text-muted: #5d6f86;
-  --gov-primary: #1f4f88;
-  --gov-primary-soft: #eaf2fd;
-  --gov-success: #2e6b53;
-  --gov-danger: #a03a3a;
-  --gov-shadow: 0 10px 24px rgba(31, 56, 91, 0.08);
+  --gov-border: #e2e8f0;
+  --gov-border-strong: #cbd5e1;
+  --gov-text: #1e293b;
+  --gov-text-muted: #64748b;
+  --gov-primary: #2563eb;
+  --gov-primary-soft: #eff6ff;
+  --gov-success: #10b981;
+  --gov-danger: #ef4444;
+  --gov-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
 }
 
 html,
@@ -30,21 +30,17 @@ body {
 
 .gov-shell {
   min-height: 100vh;
-  background:
-    linear-gradient(90deg, rgba(31, 79, 136, 0.03) 1px, transparent 1px) 0 0 / 30px 30px,
-    linear-gradient(rgba(31, 79, 136, 0.03) 1px, transparent 1px) 0 0 / 30px 30px,
-    radial-gradient(circle at 0% 0%, rgba(31, 79, 136, 0.05), transparent 45%),
-    var(--gov-bg);
+  background: var(--gov-bg);
 }
 
 .gov-header {
   border-bottom: 1px solid var(--gov-border);
-  background: linear-gradient(180deg, #ffffff 0%, #f9fbfe 100%);
+  background: #ffffff;
 }
 
 .gov-panel {
   border: 1px solid var(--gov-border);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--gov-surface);
   box-shadow: var(--gov-shadow);
 }

@@ -88,6 +88,14 @@ public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
     @Query("select t.id, t.filename, t.status, t.fileType from OcrTaskEntity t where t.id in :ids")
     List<Object[]> findLightweightByIds(@Param("ids") List<Long> ids);
 
+    @Query("""
+            select count(distinct t.storageObjectKey)
+            from OcrTaskEntity t
+            where t.storageObjectKey is not null
+              and t.storageObjectKey <> ''
+            """)
+    long countStoredObjectKeys();
+
     long deleteByBatchId(String batchId);
 
     long deleteByFilePathStartingWith(String filePathPrefix);
