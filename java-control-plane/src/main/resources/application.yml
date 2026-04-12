@@ -96,11 +96,11 @@ ocr:
     general-max-requests: ${OCR_RATE_LIMIT_GENERAL_MAX_REQUESTS:600}
   mq:
     command:
-      exchange: ocr.task.command.exchange
-      queue: ocr.task.command.queue
-      routing-key: ocr.task.submit.v1
-      dead-letter-exchange: ocr.task.command.dlx
-      dead-letter-queue: ocr.task.command.dlq
+      exchange: ${MQ_COMMAND_EXCHANGE:ocr.task.command.exchange}
+      queue: ${MQ_COMMAND_QUEUE:ocr.task.command.queue}
+      routing-key: ${MQ_COMMAND_ROUTING_KEY:ocr.task.submit.v1}
+      dead-letter-exchange: ${MQ_COMMAND_DLX:ocr.task.command.dlx}
+      dead-letter-queue: ${MQ_COMMAND_DLQ:ocr.task.command.dlq}
   internal-api:
     token: ${OCR_INTERNAL_API_TOKEN:change-this-internal-token}
     base-url: ${OCR_CONTROL_PLANE_BASE_URL:http://127.0.0.1:8080}
