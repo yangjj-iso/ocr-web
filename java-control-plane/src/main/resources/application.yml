@@ -79,7 +79,6 @@ ocr:
   processing:
     layout-backend: ${OCR_LAYOUT_BACKEND:local}
     vl-backend: ${OCR_VL_BACKEND:auto}
-    enable-hierarchical-agent: ${ENABLE_HIERARCHICAL_AGENT:false}
     llm-backend: ${OCR_PROCESSING_LLM_BACKEND:local}
     llm-model: ${OCR_PROCESSING_LLM_MODEL:}
     processing-strategy: ${OCR_PROCESSING_STRATEGY:auto}
@@ -89,7 +88,7 @@ ocr:
     human-review-threshold-high: ${HUMAN_REVIEW_MAX_CONFIDENCE:0.85}
     timeout-seconds: ${OCR_PROCESSING_TIMEOUT_SECONDS:1800}
     gpu-profile: ${OCR_GPU_PROFILE:single_gpu}
-    langgraph-graph: ${OCR_LANGGRAPH_GRAPH:batch_supervisor_v1}
+    langgraph-graph: ${OCR_LANGGRAPH_GRAPH:archive_main}
   rate-limit:
     enabled: ${OCR_RATE_LIMIT_ENABLED:true}
     window-seconds: ${OCR_RATE_LIMIT_WINDOW_SECONDS:60}

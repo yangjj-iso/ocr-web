@@ -12,7 +12,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_auth
-from app.core.auth import require_admin, require_operator_access
+from app.core.auth import effective_role, require_admin, require_operator_access
 from app.db.models import AppUser, BatchAssignment, OperationLog, UserQuota
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ operator_router = APIRouter(
     dependencies=[Depends(require_operator_access)],
 )
 
-VALID_ROLES = {"admin", "operator", "searcher"}
+VALID_ROLES = {"admin", "tenant_admin", "member"}
 
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
@@ -33,8 +33,10 @@ class UserOut(BaseModel):
     username: str
     display_name: str | None
     role: str
+    capabilities: str | None = None
     status: str
     is_admin: bool
+    tenant_id: str = "default"
     created_at: datetime
     quota: "QuotaOut | None" = None
 
@@ -61,6 +63,7 @@ class QuotaUpdate(BaseModel):
 
 class RoleUpdate(BaseModel):
     role: str
+    capabilities: str | None = None
 
 
 class AssignmentCreate(BaseModel):
@@ -132,12 +135,16 @@ def _quota_out(q: UserQuota) -> QuotaOut:
 
 @router.get("/users")
 async def list_users(
-    _: dict = Depends(require_admin),
+    current: dict = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
     role: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
 ) -> dict[str, Any]:
     stmt = select(AppUser).order_by(AppUser.created_at.desc())
+    # tenant_admin 只能看自己租户的用户；admin 看全部
+    caller_role = effective_role(current)
+    if caller_role == "tenant_admin":
+        stmt = stmt.where(AppUser.tenant_id == current.get("tenant_id", "default"))
     if role:
         stmt = stmt.where(AppUser.role == role)
     if status_filter:
@@ -152,8 +159,10 @@ async def list_users(
             "username": u.username,
             "display_name": u.display_name,
             "role": u.role,
+            "capabilities": u.capabilities or "",
             "status": u.status,
             "is_admin": u.is_admin,
+            "tenant_id": u.tenant_id or "default",
             "created_at": u.created_at.isoformat(),
             "quota": _quota_out(q).model_dump() if q else None,
         })
@@ -175,9 +184,22 @@ async def set_user_role(
     user = await db.get(AppUser, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
+    # tenant_admin 只能修改同租户用户，且不能把用户升级为 admin
+    caller_role = effective_role(current)
+    if caller_role == "tenant_admin":
+        if user.tenant_id != current.get("tenant_id", "default"):
+            raise HTTPException(status_code=403, detail="无权修改其他租户的用户。")
+        if body.role == "admin":
+            raise HTTPException(status_code=403, detail="租户管理员无权指派超级管理员角色。")
     old_role = user.role
     user.role = body.role
-    user.is_admin = body.role == "admin"
+    user.is_admin = body.role == "admin"  # only company admin has platform-level is_admin flag
+    if body.capabilities is not None:
+        # Store comma-separated capability tags (e.g. 'operator', 'searcher', 'operator,searcher')
+        user.capabilities = body.capabilities.strip() or None
+    elif body.role != "member":
+        # admin/tenant_admin don't need capability tags
+        user.capabilities = None
     await db.commit()
     await _write_log(db, current, request, "set_role", "user", str(user_id),
                      {"old_role": old_role, "new_role": body.role, "target_user": user.username})

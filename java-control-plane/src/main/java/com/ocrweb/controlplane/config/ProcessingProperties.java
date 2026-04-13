@@ -6,7 +6,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class ProcessingProperties {
     private String layoutBackend = "local";
     private String vlBackend = "auto";
-    private boolean enableHierarchicalAgent = false;
     private String llmBackend = "local";
     private String llmModel = "";
     private String processingStrategy = "auto";
@@ -16,7 +15,7 @@ public class ProcessingProperties {
     private double humanReviewThresholdHigh = 0.85;
     private int timeoutSeconds = 1800;
     private String gpuProfile = "single_gpu";
-    private String langgraphGraph = "batch_supervisor_v1";
+    private String langgraphGraph = "archive_main";
 
     public String getLayoutBackend() {
         return layoutBackend;
@@ -32,14 +31,6 @@ public class ProcessingProperties {
 
     public void setVlBackend(String vlBackend) {
         this.vlBackend = vlBackend;
-    }
-
-    public boolean isEnableHierarchicalAgent() {
-        return enableHierarchicalAgent;
-    }
-
-    public void setEnableHierarchicalAgent(boolean enableHierarchicalAgent) {
-        this.enableHierarchicalAgent = enableHierarchicalAgent;
     }
 
     public String getLlmBackend() {

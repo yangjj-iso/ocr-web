@@ -83,7 +83,7 @@ class OcrTaskServiceWorkflowEventsTest {
 
         ObjectNode innerPayload = objectMapper.createObjectNode();
         innerPayload.put("workflow_thread_id", "thread-123");
-        innerPayload.put("graph_id", "batch_supervisor");
+        innerPayload.put("graph_id", "archive_main");
         innerPayload.put("node_id", "node_prepare_batch");
         ObjectNode progress = objectMapper.createObjectNode();
         progress.put("currentPage", 1);
@@ -110,7 +110,7 @@ class OcrTaskServiceWorkflowEventsTest {
         assertThat(response.taskStatus()).isEqualTo("processing");
         assertThat(response.events()).hasSize(1);
         assertThat(response.events().get(0).eventType()).isEqualTo("NODE_EXIT");
-        assertThat(response.events().get(0).payload().path("graph_id").asText()).isEqualTo("batch_supervisor");
+        assertThat(response.events().get(0).payload().path("graph_id").asText()).isEqualTo("archive_main");
         assertThat(response.events().get(0).progress().path("currentPage").asInt()).isEqualTo(1);
     }
 

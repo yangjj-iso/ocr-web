@@ -1,67 +1,101 @@
-# Python
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
+*.pyd
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+.ipynb_checkpoints/
+
+# Python packaging and build artifacts
 *.egg-info/
+.eggs/
 dist/
 build/
+site/
 *.egg
-*.env
-*.env.*
-# Virtual environment
-.venv/
+pip-wheel-metadata/
 
-# IDE
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Local environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.template
+!.env.*.template
+
+# IDE and editor files
 .idea/
 .vscode/
+.windsurf/
 *.swp
 *.swo
 
-# Uploads & cache
+# Uploads, temp files, and caches
 uploads/
 .cache/
+tmp/
+temp/
+*.tmp
 
-# Logs
+# Logs and runtime state
+logs/
 *.log
+*.pid
+*.pid.lock
 server.log
 server_err.log
 
-# OS
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# OS files
 Thumbs.db
 .DS_Store
 
-# Startup script
-start.bat
-
-# Environment
-.env
-.env.local
-.env.docker
-.env.docker.local
-
-# Database
-*.db
-
-# Temp
-*.tmp
-tmp/
-
-# Build archives (do not commit)
+# Build archives and local exports
 *.zip
-
-# Test export artifacts
 test_export_*.xlsx
+
+# Local tooling runtime data
+.langgraph_api/
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
+frontend/.cache/
+frontend/.vite/
+frontend/coverage/
+frontend/.turbo/
 static/vue/
 
 # Docker middleware runtime data
 docker-data/
 
-# Java Maven build output
+# Java build output
 java-control-plane/target/
+java-control-plane/.gradle/
+*.class
+out/
 
-# Windsurf IDE config
-.windsurf/
+# Local startup helpers
+start.bat

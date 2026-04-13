@@ -31,10 +31,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.OptionalDouble;
+import java.util.stream.Collectors;
 
 @Service
 public class DevDashboardService {
     private static final DateTimeFormatter EVENT_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+    private static final DateTimeFormatter FULL_DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private final OcrTaskRepository taskRepository;
     private final TaskCallbackEventRepository callbackEventRepository;
     private final TaskCommandProducer taskCommandProducer;
@@ -106,6 +108,59 @@ public class DevDashboardService {
         OcrTaskEntity saved = taskRepository.save(task);
         taskCommandProducer.publish(saved);
         return new DevDashboardDtos.RetryResponse(true, saved.getId(), saved.getStatus(), "Task has been republished to MQ.");
+    }
+
+    @Transactional
+    public DevDashboardDtos.RetryResponse cancel(Long taskId) {
+        OcrTaskEntity task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found."));
+        task.setStatus("failed");
+        task.setErrorMessage("Cancelled via dev dashboard.");
+        OcrTaskEntity saved = taskRepository.save(task);
+        return new DevDashboardDtos.RetryResponse(true, saved.getId(), saved.getStatus(), "Task has been cancelled.");
+    }
+
+    @Transactional
+    public void deleteTask(Long taskId) {
+        if (!taskRepository.existsById(taskId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found.");
+        }
+        taskRepository.deleteById(taskId);
+    }
+
+    public DevDashboardDtos.BatchListResponse batches() {
+        List<OcrTaskEntity> tasks = taskRepository
+                .findAll(PageRequest.of(0, 500, Sort.by(Sort.Direction.DESC, "updatedAt")))
+                .getContent();
+        Map<String, List<OcrTaskEntity>> byBatch = tasks.stream()
+                .filter(t -> t.getBatchId() != null && !t.getBatchId().isBlank())
+                .collect(Collectors.groupingBy(OcrTaskEntity::getBatchId));
+        List<DevDashboardDtos.BatchSummary> summaries = byBatch.entrySet().stream()
+                .map(entry -> {
+                    String batchId = entry.getKey();
+                    List<OcrTaskEntity> group = entry.getValue();
+                    long completed = group.stream().filter(t -> "completed".equals(normalizeStatus(t.getStatus()))).count();
+                    long running = group.stream().filter(t -> "running".equals(normalizeStatus(t.getStatus()))).count();
+                    long failed = group.stream().filter(t -> "failed".equals(normalizeStatus(t.getStatus()))).count();
+                    long queued = group.stream().filter(t -> "queued".equals(normalizeStatus(t.getStatus()))).count();
+                    OffsetDateTime latest = group.stream().filter(t -> t.getUpdatedAt() != null)
+                            .max(Comparator.comparing(OcrTaskEntity::getUpdatedAt)).map(OcrTaskEntity::getUpdatedAt).orElse(null);
+                    OffsetDateTime first = group.stream().filter(t -> t.getCreatedAt() != null)
+                            .min(Comparator.comparing(OcrTaskEntity::getCreatedAt)).map(OcrTaskEntity::getCreatedAt).orElse(null);
+                    String submitter = group.stream().map(OcrTaskEntity::getSubmitterUsername)
+                            .filter(u -> u != null && !u.isBlank()).findFirst().orElse("");
+                    String tenantId = group.stream().map(OcrTaskEntity::getTenantId)
+                            .filter(t -> t != null && !t.isBlank()).findFirst().orElse("default");
+                    return new DevDashboardDtos.BatchSummary(
+                            batchId, group.size(), completed, running, failed, queued,
+                            latest != null ? FULL_DATETIME_FORMATTER.format(latest) : "-",
+                            first != null ? FULL_DATETIME_FORMATTER.format(first) : "-",
+                            submitter, tenantId);
+                })
+                .sorted(Comparator.comparing(DevDashboardDtos.BatchSummary::firstSeen).reversed())
+                .limit(40)
+                .toList();
+        return new DevDashboardDtos.BatchListResponse(Instant.now(), summaries);
     }
 
     private List<DevDashboardDtos.QueueMetric> queueMetrics() {
@@ -233,6 +288,13 @@ public class DevDashboardService {
         raw.put("batch_id", task.getBatchId());
         raw.put("trace_id", task.getTraceId());
         raw.put("file_path", task.getFilePath());
+        raw.put("page_count", task.getPageCount());
+        raw.put("total_pages", task.getTotalPages());
+        raw.put("progress_percent", task.getProgressPercent());
+        raw.put("submitter_username", task.getSubmitterUsername());
+        raw.put("assignee_username", task.getAssigneeUsername());
+        raw.put("tenant_id", task.getTenantId());
+        raw.put("review_status", task.getReviewStatus());
         raw.put("created_at", task.getCreatedAt());
         raw.put("updated_at", task.getUpdatedAt());
         raw.put("agent_meta", task.getAgentMeta());
@@ -248,7 +310,10 @@ public class DevDashboardService {
                 safe(task.getErrorMessage(), ""),
                 stages(duration),
                 events,
-                raw
+                raw,
+                safe(task.getTenantId(), "default"),
+                safe(task.getBatchId(), ""),
+                safe(task.getSubmitterUsername(), "")
         );
     }
 

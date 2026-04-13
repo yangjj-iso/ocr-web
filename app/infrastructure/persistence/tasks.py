@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import desc, func, or_, select, text as sa_text
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ArchiveRecord, OCRTask
@@ -17,6 +17,7 @@ async def create_task(
     file_type: str,
     *,
     mode: str = "layout",
+    tenant_id: str = "default",
 ) -> OCRTask:
     task = OCRTask(
         filename=filename,
@@ -24,6 +25,7 @@ async def create_task(
         file_type=file_type,
         mode=mode,
         status="pending",
+        tenant_id=tenant_id,
     )
     db.add(task)
     await db.commit()
@@ -31,8 +33,11 @@ async def create_task(
     return task
 
 
-async def get_task_detail(db: AsyncSession, task_id: int) -> OCRTask | None:
-    return await db.get(OCRTask, task_id)
+async def get_task_detail(db: AsyncSession, task_id: int, *, tenant_id: str = "") -> OCRTask | None:
+    task = await db.get(OCRTask, task_id)
+    if task and tenant_id and task.tenant_id != tenant_id:
+        return None
+    return task
 
 
 async def get_task_list(
@@ -41,8 +46,11 @@ async def get_task_list(
     page_size: int = 20,
     *,
     folder: str = "",
+    tenant_id: str = "",
 ) -> tuple[list[OCRTask], int]:
     conditions = []
+    if tenant_id:
+        conditions.append(OCRTask.tenant_id == tenant_id)
     if folder:
         base = folder.rstrip("/\\")
         conditions.append(
@@ -74,6 +82,8 @@ async def search_tasks(
     keyword: str,
     page: int = 1,
     page_size: int = 20,
+    *,
+    tenant_id: str = "",
 ) -> tuple[list[OCRTask], int]:
     from sqlalchemy import String as SAString
     from sqlalchemy import cast
@@ -84,11 +94,14 @@ async def search_tasks(
         OCRTask.full_text.ilike(like_pattern),
         cast(OCRTask.result_json, SAString).ilike(like_pattern),
     )
+    conditions = [condition]
+    if tenant_id:
+        conditions.append(OCRTask.tenant_id == tenant_id)
 
-    total = (await db.execute(select(func.count(OCRTask.id)).where(condition))).scalar() or 0
+    total = (await db.execute(select(func.count(OCRTask.id)).where(*conditions))).scalar() or 0
     stmt = (
         select(OCRTask)
-        .where(condition)
+        .where(*conditions)
         .order_by(desc(OCRTask.created_at))
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -97,9 +110,11 @@ async def search_tasks(
     return tasks, total
 
 
-async def delete_task(db: AsyncSession, task_id: int) -> bool:
+async def delete_task(db: AsyncSession, task_id: int, *, tenant_id: str = "") -> bool:
     task = await db.get(OCRTask, task_id)
     if not task:
+        return False
+    if tenant_id and task.tenant_id != tenant_id:
         return False
 
     remove_managed_upload_file(task.file_path)
@@ -109,14 +124,17 @@ async def delete_task(db: AsyncSession, task_id: int) -> bool:
     return True
 
 
-async def delete_tasks_by_folder(db: AsyncSession, folder: str) -> int:
+async def delete_tasks_by_folder(db: AsyncSession, folder: str, *, tenant_id: str = "") -> int:
     base = folder.rstrip("/\\")
-    tasks_stmt = select(OCRTask).where(
+    conditions = [
         or_(
             func.starts_with(OCRTask.file_path, base + "\\"),
             func.starts_with(OCRTask.file_path, base + "/"),
         )
-    )
+    ]
+    if tenant_id:
+        conditions.append(OCRTask.tenant_id == tenant_id)
+    tasks_stmt = select(OCRTask).where(*conditions)
     tasks = list((await db.execute(tasks_stmt)).scalars().all())
     if not tasks:
         return 0
@@ -131,50 +149,53 @@ async def delete_tasks_by_folder(db: AsyncSession, folder: str) -> int:
     return len(task_ids)
 
 
-async def list_terminal_folders(db: AsyncSession) -> list[tuple[int, str, object]]:
-    return (
-        await db.execute(
-            sa_text(
-                "SELECT id, file_path, created_at "
-                "FROM ocr_tasks "
-                "WHERE status IN ('done', 'failed') "
-                "ORDER BY created_at DESC"
-            )
-        )
-    ).fetchall()
+async def list_terminal_folders(db: AsyncSession, *, tenant_id: str = "") -> list[tuple[int, str, object]]:
+    stmt = (
+        select(OCRTask.id, OCRTask.file_path, OCRTask.created_at)
+        .where(OCRTask.status.in_(["done", "failed"]))
+        .order_by(desc(OCRTask.created_at))
+    )
+    if tenant_id:
+        stmt = stmt.where(OCRTask.tenant_id == tenant_id)
+    return (await db.execute(stmt)).all()
 
 
-async def list_folder_batch_pairs(db: AsyncSession) -> list[tuple[str, str]]:
-    return (
-        await db.execute(
-            sa_text(
-                "SELECT DISTINCT batch_folder, batch_id "
-                "FROM archive_records "
-                "WHERE batch_id IS NOT NULL AND batch_id != ''"
-            )
-        )
-    ).fetchall()
+async def list_folder_batch_pairs(db: AsyncSession, *, tenant_id: str = "") -> list[tuple[str, str]]:
+    stmt = (
+        select(ArchiveRecord.batch_folder, ArchiveRecord.batch_id)
+        .where(ArchiveRecord.batch_id.is_not(None), ArchiveRecord.batch_id != "")
+        .distinct()
+    )
+    if tenant_id:
+        stmt = stmt.where(ArchiveRecord.tenant_id == tenant_id)
+    return (await db.execute(stmt)).all()
 
 
-async def get_progress_tasks(db: AsyncSession, task_ids: list[int]) -> list[OCRTask]:
+async def get_progress_tasks(db: AsyncSession, task_ids: list[int], *, tenant_id: str = "") -> list[OCRTask]:
     if not task_ids:
         return []
-    return list((await db.execute(select(OCRTask).where(OCRTask.id.in_(task_ids)))).scalars().all())
+    stmt = select(OCRTask).where(OCRTask.id.in_(task_ids))
+    if tenant_id:
+        stmt = stmt.where(OCRTask.tenant_id == tenant_id)
+    return list((await db.execute(stmt)).scalars().all())
 
 
-async def list_task_ids_by_folder(db: AsyncSession, folder: str) -> list[int]:
+async def list_task_ids_by_folder(db: AsyncSession, folder: str, *, tenant_id: str = "") -> list[int]:
     base = folder.rstrip("/\\")
     if not base:
         return []
+    conditions = [
+        or_(
+            func.starts_with(OCRTask.file_path, base + "\\"),
+            func.starts_with(OCRTask.file_path, base + "/"),
+        )
+    ]
+    if tenant_id:
+        conditions.append(OCRTask.tenant_id == tenant_id)
     return list(
         (
             await db.execute(
-                select(OCRTask.id).where(
-                    or_(
-                        func.starts_with(OCRTask.file_path, base + "\\"),
-                        func.starts_with(OCRTask.file_path, base + "/"),
-                    )
-                )
+                select(OCRTask.id).where(*conditions)
             )
         ).scalars().all()
     )

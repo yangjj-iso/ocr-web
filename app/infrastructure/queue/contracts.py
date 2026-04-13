@@ -29,7 +29,6 @@ class CommandExecutionPayload(BaseModel):
     llm_backend: str = "local"
     llm_model: str = ""
     vision_enabled: bool = False
-    enable_hierarchical_agent: bool = False
     processing_strategy: str = "auto"
     max_retries: int = 2
     confidence_threshold: float = 0.85
@@ -37,7 +36,7 @@ class CommandExecutionPayload(BaseModel):
     human_review_threshold_high: float = 0.85
     timeout_seconds: int = 1800
     gpu_profile: str = "single_gpu"
-    langgraph_graph: str = "batch_supervisor_v1"
+    langgraph_graph: str = "archive_main"
 
 
 class CommandBusinessPayload(BaseModel):

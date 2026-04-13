@@ -32,10 +32,17 @@ public class AppUserEntity {
     private boolean isAdmin = false;
 
     @Column(nullable = false, length = 20)
-    private String role = "operator";
+    private String role = "member";
+
+    /** 岗位能力标签，逗号分隔，如 'operator'/'searcher'/'operator,searcher'.仅对 member 角色有意义。 */
+    @Column(nullable = true, length = 100)
+    private String capabilities;
 
     @Column(name = "display_name", length = 120)
     private String displayName;
+
+    @Column(name = "tenant_id", nullable = false, length = 64)
+    private String tenantId = "default";
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
@@ -82,11 +89,19 @@ public class AppUserEntity {
     }
 
     public String getRole() {
-        return role == null || role.isBlank() ? "operator" : role;
+        return role == null || role.isBlank() ? "member" : role;
     }
 
     public void setRole(String role) {
         this.role = role;
+    }
+
+    public String getCapabilities() {
+        return capabilities == null ? "" : capabilities;
+    }
+
+    public void setCapabilities(String capabilities) {
+        this.capabilities = (capabilities == null || capabilities.isBlank()) ? null : capabilities.strip();
     }
 
     public String getDisplayName() {
@@ -95,6 +110,14 @@ public class AppUserEntity {
 
     public void setDisplayName(String displayName) {
         this.displayName = displayName;
+    }
+
+    public String getTenantId() {
+        return tenantId == null || tenantId.isBlank() ? "default" : tenantId;
+    }
+
+    public void setTenantId(String tenantId) {
+        this.tenantId = tenantId == null || tenantId.isBlank() ? "default" : tenantId;
     }
 
     public OffsetDateTime getCreatedAt() {

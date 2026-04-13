@@ -8,6 +8,8 @@ import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.trace.RequestTraceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.MessageDeliveryMode;
+import org.springframework.amqp.core.MessagePostProcessor;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +24,11 @@ import java.util.UUID;
 public class TaskCommandProducer {
     private static final Logger logger = LoggerFactory.getLogger(TaskCommandProducer.class);
     private static final Set<String> VISION_MODES = Set.of("vl", "baidu_vl");
+    private static final String DEFAULT_LANGGRAPH_GRAPH = "archive_main";
+    private static final MessagePostProcessor PERSISTENT_DELIVERY = msg -> {
+        msg.getMessageProperties().setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+        return msg;
+    };
     private final RabbitTemplate rabbitTemplate;
     private final RabbitMqProperties properties;
     private final InternalApiProperties internalApiProperties;
@@ -48,7 +55,7 @@ public class TaskCommandProducer {
         payload.put("trace_id", traceId);
         payload.put("task_id", task.getId());
         payload.put("batch_id", task.getBatchId() == null ? "" : task.getBatchId());
-        payload.put("tenant_id", "default");
+        payload.put("tenant_id", task.getTenantId());
         payload.put("submitted_at", OffsetDateTime.now().toString());
         payload.put("priority", 5);
         payload.put("file", buildFilePayload(task));
@@ -63,7 +70,7 @@ public class TaskCommandProducer {
                 "base_url", internalBaseUrl(),
                 "result_mode", "inline_or_url"
         ));
-        rabbitTemplate.convertAndSend(properties.getExchange(), properties.getRoutingKey(), payload);
+        rabbitTemplate.convertAndSend(properties.getExchange(), properties.getRoutingKey(), payload, PERSISTENT_DELIVERY);
         logger.info(
                 "Published OCR task command: taskId={}, batchId={}, exchange={}, routingKey={}, traceId={}",
                 task.getId(),
@@ -83,7 +90,7 @@ public class TaskCommandProducer {
         payload.put("trace_id", traceId);
         payload.put("task_id", task.getId());
         payload.put("batch_id", task.getBatchId() == null ? "" : task.getBatchId());
-        payload.put("tenant_id", "default");
+        payload.put("tenant_id", task.getTenantId());
         payload.put("submitted_at", OffsetDateTime.now().toString());
         payload.put("priority", 5);
         payload.put("execution", buildExecutionPayload(task, true));
@@ -100,7 +107,7 @@ public class TaskCommandProducer {
         payload.put("workflow_thread_id", task.getWorkflowThreadId() == null ? "" : task.getWorkflowThreadId());
         payload.put("resume_payload", resumePayload);
         payload.put("resume_reason", "human_review_resume");
-        rabbitTemplate.convertAndSend(properties.getExchange(), properties.getRoutingKey(), payload);
+        rabbitTemplate.convertAndSend(properties.getExchange(), properties.getRoutingKey(), payload, PERSISTENT_DELIVERY);
         logger.info(
                 "Published OCR resume command: taskId={}, batchId={}, workflowThreadId={}, exchange={}, routingKey={}, traceId={}",
                 task.getId(),
@@ -125,21 +132,14 @@ public class TaskCommandProducer {
 
     private Map<String, Object> buildExecutionPayload(OcrTaskEntity task, boolean resumeWorkflow) {
         String requestedMode = normalizeMode(task.getMode());
-        boolean forceHierarchicalResume = resumeWorkflow
-                && task.getWorkflowThreadId() != null
-                && !task.getWorkflowThreadId().isBlank();
-        boolean hierarchicalEnabled = (processingProperties.isEnableHierarchicalAgent()
-                && supportsHierarchicalAgent(requestedMode))
-                || forceHierarchicalResume;
-        boolean visionEnabled = VISION_MODES.contains(requestedMode) || hierarchicalEnabled;
+        boolean visionEnabled = VISION_MODES.contains(requestedMode);
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("mode", requestedMode);
         payload.put("ocr_backend", guessOcrBackend(requestedMode));
-        payload.put("llm_backend", hierarchicalEnabled ? safe(processingProperties.getLlmBackend(), "local") : "local");
-        payload.put("llm_model", hierarchicalEnabled ? safe(processingProperties.getLlmModel()) : "");
+        payload.put("llm_backend", safe(processingProperties.getLlmBackend(), "local"));
+        payload.put("llm_model", safe(processingProperties.getLlmModel()));
         payload.put("vision_enabled", visionEnabled);
-        payload.put("enable_hierarchical_agent", hierarchicalEnabled);
         payload.put("processing_strategy", safe(processingProperties.getProcessingStrategy(), "auto"));
         payload.put("max_retries", processingProperties.getMaxRetries());
         payload.put("confidence_threshold", processingProperties.getConfidenceThreshold());
@@ -147,12 +147,8 @@ public class TaskCommandProducer {
         payload.put("human_review_threshold_high", processingProperties.getHumanReviewThresholdHigh());
         payload.put("timeout_seconds", processingProperties.getTimeoutSeconds());
         payload.put("gpu_profile", safe(processingProperties.getGpuProfile(), "single_gpu"));
-        payload.put("langgraph_graph", safe(processingProperties.getLanggraphGraph(), "batch_supervisor_v1"));
+        payload.put("langgraph_graph", safe(processingProperties.getLanggraphGraph(), DEFAULT_LANGGRAPH_GRAPH));
         return payload;
-    }
-
-    private boolean supportsHierarchicalAgent(String mode) {
-        return VISION_MODES.contains(mode);
     }
 
     private String guessOcrBackend(String mode) {
@@ -173,7 +169,6 @@ public class TaskCommandProducer {
         String normalized = safe(mode).toLowerCase();
         return switch (normalized) {
             case "ocr", "layout", "vl", "baidu_vl" -> normalized;
-            case "hierarchical_agent" -> "layout";
             default -> "layout";
         };
     }

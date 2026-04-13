@@ -1,18 +1,22 @@
 @import "tailwindcss";
 
 :root {
-  --gov-bg: #f8fafc;
+  --gov-bg: #f5f7fa;
   --gov-surface: #ffffff;
-  --gov-surface-muted: #f7f9fc;
-  --gov-border: #e2e8f0;
-  --gov-border-strong: #cbd5e1;
-  --gov-text: #1e293b;
-  --gov-text-muted: #64748b;
-  --gov-primary: #2563eb;
-  --gov-primary-soft: #eff6ff;
-  --gov-success: #10b981;
-  --gov-danger: #ef4444;
-  --gov-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+  --gov-surface-muted: #f8f9fb;
+  --gov-border: #e8ecf1;
+  --gov-border-strong: #d1d8e0;
+  --gov-text: #1a2332;
+  --gov-text-muted: #6b7a8d;
+  --gov-primary: #3b6de0;
+  --gov-primary-hover: #2d5bc7;
+  --gov-primary-soft: #eef3fc;
+  --gov-success: #16a776;
+  --gov-danger: #e5453f;
+  --gov-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02);
+  --gov-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --gov-radius: 6px;
+  --gov-radius-lg: 8px;
 }
 
 html,
@@ -25,8 +29,14 @@ body {
   margin: 0;
   background: var(--gov-bg);
   color: var(--gov-text);
-  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-feature-settings: "tnum";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
+/* Selection highlight */
+::selection { background: var(--gov-primary-soft); color: var(--gov-text); }
 
 .gov-shell {
   min-height: 100vh;
@@ -40,14 +50,14 @@ body {
 
 .gov-panel {
   border: 1px solid var(--gov-border);
-  border-radius: 12px;
+  border-radius: var(--gov-radius-lg);
   background: var(--gov-surface);
   box-shadow: var(--gov-shadow);
 }
 
 .gov-section-title {
   color: var(--gov-text);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .gov-muted {
@@ -55,9 +65,9 @@ body {
 }
 
 .gov-mark {
-  border-radius: 6px;
-  background: #ffedbd;
-  color: #684700;
+  border-radius: 3px;
+  background: #fff3cd;
+  color: #664d03;
   padding: 0 4px;
 }
 
@@ -65,39 +75,40 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: var(--gov-radius);
   padding: 6px 16px;
   font-weight: 500;
   font-size: 0.875rem;
   cursor: pointer;
-  transition: filter 0.15s, background-color 0.15s;
+  transition: all 0.15s ease;
   background: var(--gov-primary);
   color: #ffffff;
   border: none;
 }
-.gov-btn:hover:not(:disabled) { filter: brightness(1.08); }
-.gov-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.gov-btn:hover:not(:disabled) { background: var(--gov-primary-hover); }
+.gov-btn:active:not(:disabled) { transform: translateY(0.5px); }
+.gov-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .gov-btn-secondary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: var(--gov-radius);
   padding: 6px 16px;
   font-weight: 500;
   font-size: 0.875rem;
   cursor: pointer;
-  transition: background-color 0.15s;
+  transition: all 0.15s ease;
   background: #ffffff;
   color: var(--gov-text);
   border: 1px solid var(--gov-border);
 }
-.gov-btn-secondary:hover:not(:disabled) { background: #f1f5f9; }
-.gov-btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+.gov-btn-secondary:hover:not(:disabled) { background: #f5f7fa; border-color: var(--gov-border-strong); }
+.gov-btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .gov-input {
   border: 1px solid var(--gov-border);
-  border-radius: 6px;
+  border-radius: var(--gov-radius);
   padding: 5px 10px;
   font-size: 0.875rem;
   color: var(--gov-text);
@@ -107,12 +118,101 @@ body {
 }
 .gov-input:focus {
   border-color: var(--gov-primary);
-  box-shadow: 0 0 0 3px rgba(31, 79, 136, 0.12);
+  box-shadow: 0 0 0 2px rgba(59, 109, 224, 0.1);
 }
 
 .gov-card {
   border: 1px solid var(--gov-border);
-  border-radius: 10px;
+  border-radius: var(--gov-radius-lg);
   background: var(--gov-surface);
-  box-shadow: 0 2px 8px rgba(31, 56, 91, 0.05);
+  box-shadow: var(--gov-shadow);
+}
+
+/* Keyboard shortcut hint badge */
+.gov-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--gov-border-strong);
+  border-radius: 3px;
+  background: var(--gov-surface-muted);
+  color: var(--gov-text-muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  line-height: 1;
+}
+
+/* Scrollbar refinement */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d1d8e0; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #b0bac5; }
+
+/* Unified form controls */
+.gov-select,
+.gov-filter-input {
+  border: 1px solid var(--gov-border);
+  border-radius: var(--gov-radius);
+  padding: 5px 10px;
+  font-size: 0.8125rem;
+  color: var(--gov-text);
+  background: #ffffff;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.gov-select:focus,
+.gov-filter-input:focus {
+  border-color: var(--gov-primary);
+  box-shadow: 0 0 0 2px rgba(59, 109, 224, 0.08);
+}
+
+/* Modal overlay */
+.gov-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.3);
+  backdrop-filter: blur(2px);
+  padding: 1rem;
+}
+.gov-modal-panel {
+  background: #fff;
+  border-radius: var(--gov-radius-lg);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  animation: gov-modal-in 0.18s ease-out;
+}
+@keyframes gov-modal-in {
+  from { opacity: 0; transform: scale(0.96) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Page header utility */
+.gov-page-header {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--gov-text);
+  letter-spacing: 0.01em;
+}
+
+/* Action link in tables */
+.gov-action-link {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--gov-primary);
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.gov-action-link:hover { opacity: 0.75; }
+
+/* Subtle divider */
+.gov-divider {
+  border: none;
+  border-top: 1px solid var(--gov-border);
+  margin: 0;
 }

@@ -65,8 +65,9 @@ public class ArchiveRecordService {
         this.pathAccessService = pathAccessService;
     }
 
-    public ArchiveDtos.ArchiveRecordListResponse listRecords(String folder, String batchId, int page, int pageSize) {
-        var pageResult = archiveRecordRepository.findByFilters(
+    public ArchiveDtos.ArchiveRecordListResponse listRecords(String folder, String batchId, int page, int pageSize, String tenantId) {
+        var pageResult = archiveRecordRepository.findByTenantIdAndFilters(
+                safe(tenantId, "default"),
                 safe(folder),
                 safe(batchId),
                 PageRequest.of(Math.max(0, page - 1), pageSize)
@@ -77,8 +78,13 @@ public class ArchiveRecordService {
         );
     }
 
-    public Path exportRecords(String folder, String batchId) {
-        List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByFilters(safe(folder), safe(batchId));
+    /** Backwards-compatible overload without tenant isolation. */
+    public ArchiveDtos.ArchiveRecordListResponse listRecords(String folder, String batchId, int page, int pageSize) {
+        return listRecords(folder, batchId, page, pageSize, "default");
+    }
+
+    public Path exportRecords(String folder, String batchId, String tenantId) {
+        List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByTenantIdAndFilters(safe(tenantId, "default"), safe(folder), safe(batchId));
         if (records.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No archive records found.");
         }
@@ -112,17 +118,19 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public int importRecords(String filePath, String batchId) {
+    public int importRecords(String filePath, String batchId, String tenantId) {
         Path safePath = pathAccessService.ensureAllowedPath(filePath, true, false);
         List<Map<String, String>> rows = readArchiveRows(safePath);
         String resolvedBatchId = StringUtils.hasText(batchId) ? batchId.trim() : "import_" + stripExtension(safePath.getFileName().toString());
         String folder = safePath.getParent() == null ? "" : safePath.getParent().toString();
+        String effectiveTenant = safe(tenantId, "default");
 
         for (Map<String, String> row : rows) {
             ArchiveRecordEntity entity = new ArchiveRecordEntity();
             entity.setTaskId(null);
             entity.setBatchId(resolvedBatchId);
             entity.setBatchFolder(folder);
+            entity.setTenantId(effectiveTenant);
             entity.setArchiveNo(row.getOrDefault("档号", ""));
             entity.setDocNo(row.getOrDefault("文号", ""));
             entity.setResponsible(row.getOrDefault("责任者", ""));
@@ -139,22 +147,29 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public long deleteRecords(String folder, String batchId) {
+    public long deleteRecords(String folder, String batchId, String tenantId) {
         String safeFolder = safe(folder);
         String safeBatchId = safe(batchId);
+        String effectiveTenant = safe(tenantId, "default");
         if (StringUtils.hasText(safeBatchId)) {
-            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByFilters("", safeBatchId);
+            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByTenantIdAndFilters(effectiveTenant, "", safeBatchId);
             archiveRecordRepository.deleteAll(records);
             return records.size();
         }
         if (StringUtils.hasText(safeFolder)) {
-            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByFilters(safeFolder, "");
+            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByTenantIdAndFilters(effectiveTenant, safeFolder, "");
             archiveRecordRepository.deleteAll(records);
             return records.size();
         }
-        long total = archiveRecordRepository.count();
-        archiveRecordRepository.deleteAllInBatch();
-        return total;
+        List<ArchiveRecordEntity> records = archiveRecordRepository.findByTenantId(effectiveTenant);
+        archiveRecordRepository.deleteAll(records);
+        return records.size();
+    }
+
+    /** Backwards-compatible overload without tenant isolation. */
+    @Transactional
+    public long deleteRecords(String folder, String batchId) {
+        return deleteRecords(folder, batchId, "default");
     }
 
     @Transactional
@@ -166,13 +181,17 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public int batchUpdateRecords(ArchiveDtos.BatchUpdateRequest request) {
+    public int batchUpdateRecords(ArchiveDtos.BatchUpdateRequest request, String tenantId) {
         if (request.ids() == null || request.ids().isEmpty()) {
             return 0;
         }
+        String effectiveTenant = safe(tenantId, "default");
         List<ArchiveRecordEntity> records = archiveRecordRepository.findAllById(request.ids());
         int updated = 0;
         for (ArchiveRecordEntity record : records) {
+            if (!effectiveTenant.equals(record.getTenantId())) {
+                continue;
+            }
             boolean dirty = false;
             if (request.responsible() != null) {
                 record.setResponsible(request.responsible());
@@ -203,16 +222,17 @@ public class ArchiveRecordService {
         return updated;
     }
 
-    public ArchiveDtos.StorageTreeResponse getStorageTree() {
+    public ArchiveDtos.StorageTreeResponse getStorageTree(String tenantId) {
+        String effectiveTenant = safe(tenantId, "default");
         // 1. Paths from archive records
-        List<String> archivePaths = archiveRecordRepository.findDistinctStoragePaths();
+        List<String> archivePaths = archiveRecordRepository.findDistinctStoragePathsByTenantId(effectiveTenant);
         Map<String, List<String>> parentToChildren = new java.util.LinkedHashMap<>();
         Map<String, Integer> pathRecordCounts = new java.util.HashMap<>();
         java.util.Set<String> allLeafPaths = new java.util.LinkedHashSet<>(archivePaths);
         int totalRecords = 0;
 
         for (String path : archivePaths) {
-            int count = archiveRecordRepository.findByStoragePath(path).size();
+            int count = archiveRecordRepository.findByTenantIdAndStoragePath(effectiveTenant, path).size();
             pathRecordCounts.put(path, count);
             totalRecords += count;
         }
@@ -221,7 +241,7 @@ public class ArchiveRecordService {
         // Use lightweight projection to avoid loading full entities with large JSON
         List<Object[]> taskIdFilenames = ocrTaskRepository.findAllIdAndFilename();
         java.util.Set<Long> tasksWithStoragePath = new java.util.HashSet<>();
-        for (ArchiveRecordEntity ar : archiveRecordRepository.findAll()) {
+        for (ArchiveRecordEntity ar : archiveRecordRepository.findByTenantId(effectiveTenant)) {
             if (StringUtils.hasText(ar.getStoragePath()) && ar.getTaskId() != null) {
                 tasksWithStoragePath.add(ar.getTaskId());
             }
@@ -311,9 +331,10 @@ public class ArchiveRecordService {
         return nodes;
     }
 
-    public ArchiveDtos.StoragePathRecordsResponse getRecordsByStoragePath(String storagePath) {
+    public ArchiveDtos.StoragePathRecordsResponse getRecordsByStoragePath(String storagePath, String tenantId) {
+        String effectiveTenant = safe(tenantId, "default");
         // Try exact match first, then prefix match for folder nodes
-        List<ArchiveRecordEntity> records = archiveRecordRepository.findByStoragePath(storagePath);
+        List<ArchiveRecordEntity> records = archiveRecordRepository.findByTenantIdAndStoragePath(effectiveTenant, storagePath);
         if (records.isEmpty()) {
             records = archiveRecordRepository.findByStoragePathStartingWith(storagePath);
         }
@@ -482,18 +503,19 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public java.util.Map<String, Object> ensureBatchForFolder(String folder) {
+    public java.util.Map<String, Object> ensureBatchForFolder(String folder, String tenantId) {
         Path safeFolder = pathAccessService.ensureAllowedPath(folder, false, true);
         String normalizedFolder = safeFolder.toString();
+        String effectiveTenant = safe(tenantId, "default");
 
-        List<String> existingBatchIds = archiveRecordRepository.findDistinctAssignedBatchIdsByFolder(normalizedFolder);
+        List<String> existingBatchIds = archiveRecordRepository.findDistinctAssignedBatchIdsByTenantIdAndFolder(effectiveTenant, normalizedFolder);
         String batchId = existingBatchIds.isEmpty()
                 ? "batch_" + OffsetDateTime.now().toEpochSecond() + "_" + UUID.randomUUID().toString().substring(0, 6)
                 : existingBatchIds.get(0);
         boolean created = existingBatchIds.isEmpty();
         int linkedTasks = 0;
 
-        List<ArchiveRecordEntity> unassignedRecords = archiveRecordRepository.findUnassignedByFolder(normalizedFolder);
+        List<ArchiveRecordEntity> unassignedRecords = archiveRecordRepository.findUnassignedByTenantIdAndFolder(effectiveTenant, normalizedFolder);
         if (!unassignedRecords.isEmpty()) {
             for (ArchiveRecordEntity record : unassignedRecords) {
                 record.setBatchId(batchId);
@@ -515,6 +537,10 @@ public class ArchiveRecordService {
             ArchiveRecordEntity record = archiveRecordRepository.findByTaskId(task.getId()).orElseGet(ArchiveRecordEntity::new);
             boolean dirty = false;
 
+            if (!effectiveTenant.equals(record.getTenantId())) {
+                record.setTenantId(effectiveTenant);
+                dirty = true;
+            }
             if (!Objects.equals(record.getTaskId(), task.getId())) {
                 record.setTaskId(task.getId());
                 dirty = true;
@@ -781,6 +807,11 @@ public class ArchiveRecordService {
 
     private static String safe(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static String safe(String value, String defaultValue) {
+        String trimmed = value == null ? "" : value.trim();
+        return trimmed.isEmpty() ? defaultValue : trimmed;
     }
 
     private static String extension(String filename) {

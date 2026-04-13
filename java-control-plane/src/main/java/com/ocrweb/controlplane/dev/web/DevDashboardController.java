@@ -6,6 +6,7 @@ import com.ocrweb.controlplane.dev.service.DevDashboardService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -63,5 +64,24 @@ public class DevDashboardController {
     public DevDashboardDtos.RetryResponse retry(@PathVariable Long taskId, HttpServletRequest request) {
         authService.requireSession(request);
         return dashboardService.retry(taskId);
+    }
+
+    @GetMapping("/batches")
+    public DevDashboardDtos.BatchListResponse batches(HttpServletRequest request) {
+        authService.requireSession(request);
+        return dashboardService.batches();
+    }
+
+    @PostMapping("/tasks/{taskId}/cancel")
+    public DevDashboardDtos.RetryResponse cancel(@PathVariable Long taskId, HttpServletRequest request) {
+        authService.requireSession(request);
+        return dashboardService.cancel(taskId);
+    }
+
+    @DeleteMapping("/tasks/{taskId}")
+    public ResponseEntity<Map<String, Object>> deleteTask(@PathVariable Long taskId, HttpServletRequest request) {
+        authService.requireSession(request);
+        dashboardService.deleteTask(taskId);
+        return ResponseEntity.ok(Map.of("ok", true, "taskId", taskId));
     }
 }
