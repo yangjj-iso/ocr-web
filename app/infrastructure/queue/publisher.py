@@ -13,7 +13,6 @@ from config import (
     COMPUTE_WORKER_ID,
     CONFIDENCE_THRESHOLD,
     CONTROL_PLANE_BASE_URL,
-    ENABLE_HIERARCHICAL_AGENT,
     HUMAN_REVIEW_MAX_CONFIDENCE,
     HUMAN_REVIEW_MIN_CONFIDENCE,
     MAX_RETRIES,
@@ -86,16 +85,16 @@ def _build_command(job: OCRJob) -> OcrTaskCommand:
         size_bytes=file_path.stat().st_size if file_path.exists() else 0,
     )
     execution_payload = CommandExecutionPayload(
-        mode="hierarchical_agent" if ENABLE_HIERARCHICAL_AGENT else job.mode,
+        mode=job.mode,
         ocr_backend=_guess_ocr_backend(job.mode),
         llm_backend="minimax" if MINIMAX_ENABLED else "local",
         llm_model=MINIMAX_MODEL if MINIMAX_ENABLED else "",
-        vision_enabled=job.mode in {"vl", "baidu_vl"} or ENABLE_HIERARCHICAL_AGENT,
-        enable_hierarchical_agent=ENABLE_HIERARCHICAL_AGENT,
+        vision_enabled=job.mode in {"vl", "baidu_vl"},
         max_retries=MAX_RETRIES,
         confidence_threshold=CONFIDENCE_THRESHOLD,
         human_review_threshold_low=HUMAN_REVIEW_MIN_CONFIDENCE,
         human_review_threshold_high=HUMAN_REVIEW_MAX_CONFIDENCE,
+        langgraph_graph="archive_main",
     )
     return OcrTaskCommand(
         task_id=int(job.task_id),

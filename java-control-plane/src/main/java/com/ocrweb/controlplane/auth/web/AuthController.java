@@ -47,7 +47,7 @@ public class AuthController {
 
     @PostMapping("/register")
     public AuthDtos.RegisterResponse register(@Valid @RequestBody AuthDtos.RegisterRequest request) {
-        return authService.register(request.username(), request.password(), request.realName(), request.requestedRole());
+        return authService.register(request.username(), request.password(), request.realName(), request.requestedRole(), request.requestedCapabilities(), request.tenantId());
     }
 
     @PostMapping("/change-password")

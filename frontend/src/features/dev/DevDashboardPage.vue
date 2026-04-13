@@ -79,7 +79,15 @@
             <p class="mt-0.5 text-sm text-neutral-500">{{ activeModuleMeta.description }}</p>
           </div>
           <div class="flex items-center gap-2">
-            <span class="hidden text-sm text-neutral-500 md:inline">每 30 秒采样，保留最近 12 小时</span>
+            <span v-if="lastRefreshedAt" class="hidden text-xs text-neutral-400 md:inline">
+              {{ lastRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false }) }} · {{ refreshCountdown }}s 后刷新
+            </span>
+            <span v-else class="hidden text-xs text-neutral-400 md:inline">每 {{ refreshInterval }}s 采样，保留最近 12h</span>
+            <select v-model.number="refreshInterval" class="h-9 rounded-lg border border-neutral-200 bg-white px-2 text-xs text-neutral-600 outline-none hover:bg-neutral-50" title="刷新间隔" @change="startAutoRefresh">
+              <option :value="15">15s</option>
+              <option :value="30">30s</option>
+              <option :value="60">60s</option>
+            </select>
             <button class="inline-flex items-center gap-2 rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-700 hover:bg-neutral-50" @click="refreshAll">
               <RefreshCw class="h-4 w-4" :class="loading ? 'animate-spin' : ''" />
               刷新
@@ -172,6 +180,13 @@
               <input v-model="taskQuery" class="h-10 w-72 rounded-full border border-neutral-200 bg-white px-4 text-sm outline-none focus:border-blue-500" placeholder="搜索任务 ID / 模式 / 状态">
             </div>
 
+            <div v-if="retryFeedback" class="flex items-center gap-3 rounded-lg border px-4 py-3 text-sm" :class="retryFeedback.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'">
+              <CheckCircle v-if="retryFeedback.ok" class="h-4 w-4 shrink-0" />
+              <XCircle v-else class="h-4 w-4 shrink-0" />
+              <span class="flex-1">{{ retryFeedback.message }}</span>
+              <button class="shrink-0 rounded p-0.5 opacity-60 hover:opacity-100" @click="retryFeedback = null">✕</button>
+            </div>
+
             <article class="overflow-hidden rounded-lg border border-neutral-200 bg-white">
               <table class="w-full border-collapse text-left text-sm">
                 <thead class="bg-neutral-50 text-neutral-500">
@@ -180,23 +195,32 @@
                     <th class="px-5 py-3 font-medium">状态</th>
                     <th class="px-5 py-3 font-medium">模式</th>
                     <th class="px-5 py-3 font-medium">耗时</th>
-                    <th class="px-5 py-3 font-medium">重试</th>
+                    <th class="px-5 py-3 font-medium">批次</th>
+                    <th class="px-5 py-3 font-medium">提交人</th>
                     <th class="px-5 py-3 font-medium">操作</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-neutral-100">
                   <tr v-for="task in filteredTasks" :key="task.id" class="cursor-pointer hover:bg-neutral-50" :class="selectedTask?.id === task.id ? 'bg-blue-50' : ''" @click="selectedTaskId = task.id">
-                    <td class="px-5 py-3 font-mono">{{ task.id }}</td>
+                    <td class="px-5 py-3 font-mono text-xs">{{ task.id.slice(-12) }}</td>
                     <td class="px-5 py-3"><span class="rounded-full px-2 py-1 text-xs" :class="statusClass(task.status)">{{ statusLabel(task.status) }}</span></td>
                     <td class="px-5 py-3 font-mono text-neutral-600">{{ task.mode }}</td>
                     <td class="px-5 py-3 text-neutral-600">{{ formatDuration(task.durationMs) }}</td>
-                    <td class="px-5 py-3 text-neutral-600">{{ task.retries }}</td>
+                    <td class="max-w-[140px] px-5 py-3">
+                      <button v-if="task.batchId" class="block max-w-full truncate font-mono text-xs text-blue-600 hover:underline" :title="task.batchId" @click.stop="drillDownBatch(task.batchId)">…{{ task.batchId.slice(-14) }}</button>
+                      <span v-else class="text-neutral-400">—</span>
+                    </td>
+                    <td class="px-5 py-3 text-sm text-neutral-600">{{ task.submitter || '—' }}</td>
                     <td class="px-5 py-3">
-                      <button class="rounded-lg border border-neutral-200 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-50" :disabled="retryingId === task.id" @click.stop="retryTask(task)">重试</button>
+                      <div class="flex items-center gap-1.5">
+                        <button class="rounded-lg border border-neutral-200 px-2.5 py-1 text-xs hover:bg-neutral-50 disabled:opacity-50" :disabled="retryingId === task.id" @click.stop="retryTask(task)">重试</button>
+                        <button v-if="task.status === 'running'" class="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs text-amber-700 hover:bg-amber-100 disabled:opacity-50" :disabled="cancellingId === task.id" @click.stop="cancelTask(task)">取消</button>
+                        <button v-if="['failed', 'completed'].includes(task.status)" class="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-50" :disabled="deletingId === task.id" @click.stop="deleteTask(task)">删除</button>
+                      </div>
                     </td>
                   </tr>
                   <tr v-if="filteredTasks.length === 0">
-                    <td colspan="6" class="px-5 py-12 text-center text-neutral-500">暂无任务</td>
+                    <td colspan="7" class="px-5 py-12 text-center text-neutral-500">暂无任务</td>
                   </tr>
                 </tbody>
               </table>
@@ -226,7 +250,7 @@
             <article class="rounded-lg border border-neutral-200 bg-white p-5">
               <h3 class="text-lg font-semibold">Worker 探针</h3>
               <p class="mt-2 text-sm leading-6 text-neutral-500">{{ snapshot.infra.cleanupNote }}</p>
-              <div class="mt-6 grid grid-cols-4 gap-4">
+              <div class="mt-6 grid grid-cols-3 gap-4">
                 <div v-for="probe in workerProbes" :key="probe.label" class="rounded-lg border border-neutral-200 p-4">
                   <p class="text-sm text-neutral-500">{{ probe.label }}</p>
                   <p class="mt-4 text-3xl font-semibold">{{ probe.value }}</p>
@@ -239,18 +263,19 @@
                 <h3 class="font-semibold">模型耗时</h3>
               </div>
               <div class="divide-y divide-neutral-100">
-                <div v-for="model in snapshot.models" :key="model.name" class="grid grid-cols-[120px_minmax(0,1fr)_120px] items-center gap-4 px-5 py-4">
+                <div v-for="model in snapshot.models" :key="model.name" class="grid grid-cols-[120px_minmax(0,1fr)_130px_90px] items-center gap-4 px-5 py-4">
                   <span class="font-mono">{{ model.name }}</span>
                   <div class="h-2 overflow-hidden rounded-full bg-neutral-100">
                     <div class="h-full rounded-full bg-blue-500" :style="{ width: `${latencyWidth(model.avgMs)}%` }" />
                   </div>
                   <span class="text-right text-sm text-neutral-500">平均 {{ model.avgMs }} ms</span>
+                  <span class="text-right text-xs text-neutral-400">p95 {{ model.p95Ms }} ms</span>
                 </div>
               </div>
             </article>
           </section>
 
-          <section v-else class="grid grid-cols-[0.95fr_1.05fr] gap-6">
+          <section v-else-if="activeModule === 'taskDetail'" class="grid grid-cols-[0.95fr_1.05fr] gap-6">
             <article class="rounded-lg border border-neutral-200 bg-white p-5">
               <h3 class="text-lg font-semibold">源文件 / 耗时瀑布</h3>
               <p class="mt-1 text-sm text-neutral-500">{{ selectedTask?.fileName || '未选择任务' }}</p>
@@ -283,7 +308,13 @@
                 </button>
               </div>
               <div class="max-h-[620px] overflow-auto p-5">
-                <pre v-if="inspectorTab === 'json'" class="rounded-lg bg-neutral-950 p-4 text-xs leading-5 text-neutral-100">{{ inspectorJson }}</pre>
+                <dl v-if="inspectorTab === 'info'" class="grid grid-cols-2 gap-3">
+                  <div v-for="field in inspectorBasicInfo" :key="field.label" class="rounded-lg border border-neutral-200 p-3">
+                    <dt class="text-xs text-neutral-500">{{ field.label }}</dt>
+                    <dd class="mt-1 break-all font-mono text-sm">{{ field.value }}</dd>
+                  </div>
+                </dl>
+                <pre v-else-if="inspectorTab === 'json'" class="rounded-lg bg-neutral-950 p-4 text-xs leading-5 text-neutral-100">{{ inspectorJson }}</pre>
                 <pre v-else-if="inspectorTab === 'stack'" class="whitespace-pre-wrap rounded-lg bg-red-50 p-4 text-xs leading-5 text-red-700">{{ selectedTask?.errorMessage || '当前任务没有异常堆栈。' }}</pre>
                 <div v-else class="space-y-3">
                   <div v-for="event in selectedTask?.events || []" :key="event.at + event.name" class="rounded-lg border border-neutral-200 p-4">
@@ -295,6 +326,229 @@
                   </div>
                 </div>
               </div>
+            </article>
+          </section>
+
+          <section v-else-if="activeModule === 'alerts'" class="space-y-4">
+            <article v-for="alert in computedAlerts" :key="alert.key" class="flex items-start gap-4 rounded-lg border bg-white p-5" :class="alert.severity === 'error' ? 'border-red-200' : alert.severity === 'warning' ? 'border-amber-200' : 'border-neutral-200'">
+              <div class="mt-0.5 shrink-0">
+                <XCircle v-if="alert.severity === 'error'" class="h-5 w-5 text-red-500" />
+                <AlertTriangle v-else-if="alert.severity === 'warning'" class="h-5 w-5 text-amber-500" />
+                <CheckCircle v-else class="h-5 w-5 text-emerald-500" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between gap-3">
+                  <h3 class="font-semibold" :class="alert.severity === 'error' ? 'text-red-700' : alert.severity === 'warning' ? 'text-amber-700' : 'text-neutral-900'">{{ alert.title }}</h3>
+                  <span class="shrink-0 rounded-full px-3 py-1 text-xs font-medium" :class="alert.severity === 'error' ? 'bg-red-50 text-red-700' : alert.severity === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'">{{ alert.value }}</span>
+                </div>
+                <p class="mt-1.5 text-sm leading-6 text-neutral-500">{{ alert.description }}</p>
+              </div>
+            </article>
+            <p class="text-xs text-neutral-400">告警阈值基于当前快照实时计算；队列堆积 &gt; 50 条、任务重试 ≥ 3 次时触发告警。每 30 秒随快照自动更新。</p>
+          </section>
+
+          <section v-else-if="activeModule === 'auditLog'" class="space-y-5">
+            <article class="overflow-hidden rounded-lg border border-neutral-200 bg-white">
+              <div class="border-b border-neutral-200 px-5 py-4">
+                <h3 class="font-semibold">审计日志字段规范</h3>
+                <p class="mt-1 text-sm text-neutral-500">以下字段根据 Develop.md §19.3 规范定义，后端落表后将在此展示实时数据。</p>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full border-collapse text-left text-sm">
+                  <thead class="bg-neutral-50 text-xs text-neutral-500">
+                    <tr>
+                      <th class="px-5 py-3 font-medium">字段</th>
+                      <th class="px-5 py-3 font-medium">类型</th>
+                      <th class="px-5 py-3 font-medium">说明</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-neutral-100">
+                    <tr v-for="field in auditLogFields" :key="field.name" class="hover:bg-neutral-50">
+                      <td class="px-5 py-3 font-mono text-neutral-900">{{ field.name }}</td>
+                      <td class="px-5 py-3 font-mono text-neutral-500">{{ field.type }}</td>
+                      <td class="px-5 py-3 text-neutral-600">{{ field.desc }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+            <article class="rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-8 text-center">
+              <ClipboardList class="mx-auto mb-3 h-8 w-8 text-neutral-400" />
+              <p class="font-medium text-neutral-600">审计日志数据待接入</p>
+              <p class="mt-2 text-sm leading-6 text-neutral-500">
+                需要后端新增 <span class="rounded bg-neutral-200 px-1.5 py-0.5 font-mono text-xs">audit_log</span> 表及
+                <span class="rounded bg-neutral-200 px-1.5 py-0.5 font-mono text-xs">GET /api/dev/dashboard/audit-logs</span> 接口。<br>
+                建议记录的审计事件：批量导入 · 工作流启动 · 审核提交 · 返工申请 · Final 放行 · 正式入库 · 导出下载。
+              </p>
+            </article>
+          </section>
+
+          <section v-else-if="activeModule === 'quality'" class="space-y-6">
+            <div class="grid grid-cols-4 gap-4">
+              <article v-for="dim in qualityDimensions" :key="dim.key" class="rounded-lg border border-neutral-200 bg-white p-5">
+                <div class="flex items-center justify-between text-sm text-neutral-500">
+                  <component :is="dim.icon" class="h-5 w-5" />
+                  <span class="rounded-full bg-neutral-100 px-2 py-0.5 text-xs">权重 {{ dim.weight }}</span>
+                </div>
+                <p class="mt-4 text-lg font-semibold">{{ dim.label }}</p>
+                <p class="mt-0.5 font-mono text-xs text-neutral-400">{{ dim.key }}</p>
+                <div class="mt-4 h-1.5 overflow-hidden rounded-full bg-neutral-100">
+                  <div class="h-full rounded-full bg-neutral-300" style="width: 0%" />
+                </div>
+                <p class="mt-2 text-xs text-neutral-400">待采集</p>
+              </article>
+            </div>
+
+            <article class="rounded-lg border border-neutral-200 bg-white p-5">
+              <h3 class="font-semibold">质量评分公式（Develop.md §19.1）</h3>
+              <p class="mt-3 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 font-mono text-sm leading-7 text-neutral-700">
+                final_readiness_score =<br>
+                &nbsp;&nbsp;0.30 × ocr_confidence<br>
+                &nbsp;&nbsp;+ 0.35 × boundary_confidence<br>
+                &nbsp;&nbsp;+ 0.20 × metadata_confidence<br>
+                &nbsp;&nbsp;+ 0.15 × rule_match_score
+              </p>
+              <p class="mt-3 text-sm text-neutral-500">置信度值域 [0, 1]；final_readiness_score ≥ 0.75 时系统建议自动放行，低于 0.5 时强制进入人工 review。</p>
+              <div class="mt-6 grid grid-cols-3 gap-4">
+                <div v-for="stat in taskQualityStats" :key="stat.label" class="rounded-lg border border-neutral-200 p-4">
+                  <p class="text-sm text-neutral-500">{{ stat.label }}</p>
+                  <p class="mt-2 text-2xl font-semibold">{{ stat.value }}</p>
+                  <p class="mt-1 text-xs text-neutral-400">基于当前快照任务样本</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="rounded-lg border border-dashed border-neutral-300 bg-neutral-50 p-8 text-center">
+              <BarChart3 class="mx-auto mb-3 h-8 w-8 text-neutral-400" />
+              <p class="font-medium text-neutral-600">详细质量分数据待接入</p>
+              <p class="mt-2 text-sm leading-6 text-neutral-500">
+                需要后端在任务处理流程中埋入各维度置信度，并暴露
+                <span class="rounded bg-neutral-200 px-1.5 py-0.5 font-mono text-xs">GET /api/dev/dashboard/quality-metrics</span> 接口。
+              </p>
+            </article>
+          </section>
+
+          <!-- Module: tenants -->
+          <section v-else-if="activeModule === 'tenants'" class="space-y-6">
+            <!-- Isolation status checklist -->
+            <div class="grid grid-cols-2 gap-4">
+              <article class="rounded-lg border border-neutral-200 bg-white p-5 space-y-3">
+                <h3 class="font-semibold">租户隔离状态（Develop.md §20.1）</h3>
+                <ul class="space-y-2 text-sm text-neutral-600">
+                  <li class="flex items-center gap-2"><CheckCircle class="h-4 w-4 text-emerald-500 shrink-0" />所有数据表含 <code class="rounded bg-neutral-100 px-1.5 font-mono text-xs">tenant_id</code> 字段</li>
+                  <li class="flex items-center gap-2"><CheckCircle class="h-4 w-4 text-emerald-500 shrink-0" />MinIO 对象路径含租户前缀</li>
+                  <li class="flex items-center gap-2"><AlertTriangle class="h-4 w-4 text-amber-500 shrink-0" />现阶段所有租户 ID 为 <code class="rounded bg-amber-50 text-amber-700 px-1.5 font-mono text-xs">default</code>（占位）</li>
+                  <li class="flex items-center gap-2"><AlertTriangle class="h-4 w-4 text-amber-500 shrink-0" />查询未按 tenant_id 过滤（多租户上线前待启用）</li>
+                  <li class="flex items-center gap-2"><XCircle class="h-4 w-4 text-red-400 shrink-0" />导出签名 URL 有效期未强制限制（待接入）</li>
+                </ul>
+              </article>
+              <article class="rounded-lg border border-neutral-200 bg-white p-5 space-y-3">
+                <h3 class="font-semibold">MinIO 路径规范（Develop.md §16.3）</h3>
+                <pre class="mt-2 overflow-x-auto rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 font-mono text-xs leading-7 text-neutral-700">tenant/{tenant_id}/
+  batch/{batch_id}/
+    raw/          ← 原始上传文件
+    pages/        ← 拆分页图像
+    ocr/          ← OCR 结果 JSON
+    final/        ← 正式归档 PDF/目录
+    export/       ← 导出 ZIP 包</pre>
+              </article>
+            </div>
+
+            <!-- Role-domain matrix (compact) -->
+            <article class="rounded-lg border border-neutral-200 bg-white overflow-hidden">
+              <div class="border-b border-neutral-200 px-5 py-4">
+                <h3 class="font-semibold">角色与数据域矩阵（Develop.md §6 / §14 / §20.2）</h3>
+                <p class="mt-1 text-sm text-neutral-500">系统采用两域隔离：生产加工域和档案检索域。</p>
+              </div>
+              <table class="w-full text-sm">
+                <thead class="bg-neutral-50 text-xs text-neutral-500 border-b border-neutral-200">
+                  <tr>
+                    <th class="px-5 py-2.5 text-left">角色</th>
+                    <th class="px-5 py-2.5 text-left font-mono font-normal">backend role</th>
+                    <th class="px-5 py-2.5 text-center">生产加工域</th>
+                    <th class="px-5 py-2.5 text-center">档案检索域</th>
+                    <th class="px-5 py-2.5 text-center">平台管理</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-neutral-100">
+                  <tr><td class="px-5 py-2.5">公司管理员</td><td class="px-5 py-2.5 font-mono text-xs text-neutral-400">admin</td><td class="px-5 py-2.5 text-center text-emerald-600">✓</td><td class="px-5 py-2.5 text-center text-emerald-600">✓</td><td class="px-5 py-2.5 text-center text-emerald-600">✓</td></tr>
+                  <tr><td class="px-5 py-2.5">租户管理员</td><td class="px-5 py-2.5 font-mono text-xs text-neutral-400">tenant_admin</td><td class="px-5 py-2.5 text-center text-emerald-600">✓</td><td class="px-5 py-2.5 text-center text-emerald-600">✓</td><td class="px-5 py-2.5 text-center text-neutral-300">—</td></tr>
+                  <tr><td class="px-5 py-2.5">著录者</td><td class="px-5 py-2.5 font-mono text-xs text-neutral-400">operator</td><td class="px-5 py-2.5 text-center text-emerald-600">✓</td><td class="px-5 py-2.5 text-center text-red-400">✗</td><td class="px-5 py-2.5 text-center text-neutral-300">—</td></tr>
+                  <tr><td class="px-5 py-2.5">检索者</td><td class="px-5 py-2.5 font-mono text-xs text-neutral-400">searcher</td><td class="px-5 py-2.5 text-center text-red-400">✗</td><td class="px-5 py-2.5 text-center text-emerald-600">✓</td><td class="px-5 py-2.5 text-center text-neutral-300">—</td></tr>
+                </tbody>
+              </table>
+            </article>
+
+            <!-- Per-tenant task summary from live snapshot -->
+            <article class="rounded-lg border border-neutral-200 bg-white p-5 space-y-4">
+              <h3 class="font-semibold">当前快照租户分布</h3>
+              <div v-if="tenantTaskGroups.length === 0" class="text-sm text-neutral-400">暂无任务数据</div>
+              <div v-else class="space-y-2">
+                <div v-if="tenantTaskGroups.length === 1 && tenantTaskGroups[0].tenant_id === 'default'"
+                  class="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700">
+                  <AlertTriangle class="h-4 w-4 shrink-0" />
+                  所有任务均属于占位租户 <code class="font-mono">default</code>，多租户功能尚未激活。
+                </div>
+                <div v-for="g in tenantTaskGroups" :key="g.tenant_id" class="flex items-center justify-between rounded-lg border border-neutral-200 px-4 py-3 text-sm">
+                  <div class="flex items-center gap-3">
+                    <Building2 class="h-4 w-4 text-neutral-400" />
+                    <code class="font-mono text-xs text-neutral-600">{{ g.tenant_id }}</code>
+                    <span v-if="g.tenant_id === 'default'" class="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-600">占位</span>
+                  </div>
+                  <span class="text-neutral-600 font-medium">{{ g.count }} 条任务</span>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <!-- Module: batches -->
+          <section v-else-if="activeModule === 'batches'" class="space-y-5">
+            <div class="flex items-center justify-between gap-4">
+              <p class="text-sm text-neutral-500">共 {{ batches.length }} 个批次（最近 500 条任务去重统计）</p>
+              <input v-model="batchQuery" class="h-10 w-64 rounded-full border border-neutral-200 bg-white px-4 text-sm outline-none focus:border-blue-500" placeholder="搜索批次 ID / 提交人">
+            </div>
+
+            <article class="overflow-hidden rounded-lg border border-neutral-200 bg-white">
+              <table class="w-full border-collapse text-left text-sm">
+                <thead class="bg-neutral-50 text-xs text-neutral-500">
+                  <tr>
+                    <th class="px-5 py-3 font-medium">批次 ID</th>
+                    <th class="px-5 py-3 text-center font-medium">任务数</th>
+                    <th class="px-5 py-3 font-medium">状态分布</th>
+                    <th class="px-5 py-3 font-medium">提交人</th>
+                    <th class="px-5 py-3 font-medium">首次创建</th>
+                    <th class="px-5 py-3 font-medium">最近活动</th>
+                    <th class="px-5 py-3 font-medium">操作</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-neutral-100">
+                  <tr v-for="batch in filteredBatches" :key="batch.batchId" class="hover:bg-neutral-50">
+                    <td class="px-5 py-3">
+                      <span class="font-mono text-xs text-neutral-700" :title="batch.batchId">…{{ batch.batchId?.slice(-18) || '—' }}</span>
+                    </td>
+                    <td class="px-5 py-3 text-center font-medium">{{ batch.total }}</td>
+                    <td class="px-5 py-3">
+                      <div class="flex flex-wrap items-center gap-1">
+                        <span v-if="batch.completed" class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">完成 {{ batch.completed }}</span>
+                        <span v-if="batch.running" class="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-700">运行 {{ batch.running }}</span>
+                        <span v-if="batch.failed" class="rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-700">失败 {{ batch.failed }}</span>
+                        <span v-if="batch.queued" class="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">排队 {{ batch.queued }}</span>
+                      </div>
+                    </td>
+                    <td class="px-5 py-3 text-neutral-600">{{ batch.submitter || '—' }}</td>
+                    <td class="px-5 py-3 font-mono text-xs text-neutral-500">{{ batch.firstSeen }}</td>
+                    <td class="px-5 py-3 font-mono text-xs text-neutral-500">{{ batch.latestActivity }}</td>
+                    <td class="px-5 py-3">
+                      <button class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-100" @click="drillDownBatch(batch.batchId)">查看任务</button>
+                    </td>
+                  </tr>
+                  <tr v-if="filteredBatches.length === 0">
+                    <td colspan="7" class="px-5 py-12 text-center text-neutral-500">
+                      {{ batches.length === 0 ? '暂无批次数据，请先刷新。' : '无匹配批次。' }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </article>
           </section>
         </div>
@@ -318,7 +572,13 @@ import {
 import { Line } from 'vue-chartjs'
 import {
   Activity,
+  AlertTriangle,
   Archive,
+  BarChart3,
+  Bell,
+  Building2,
+  CheckCircle,
+  ClipboardList,
   Cpu,
   Database,
   HardDrive,
@@ -331,16 +591,20 @@ import {
   Server,
   Timer,
   Users,
+  XCircle,
   Zap,
 } from 'lucide-vue-next'
 
 import {
+  cancelDevDashboardTask,
+  deleteDevDashboardTask,
   getDevDashboardAuthStatus,
+  getDevDashboardBatches,
   getDevDashboardSnapshot,
   loginDevDashboard,
   logoutDevDashboard,
   retryDevDashboardTask,
-} from '../../api/devDashboard.js'
+} from '@/api/devDashboard.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend)
 
@@ -374,6 +638,7 @@ const authError = ref('')
 const loginLoading = ref(false)
 const loading = ref(false)
 const retryingId = ref('')
+const retryFeedback = ref(null)
 const activeModule = ref('monitor')
 const sidebarCollapsed = ref(false)
 const snapshot = ref(cloneSnapshot())
@@ -381,10 +646,19 @@ const chartHistory = ref(loadMetricHistory())
 const selectedTaskId = ref('')
 const taskFilter = ref('all')
 const taskQuery = ref('')
-const inspectorTab = ref('json')
+const inspectorTab = ref('info')
 const loginForm = ref({ username: '', password: '', twoFactorCode: '' })
+const batches = ref([])
+const deletingId = ref('')
+const cancellingId = ref('')
+const batchQuery = ref('')
+const refreshInterval = ref(30)
+const refreshCountdown = ref(30)
+const lastRefreshedAt = ref(null)
+let countdownTimer = null
 
 const inspectorTabs = [
+  { key: 'info', label: '基本信息' },
   { key: 'json', label: '原始数据' },
   { key: 'stack', label: '异常堆栈' },
   { key: 'events', label: '事件记录' },
@@ -392,12 +666,26 @@ const inspectorTabs = [
 
 const tasks = computed(() => snapshot.value.tasks || [])
 
+const tenantTaskGroups = computed(() => {
+  const counts = {}
+  for (const t of tasks.value) {
+    const tid = t.tenantId || 'default'
+    counts[tid] = (counts[tid] || 0) + 1
+  }
+  return Object.entries(counts).map(([tenant_id, count]) => ({ tenant_id, count }))
+})
+
 const modules = computed(() => [
   { key: 'monitor', label: '系统监控大盘', description: 'QPS、MQ、任务量、用户数、CPU、GPU 和内存。', icon: Activity },
   { key: 'tasks', label: '任务流调试中心', description: '按状态查看任务，并支持失败任务重新投递。', icon: ListChecks, badge: tasks.value.length },
   { key: 'middleware', label: '中间件详情', description: '消息队列、缓存服务和对象存储的探测状态。', icon: Database, badge: snapshot.value.middleware.length },
   { key: 'worker', label: 'Worker 探针', description: 'Worker 资源、模型耗时和清理策略。', icon: Server },
-  { key: 'taskDetail', label: '任务详情', description: '源文件、耗时瀑布、原始数据、堆栈和事件。', icon: Layers, badge: selectedTask.value?.id || '' },
+  { key: 'taskDetail', label: '任务详情', description: '源文件、耗时瀑布、原始数据、堆栈和事件。', icon: Layers, badge: selectedTask.value?.id ? String(selectedTask.value.id).slice(-8) : '' },
+  { key: 'alerts', label: '告警状态', description: '基于当前快照实时计算 5 类关键运维告警。', icon: Bell, badge: computedAlerts.value.filter((a) => a.severity !== 'ok').length || '' },
+  { key: 'auditLog', label: '审计日志', description: '操作审计记录（待后端接入 audit_log 表）。', icon: ClipboardList },
+  { key: 'quality', label: '质量评分', description: '置信度模型规范与当前批次质量概览。', icon: BarChart3 },
+  { key: 'tenants', label: '租户隔离', description: '租户隔离状态、角色/域矩阵和 MinIO 路径规范。', icon: Building2 },
+  { key: 'batches', label: '批次浏览', description: '按批次分组查看任务，点击批次可一键筛选相关任务。', icon: Layers, badge: batches.value.length || '' },
 ])
 
 const activeModuleMeta = computed(() => {
@@ -428,10 +716,20 @@ const filteredTasks = computed(() => {
   return tasks.value.filter((task) => {
     if (taskFilter.value !== 'all' && task.status !== taskFilter.value) return false
     if (!query) return true
-    return [task.id, task.status, task.mode, task.fileName]
+    return [task.id, task.status, task.mode, task.fileName, task.batchId, task.submitter]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(query))
   })
+})
+
+const filteredBatches = computed(() => {
+  const query = batchQuery.value.trim().toLowerCase()
+  if (!query) return batches.value
+  return batches.value.filter((batch) =>
+    [batch.batchId, batch.submitter, batch.tenantId]
+      .filter(Boolean)
+      .some((v) => String(v).toLowerCase().includes(query)),
+  )
 })
 
 const selectedTask = computed(() => {
@@ -462,6 +760,8 @@ const workerProbes = computed(() => [
   { label: 'GPU', value: `${snapshot.value.infra.gpuPercent || 0}%` },
   { label: '显存', value: `${snapshot.value.infra.gpuMemoryPercent || 0}%` },
   { label: '内存', value: `${snapshot.value.infra.memoryPercent || 0}%` },
+  { label: 'MQ 确认率', value: `${((snapshot.value.infra.ackRate || 0) * 100).toFixed(1)}%` },
+  { label: 'Worker 状态', value: snapshot.value.infra.workerStatus || 'unknown' },
 ])
 
 const averageDuration = computed(() => {
@@ -470,7 +770,122 @@ const averageDuration = computed(() => {
   return formatDuration(values.reduce((sum, value) => sum + value, 0) / values.length)
 })
 
-const inspectorJson = computed(() => JSON.stringify({ 任务: selectedTask.value, 基础指标: snapshot.value.infra }, null, 2))
+const computedAlerts = computed(() => {
+  const infra = snapshot.value.infra
+  const allTasks = snapshot.value.tasks || []
+  const queueList = snapshot.value.queues || []
+  const BACKLOG_THRESHOLD = 50
+  const RETRY_THRESHOLD = 3
+  const ocrDown = snapshot.value.models.length === 0 || snapshot.value.models.every((m) => m.avgMs === 0)
+  const backlogOver = infra.mqBacklog > BACKLOG_THRESHOLD
+  const stuckTasks = allTasks.filter((t) => t.retries >= RETRY_THRESHOLD)
+  const exportQueue = queueList.find((q) => /export|pdf/i.test(q.name || ''))
+  const exportBlocked = Boolean(exportQueue && exportQueue.messages > 20)
+  const repeatedFailures = allTasks.filter((t) => t.retries >= RETRY_THRESHOLD)
+  return [
+    {
+      key: 'ocr_unavailable',
+      title: 'OCR 服务不可用',
+      description: ocrDown
+        ? '未检测到活跃模型指标，OCR Worker 可能未启动或尚未上报 Prometheus 指标。'
+        : `${snapshot.value.models.length} 个模型指标已接收，服务正常。`,
+      severity: ocrDown ? 'warning' : 'ok',
+      value: ocrDown ? '待确认' : '正常',
+    },
+    {
+      key: 'queue_backlog',
+      title: '租户任务队列积压超阈值',
+      description: backlogOver
+        ? `当前队列积压 ${infra.mqBacklog} 条消息，已超过阈值 ${BACKLOG_THRESHOLD} 条，需关注消费速率。`
+        : `当前队列积压 ${infra.mqBacklog} 条消息，低于阈值 ${BACKLOG_THRESHOLD}，队列健康。`,
+      severity: backlogOver ? 'warning' : 'ok',
+      value: `${infra.mqBacklog} 条`,
+    },
+    {
+      key: 'review_unattended',
+      title: 'Review 任务长时间无人处理',
+      description: stuckTasks.length > 0
+        ? `${stuckTasks.length} 个任务已重试 ≥${RETRY_THRESHOLD} 次，可能需要人工介入 review。`
+        : `无高重试次数任务，运行正常。`,
+      severity: stuckTasks.length > 0 ? 'warning' : 'ok',
+      value: `${stuckTasks.length} 个`,
+    },
+    {
+      key: 'export_blocked',
+      title: 'export_queue 导出队列堵塞',
+      description: exportBlocked
+        ? `export 相关队列积压 ${exportQueue?.messages} 条，可能存在导出服务异常。`
+        : exportQueue
+          ? `export 队列积压 ${exportQueue.messages} 条，未超阈值，正常。`
+          : '未检测到 export/pdf 专用队列，该检测暂不适用。',
+      severity: exportBlocked ? 'error' : 'ok',
+      value: exportBlocked ? `${exportQueue?.messages || 0} 条` : '正常',
+    },
+    {
+      key: 'repeated_failures',
+      title: '同一批次反复失败超阈值',
+      description: repeatedFailures.length > 0
+        ? `${repeatedFailures.length} 个任务重试次数 ≥${RETRY_THRESHOLD} 次，疑似系统性问题，建议排查 Worker 日志。`
+        : `当前批次中无任务重试超过 ${RETRY_THRESHOLD} 次，运行正常。`,
+      severity: repeatedFailures.length > 0 ? 'error' : 'ok',
+      value: `${repeatedFailures.length} 个`,
+    },
+  ]
+})
+
+const taskQualityStats = computed(() => {
+  const total = tasks.value.length
+  const completed = tasks.value.filter((t) => t.status === 'completed').length
+  const failed = tasks.value.filter((t) => t.status === 'failed').length
+  const successRate = total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0'
+  const failureRate = total > 0 ? ((failed / total) * 100).toFixed(1) : '0.0'
+  return [
+    { label: '任务成功率', value: `${successRate}%` },
+    { label: '任务失败率', value: `${failureRate}%` },
+    { label: '平均耗时', value: averageDuration.value },
+  ]
+})
+
+const auditLogFields = [
+  { name: 'tenant_id', type: 'uuid', desc: '操作所属租户' },
+  { name: 'operator_user_id', type: 'uuid', desc: '执行操作的用户' },
+  { name: 'target_type', type: 'string', desc: '目标资源类型（batch / task / doc）' },
+  { name: 'target_id', type: 'string', desc: '目标资源 ID' },
+  { name: 'action', type: 'string', desc: '事件名（batch_import / workflow_start / review_submit / final_release / export_download…）' },
+  { name: 'before_snapshot', type: 'jsonb', desc: '操作前状态快照' },
+  { name: 'after_snapshot', type: 'jsonb', desc: '操作后状态快照' },
+  { name: 'occurred_at', type: 'timestamptz', desc: '事件发生时间戳' },
+]
+
+const qualityDimensions = [
+  { key: 'ocr_confidence', label: 'OCR 置信度', weight: '30%', icon: Cpu },
+  { key: 'boundary_confidence', label: '分件置信度', weight: '35%', icon: Layers },
+  { key: 'metadata_confidence', label: '元数据置信度', weight: '20%', icon: Database },
+  { key: 'rule_match_score', label: '规则匹配分', weight: '15%', icon: CheckCircle },
+]
+
+const inspectorJson = computed(() => JSON.stringify(selectedTask.value?.raw || selectedTask.value || {}, null, 2))
+
+const inspectorBasicInfo = computed(() => {
+  const task = selectedTask.value
+  if (!task) return []
+  return [
+    { label: '任务 ID', value: task.id || '—' },
+    { label: '状态', value: task.status || '—' },
+    { label: '模式', value: task.mode || '—' },
+    { label: '批次 ID', value: task.batchId || task.raw?.batch_id || '—' },
+    { label: '租户 ID', value: task.tenantId || task.raw?.tenant_id || '—' },
+    { label: '提交人', value: task.submitter || task.raw?.submitter_username || '—' },
+    { label: '文件名', value: task.fileName || task.raw?.file_path || '—' },
+    { label: '耗时', value: formatDuration(task.durationMs) },
+    { label: '页数', value: String(task.raw?.page_count ?? task.raw?.total_pages ?? '—') },
+    { label: '进度', value: task.raw?.progress_percent != null ? `${task.raw.progress_percent}%` : '—' },
+    { label: 'Trace ID', value: task.raw?.trace_id || '—' },
+    { label: '创建时间', value: task.raw?.created_at || '—' },
+    { label: '更新时间', value: task.raw?.updated_at || '—' },
+    { label: '异常信息', value: task.errorMessage || '—' },
+  ].filter((f) => f.value !== '—' || ['任务 ID', '状态', '模式'].includes(f.label))
+})
 
 const resourceChartData = computed(() => ({
   labels: chartHistory.value.map((point) => point.label),
@@ -594,6 +1009,9 @@ async function refreshAll() {
     snapshot.value = nextSnapshot
     recordMetricPoint(nextSnapshot)
     selectedTaskId.value = selectedTask.value?.id || ''
+    lastRefreshedAt.value = new Date()
+    refreshCountdown.value = refreshInterval.value
+    loadBatches()
   } catch (error) {
     if (error?.response?.status === 401) authenticated.value = false
   } finally {
@@ -607,13 +1025,20 @@ function startAutoRefresh() {
   stopAutoRefresh()
   autoRefreshTimer = window.setInterval(() => {
     if (authenticated.value) refreshAll()
-  }, 30000)
+  }, refreshInterval.value * 1000)
+  countdownTimer = window.setInterval(() => {
+    refreshCountdown.value = Math.max(0, refreshCountdown.value - 1)
+  }, 1000)
 }
 
 function stopAutoRefresh() {
   if (autoRefreshTimer) {
     window.clearInterval(autoRefreshTimer)
     autoRefreshTimer = null
+  }
+  if (countdownTimer) {
+    window.clearInterval(countdownTimer)
+    countdownTimer = null
   }
 }
 
@@ -672,12 +1097,60 @@ function roundMetric(value) {
 async function retryTask(task) {
   if (!task?.id) return
   retryingId.value = task.id
+  retryFeedback.value = null
   try {
-    await retryDevDashboardTask(task.id, { source: 'dev-dashboard' })
+    const { data } = await retryDevDashboardTask(task.id, { source: 'dev-dashboard' })
+    retryFeedback.value = { ok: true, message: data?.message || `任务 ${task.id} 已重新投递到消息队列。` }
     await refreshAll()
+  } catch (error) {
+    retryFeedback.value = { ok: false, message: error?.response?.data?.detail || `任务 ${task.id} 重试失败，请检查后端日志。` }
   } finally {
     retryingId.value = ''
   }
+}
+
+async function loadBatches() {
+  try {
+    const { data } = await getDevDashboardBatches()
+    batches.value = Array.isArray(data?.batches) ? data.batches : []
+  } catch {
+    // non-critical
+  }
+}
+
+async function deleteTask(task) {
+  if (!task?.id) return
+  deletingId.value = task.id
+  retryFeedback.value = null
+  try {
+    await deleteDevDashboardTask(task.id)
+    retryFeedback.value = { ok: true, message: `任务 ...${task.id.slice(-8)} 已删除。` }
+    await refreshAll()
+  } catch (error) {
+    retryFeedback.value = { ok: false, message: error?.response?.data?.detail || `任务 ${task.id} 删除失败。` }
+  } finally {
+    deletingId.value = ''
+  }
+}
+
+async function cancelTask(task) {
+  if (!task?.id) return
+  cancellingId.value = task.id
+  retryFeedback.value = null
+  try {
+    const { data } = await cancelDevDashboardTask(task.id)
+    retryFeedback.value = { ok: true, message: data?.message || `任务 ...${task.id.slice(-8)} 已取消。` }
+    await refreshAll()
+  } catch (error) {
+    retryFeedback.value = { ok: false, message: error?.response?.data?.detail || `任务 ${task.id} 取消失败。` }
+  } finally {
+    cancellingId.value = ''
+  }
+}
+
+function drillDownBatch(batchId) {
+  taskQuery.value = batchId
+  activeModule.value = 'tasks'
 }
 
 function normalizeSnapshot(payload = {}) {
@@ -863,6 +1336,10 @@ function normalizeTask(task = {}) {
     errorMessage: task.error_message || task.errorMessage || '',
     stages: (task.stages || []).map(normalizeStage),
     events: (task.events || []).map(normalizeEvent),
+    tenantId: task.tenantId || task.tenant_id || task.raw?.tenant_id || '',
+    batchId: task.batchId || task.batch_id || task.raw?.batch_id || '',
+    submitter: task.submitter || task.raw?.submitter_username || '',
+    raw: task.raw || {},
   }
 }
 

@@ -34,9 +34,12 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_acks_late=True,
-    task_acks_on_failure_or_timeout=False,
+    task_acks_on_failure_or_timeout=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=MQ_PREFETCH_COUNT,
     broker_connection_retry_on_startup=True,
     broker_transport_options={"confirm_publish": True},
+    # Worker concurrency & memory management
+    worker_max_tasks_per_child=50,
+    worker_max_memory_per_child=2_000_000,  # 2GB
 )

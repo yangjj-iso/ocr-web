@@ -21,12 +21,14 @@ async def create_task(
     file_path: str,
     file_type: str,
     mode: str = "layout",
+    *,
+    tenant_id: str = "default",
 ) -> OCRTask:
-    return await task_repository.create_task(db, filename, file_path, file_type, mode=mode)
+    return await task_repository.create_task(db, filename, file_path, file_type, mode=mode, tenant_id=tenant_id)
 
 
-async def get_task_detail(db: AsyncSession, task_id: int) -> OCRTask | None:
-    return await task_repository.get_task_detail(db, task_id)
+async def get_task_detail(db: AsyncSession, task_id: int, *, tenant_id: str = "") -> OCRTask | None:
+    return await task_repository.get_task_detail(db, task_id, tenant_id=tenant_id)
 
 
 async def get_task_list(
@@ -34,8 +36,10 @@ async def get_task_list(
     page: int = 1,
     page_size: int = 20,
     folder: str = "",
+    *,
+    tenant_id: str = "",
 ) -> tuple[list[OCRTask], int]:
-    return await task_repository.get_task_list(db, page, page_size, folder=folder)
+    return await task_repository.get_task_list(db, page, page_size, folder=folder, tenant_id=tenant_id)
 
 
 async def search_tasks(
@@ -43,32 +47,34 @@ async def search_tasks(
     keyword: str,
     page: int = 1,
     page_size: int = 20,
+    *,
+    tenant_id: str = "",
 ) -> tuple[list[OCRTask], int]:
-    return await task_repository.search_tasks(db, keyword, page, page_size)
+    return await task_repository.search_tasks(db, keyword, page, page_size, tenant_id=tenant_id)
 
 
-async def delete_task(db: AsyncSession, task_id: int) -> bool:
-    return await task_repository.delete_task(db, task_id)
+async def delete_task(db: AsyncSession, task_id: int, *, tenant_id: str = "") -> bool:
+    return await task_repository.delete_task(db, task_id, tenant_id=tenant_id)
 
 
-async def delete_tasks_by_folder(db: AsyncSession, folder: str) -> int:
-    return await task_repository.delete_tasks_by_folder(db, folder)
+async def delete_tasks_by_folder(db: AsyncSession, folder: str, *, tenant_id: str = "") -> int:
+    return await task_repository.delete_tasks_by_folder(db, folder, tenant_id=tenant_id)
 
 
-async def list_terminal_folders(db: AsyncSession) -> list[tuple[int, str, object]]:
-    return await task_repository.list_terminal_folders(db)
+async def list_terminal_folders(db: AsyncSession, *, tenant_id: str = "") -> list[tuple[int, str, object]]:
+    return await task_repository.list_terminal_folders(db, tenant_id=tenant_id)
 
 
-async def list_folder_batch_pairs(db: AsyncSession) -> list[tuple[str, str]]:
-    return await task_repository.list_folder_batch_pairs(db)
+async def list_folder_batch_pairs(db: AsyncSession, *, tenant_id: str = "") -> list[tuple[str, str]]:
+    return await task_repository.list_folder_batch_pairs(db, tenant_id=tenant_id)
 
 
-async def get_progress_tasks(db: AsyncSession, task_ids: list[int]) -> list[OCRTask]:
-    return await task_repository.get_progress_tasks(db, task_ids)
+async def get_progress_tasks(db: AsyncSession, task_ids: list[int], *, tenant_id: str = "") -> list[OCRTask]:
+    return await task_repository.get_progress_tasks(db, task_ids, tenant_id=tenant_id)
 
 
-async def list_task_ids_by_folder(db: AsyncSession, folder: str) -> list[int]:
-    return await task_repository.list_task_ids_by_folder(db, folder)
+async def list_task_ids_by_folder(db: AsyncSession, folder: str, *, tenant_id: str = "") -> list[int]:
+    return await task_repository.list_task_ids_by_folder(db, folder, tenant_id=tenant_id)
 
 
 def build_search_snippet(task: OCRTask, keyword: str, context: int = 50) -> str:

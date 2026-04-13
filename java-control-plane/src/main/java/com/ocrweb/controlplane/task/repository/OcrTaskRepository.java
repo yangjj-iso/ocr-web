@@ -99,4 +99,42 @@ public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
     long deleteByBatchId(String batchId);
 
     long deleteByFilePathStartingWith(String filePathPrefix);
+
+    // --- 租户隔离查询 ---
+
+    Optional<OcrTaskEntity> findByIdAndTenantId(Long id, String tenantId);
+
+    @Query("""
+            select t
+            from OcrTaskEntity t
+            where t.tenantId = :tenantId
+              and (:folder = '' or t.filePath like concat(:folder, '%'))
+              and (:batchId = '' or t.batchId = :batchId)
+            order by t.createdAt desc
+            """)
+    Page<OcrTaskEntity> findByTenantIdAndFolderAndBatchId(
+            @Param("tenantId") String tenantId,
+            @Param("folder") String folder,
+            @Param("batchId") String batchId,
+            Pageable pageable
+    );
+
+    @Query("""
+            select t
+            from OcrTaskEntity t
+            where t.tenantId = :tenantId
+              and (:folder = '' or t.filePath like concat(:folder, '%'))
+              and (:batchId = '' or t.batchId = :batchId)
+              and lower(t.status) = lower(:status)
+            order by t.createdAt desc
+            """)
+    Page<OcrTaskEntity> findByTenantIdAndFolderAndBatchIdAndStatus(
+            @Param("tenantId") String tenantId,
+            @Param("folder") String folder,
+            @Param("batchId") String batchId,
+            @Param("status") String status,
+            Pageable pageable
+    );
+
+    long countByTenantId(String tenantId);
 }

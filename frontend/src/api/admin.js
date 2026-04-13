@@ -66,7 +66,7 @@ function summarizeAssignedTasks(tasks = []) {
 
 // ── Users ──────────────────────────────────────────────────────────────────
 export const listUsers = (params = {}) => adminApi.get('/users', { params })
-export const setUserRole = (userId, role) => adminApi.put(`/users/${userId}/role`, { role })
+export const setUserRole = (userId, role, capabilities) => adminApi.put(`/users/${userId}/role`, { role, capabilities: capabilities ?? null })
 export const setDisplayName = (userId, display_name) => adminApi.put(`/users/${userId}/display-name`, { display_name })
 
 // ── Quotas ─────────────────────────────────────────────────────────────────
