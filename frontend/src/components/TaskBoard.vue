@@ -5,7 +5,7 @@
         <div>
           <p class="text-xs font-semibold tracking-[0.14em] text-[var(--gov-primary)]">任务界面</p>
           <h3 class="mt-2 text-lg font-semibold text-[var(--gov-text)]">提交的任务</h3>
-          <p class="mt-1 text-xs gov-muted">按提交批次查看任务状态，处理中任务会自动刷新。</p>
+          <p class="mt-1 text-xs gov-muted">按批次查看，自动刷新。</p>
         </div>
         <button
           class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] transition hover:bg-slate-50"
@@ -178,7 +178,7 @@ const STATUS_META = {
   },
 }
 
-const emptyMessage = computed(() => loadMessage.value || '暂无提交任务，请先在左侧提交材料。')
+const emptyMessage = computed(() => loadMessage.value || '暂无任务')
 const allTasks = computed(() => groups.value.flatMap((group) => groupTasks(group)))
 const statusCounts = computed(() => {
   const counts = { all: allTasks.value.length, submitting: 0, pending: 0, processing: 0, done: 0, failed: 0 }

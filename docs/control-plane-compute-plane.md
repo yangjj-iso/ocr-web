@@ -175,7 +175,7 @@ mvn spring-boot:run
 
 ## 当前迁移策略
 
-- 现有 Python `app/domains/`、`app/extraction/`、[`app/services/agent_ocr_workflow.py`](/D:/Code/work/OCR-WEB-main/app/services/agent_ocr_workflow.py) 保持不拆、不改规则
+- 现有 Python `app/domains/`、`app/extraction/`、`app/services/archive_workflow.py` 作为档案整理唯一工作流实现保留
 - Python Web 侧已经收敛为 AI API，不再承载业务/控制面职责
 - Web 侧已经不再启动本地 `asyncio.Queue`
 - 任务生产入口以 Java 控制面为准，Python 旧上传接口仅保留 AI 兼容能力

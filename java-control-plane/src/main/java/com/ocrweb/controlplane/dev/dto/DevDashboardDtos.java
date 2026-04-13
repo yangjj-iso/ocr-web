@@ -78,7 +78,10 @@ public final class DevDashboardDtos {
             String errorMessage,
             List<StageMetric> stages,
             List<TaskEvent> events,
-            Map<String, Object> raw
+            Map<String, Object> raw,
+            String tenantId,
+            String batchId,
+            String submitter
     ) {
     }
 
@@ -89,6 +92,26 @@ public final class DevDashboardDtos {
     }
 
     public record RetryResponse(boolean ok, Long taskId, String status, String message) {
+    }
+
+    public record BatchSummary(
+            String batchId,
+            long total,
+            long completed,
+            long running,
+            long failed,
+            long queued,
+            String latestActivity,
+            String firstSeen,
+            String submitter,
+            String tenantId
+    ) {
+    }
+
+    public record BatchListResponse(
+            Instant generatedAt,
+            List<BatchSummary> batches
+    ) {
     }
 
     public record Session(String username, Instant expiresAt) {

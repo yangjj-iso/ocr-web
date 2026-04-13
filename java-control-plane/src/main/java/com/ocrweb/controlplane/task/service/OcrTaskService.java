@@ -111,6 +111,7 @@ public class OcrTaskService {
         task.setSubmissionName(submissionMetadata.submissionName());
         task.setTraceId(RequestTraceContext.getTraceId());
         task.setStatus(normalizeStatus(OcrTaskStatus.QUEUED));
+        task.setTenantId(submitter != null ? submitter.effectiveTenantId() : "default");
         OcrTaskEntity saved = taskRepository.save(task);
         taskCommandProducer.publish(saved);
         logger.info(
@@ -158,6 +159,7 @@ public class OcrTaskService {
         task.setSubmissionName(submissionMetadata.submissionName());
         task.setTraceId(RequestTraceContext.getTraceId());
         task.setStatus(normalizeStatus(OcrTaskStatus.QUEUED));
+        task.setTenantId(submitter != null ? submitter.effectiveTenantId() : "default");
         OcrTaskEntity saved = taskRepository.save(task);
         taskCommandProducer.publish(saved);
         logger.info(
@@ -198,6 +200,7 @@ public class OcrTaskService {
         task.setSubmissionName(submissionMetadata.submissionName());
         task.setTraceId(RequestTraceContext.getTraceId());
         task.setStatus("uploaded");
+        task.setTenantId(submitter != null ? submitter.effectiveTenantId() : "default");
         OcrTaskEntity saved = taskRepository.save(task);
         logger.info("File uploaded (no OCR): taskId={}, filename={}, batchId={}", saved.getId(), saved.getFilename(), saved.getBatchId());
         return saved;
@@ -633,6 +636,12 @@ public class OcrTaskService {
     @Transactional
     public TaskDtos.TaskDetailResponse resumeFromHumanReview(Long taskId, TaskDtos.HumanReviewResumeRequest request) {
         OcrTaskEntity task = taskRepository.findById(taskId).orElseThrow();
+        // Validate task is in a resumable state
+        String currentStatus = safe(task.getStatus()).toUpperCase();
+        if (!"HUMAN_REVIEW".equals(currentStatus) && !"PAUSED".equals(currentStatus)) {
+            throw new ResponseStatusException(BAD_REQUEST,
+                    "Task must be in HUMAN_REVIEW or PAUSED state to resume, current: " + task.getStatus());
+        }
         if (task.getWorkflowThreadId() == null || task.getWorkflowThreadId().isBlank()) {
             throw new ResponseStatusException(BAD_REQUEST, "Task does not have a resumable workflow checkpoint.");
         }

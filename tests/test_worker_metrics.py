@@ -40,9 +40,9 @@ class WorkerMetricsTests(unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_pause_counter_increments(self):
-        labels = {"mode": "hierarchical_agent"}
+        labels = {"mode": "layout"}
         before = _sample_value(worker_metrics._PAUSED_TASKS_TOTAL, "_total", labels)
-        worker_metrics.increment_paused_tasks("hierarchical_agent")
+        worker_metrics.increment_paused_tasks("layout")
         after = _sample_value(worker_metrics._PAUSED_TASKS_TOTAL, "_total", labels)
         self.assertEqual(after, before + 1.0)
 

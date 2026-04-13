@@ -1,5 +1,6 @@
 package com.ocrweb.controlplane.auth.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
@@ -14,24 +15,26 @@ public final class AuthDtos {
     }
 
     public record ChangePasswordRequest(
-            @NotBlank String currentPassword,
-            @NotBlank @Size(min = 6, max = 200) String newPassword
+            @JsonProperty("current_password") @NotBlank String currentPassword,
+            @JsonProperty("new_password") @NotBlank @Size(min = 6, max = 200) String newPassword
     ) {
     }
 
-    public record UpdateDisplayNameRequest(String displayName) {
+    public record UpdateDisplayNameRequest(@JsonProperty("display_name") String displayName) {
     }
 
     public record RegisterRequest(
-            @NotBlank @Size(min = 2, max = 60) String realName,
+            @JsonProperty("real_name") @NotBlank @Size(min = 2, max = 60) String realName,
             @NotBlank @Size(min = 2, max = 60) String username,
             @NotBlank @Size(min = 6, max = 200) String password,
-            String requestedRole
+            @JsonProperty("requested_role") String requestedRole,
+            @JsonProperty("requested_capabilities") String requestedCapabilities,
+            @JsonProperty("tenant_id") String tenantId
     ) {
     }
 
     public record ResetPasswordRequest(
-            @NotBlank @Size(min = 6, max = 200) String newPassword
+            @JsonProperty("new_password") @NotBlank @Size(min = 6, max = 200) String newPassword
     ) {
     }
 
@@ -39,20 +42,22 @@ public final class AuthDtos {
             boolean enabled,
             boolean authenticated,
             String username,
-            boolean isAdmin,
-            String userStatus,
-            String defaultUsername,
+            @JsonProperty("is_admin") boolean isAdmin,
+            @JsonProperty("user_status") String userStatus,
+            @JsonProperty("default_username") String defaultUsername,
             String role,
-            String displayName
+            @JsonProperty("display_name") String displayName,
+            String capabilities
     ) {
     }
 
     public record LoginResponse(
             boolean authenticated,
             String username,
-            boolean isAdmin,
-            String userStatus,
-            String role
+            @JsonProperty("is_admin") boolean isAdmin,
+            @JsonProperty("user_status") String userStatus,
+            String role,
+            String capabilities
     ) {
     }
 
@@ -66,10 +71,11 @@ public final class AuthDtos {
     public record PendingUserItem(
             Long id,
             String username,
-            String displayName,
+            @JsonProperty("display_name") String displayName,
             String role,
+            String capabilities,
             String status,
-            OffsetDateTime createdAt
+            @JsonProperty("created_at") OffsetDateTime createdAt
     ) {
     }
 
