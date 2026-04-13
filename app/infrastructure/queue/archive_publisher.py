@@ -118,6 +118,7 @@ async def enqueue_workflow_resume(
     reason: str,
     affected_scope: dict[str, Any],
     resume_from_checkpoint: str | None,
+    review_result: dict[str, Any] | None = None,
 ) -> None:
     """将审核恢复命令投入高优先级审核恢复队列。"""
     await _publish_to_queue(
@@ -129,6 +130,7 @@ async def enqueue_workflow_resume(
             "reason": reason,
             "affected_scope": affected_scope,
             "resume_from_checkpoint": resume_from_checkpoint,
+            "review_result": dict(review_result or {}),
             "published_at": _utc_now(),
         },
     )

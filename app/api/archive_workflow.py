@@ -34,7 +34,7 @@ from app.db.models import (
 )
 from app.domains.archive.archive_service import resume_archive_workflow
 from app.domains.review.review_service import submit_review_result
-from app.infrastructure.queue.archive_publisher import enqueue_workflow_start
+from app.infrastructure.queue.archive_publisher import enqueue_workflow_resume, enqueue_workflow_start
 
 router = APIRouter(prefix="/api/archive", tags=["archive-workflow"], dependencies=[Depends(require_auth)])
 
@@ -83,6 +83,68 @@ class PolicySnapshotUpdateRequest(BaseModel):
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _normalize_affected_scope(scope: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(scope or {})
+    if normalized.get("regenerate_catalog"):
+        normalized.setdefault("invalidate_catalog", True)
+    if normalized.get("regenerate_pdf"):
+        normalized.setdefault("invalidate_pdf", True)
+    if normalized.get("renumber_from_order_index") is not None:
+        normalized.setdefault("invalidate_numbering", True)
+    return normalized
+
+
+def _resolve_resume_checkpoint(scope: dict[str, Any]) -> str | None:
+    normalized_scope = _normalize_affected_scope(scope)
+    if not normalized_scope:
+        return None
+    from app.domains.rework.invalidation_service import earliest_invalidated_stage
+
+    return earliest_invalidated_stage(normalized_scope)
+
+
+async def _enqueue_review_resume_if_ready(
+    db: AsyncSession,
+    *,
+    task: ReviewTask,
+    review_result: dict[str, Any],
+) -> bool:
+    run_id = str(task.run_id or "").strip()
+    if not run_id:
+        return False
+
+    workflow_run = (
+        await db.execute(select(WorkflowRun).where(WorkflowRun.run_id == run_id).limit(1))
+    ).scalar_one_or_none()
+    if not workflow_run:
+        return False
+    if str(workflow_run.run_status or "").lower() != "running":
+        return False
+    if str(workflow_run.current_stage or "").strip().lower() != "resume_from_review":
+        return False
+
+    from app.domains.rework.invalidation_service import build_affected_scope_from_review
+
+    affected_scope = _normalize_affected_scope(build_affected_scope_from_review(review_result))
+    await enqueue_workflow_resume(
+        run_id=run_id,
+        batch_id=task.batch_id,
+        reason="review_submitted",
+        affected_scope=affected_scope,
+        resume_from_checkpoint=_resolve_resume_checkpoint(affected_scope),
+        review_result=review_result,
+    )
+    return True
 
 
 def _role(current: dict[str, Any]) -> str:
@@ -789,8 +851,13 @@ async def get_dashboard_stats(
     archive_records = (await db.execute(select(ArchiveRecord).order_by(desc(ArchiveRecord.created_at)))).scalars().all()
     policies = (await db.execute(policy_stmt)).scalars().all()
 
-    today_key = _utc_now().date()
-    today_batches = [batch for batch in batches if batch.created_at and batch.created_at.date() == today_key]
+    now_utc = _utc_now()
+    today_key = now_utc.date()
+    today_batches = [
+        batch
+        for batch in batches
+        if (_as_utc_datetime(batch.created_at) and _as_utc_datetime(batch.created_at).date() == today_key)
+    ]
     failed_today = [batch for batch in today_batches if str(batch.status or "").lower() == "failed"]
     my_user_id = current.get("user_id")
 
@@ -802,7 +869,11 @@ async def get_dashboard_stats(
         "pendingBatches": len([batch for batch in batches if _batch_ui_status(batch, None, {}) == "draft"]),
         "pendingRelease": len([task for task in review_tasks if task.task_type == "final_release" and task.status in {"pending", "claimed"}]),
         "reworking": len([task for task in rework_tasks if task.status in {"accepted", "in_rework"}]),
-        "recentArchived": len([record for record in archive_records if record.created_at and (_utc_now() - record.created_at).days <= 7]),
+        "recentArchived": len([
+            record
+            for record in archive_records
+            if (_as_utc_datetime(record.created_at) and (now_utc - _as_utc_datetime(record.created_at)).days <= 7)
+        ]),
         "myReworks": len([task for task in rework_tasks if my_user_id and task.reported_by == my_user_id]),
         "pendingReworks": len([task for task in rework_tasks if task.status in {"pending", "accepted", "in_rework"}]),
         "totalArchived": len(archive_records),
@@ -1205,13 +1276,11 @@ async def submit_review(
     resumed = False
     if task.run_id:
         try:
-            await resume_archive_workflow(
-                task_id=task.run_id,
-                batch_id=task.batch_id,
-                reason="review_submitted",
+            resumed = await _enqueue_review_resume_if_ready(
+                db,
+                task=task,
                 review_result=review_result,
             )
-            resumed = True
         except Exception:
             resumed = False
     return {
