@@ -22,6 +22,7 @@ from app.db.models import (
     BatchRecord,
     DocUnit,
     DocVersion,
+    OCRTask,
     PageRecord,
     PolicySnapshot,
     ReworkTask,
@@ -38,6 +39,7 @@ from app.infrastructure.queue.archive_publisher import enqueue_workflow_start
 router = APIRouter(prefix="/api/archive", tags=["archive-workflow"], dependencies=[Depends(require_auth)])
 
 _BATCH_ID_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+_IMAGE_FILE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 class BatchCreateRequest(BaseModel):
@@ -48,14 +50,6 @@ class BatchCreateRequest(BaseModel):
 
 class BatchStartRequest(BaseModel):
     policy_snapshot_id: str | None = None
-
-
-class TaskAssignRequest(BaseModel):
-    task_id: str | None = None
-    task_ids: list[str] = Field(default_factory=list)
-    assignee_id: int | None = None
-    assignee_username: str | None = None
-    notes: str | None = None
 
 
 class ReviewSubmitRequest(BaseModel):
@@ -75,17 +69,6 @@ class DocMetadataUpdateRequest(BaseModel):
     preservation_period: str | None = None
     tags: list[str] | None = None
     notes: str | None = None
-
-
-class ReworkCreateRequest(BaseModel):
-    record_id: str | None = None
-    batch_id: str | None = None
-    record_version: int | None = None
-    issue_type: str = "other"
-    affected_scope: str | dict[str, Any] | None = None
-    description: str = ""
-    priority: str = "normal"
-    rework_level: str = "partial"
 
 
 class PolicySnapshotCreateRequest(BaseModel):
@@ -169,17 +152,6 @@ def _normalize_issue_type(value: str | None) -> str:
     return mapping.get(normalized, normalized or "other")
 
 
-def _normalize_rework_status(value: str | None) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"accepted", "in_rework"}:
-        return "processing"
-    if normalized == "rejected":
-        return "rejected"
-    if normalized == "done":
-        return "done"
-    return "pending"
-
-
 def _make_batch_id(name: str | None) -> str:
     raw = str(name or "").strip()
     if not raw:
@@ -246,7 +218,142 @@ async def _source_counts_by_batch(db: AsyncSession, batch_ids: list[str]) -> dic
     counts: dict[str, int] = {}
     for row in rows:
         counts[row.batch_id] = counts.get(row.batch_id, 0) + 1
+    task_rows = (await db.execute(select(OCRTask).where(OCRTask.batch_id.in_(unique_ids)))).scalars().all()
+    task_counts: dict[str, int] = {}
+    for row in task_rows:
+        task_counts[row.batch_id] = task_counts.get(row.batch_id, 0) + 1
+    for batch_id, task_count in task_counts.items():
+        counts[batch_id] = max(counts.get(batch_id, 0), task_count)
     return counts
+
+
+def _normalize_result_page_list(result_json: Any) -> list[dict[str, Any]]:
+    if isinstance(result_json, list):
+        return [page for page in result_json if isinstance(page, dict)]
+    if isinstance(result_json, dict):
+        return [result_json]
+    return []
+
+
+def _extract_result_page_text(page: dict[str, Any]) -> str:
+    lines = page.get("lines") if isinstance(page.get("lines"), list) else []
+    texts = [str(line.get("text") or "").strip() for line in lines if isinstance(line, dict)]
+    normalized = [text for text in texts if text]
+    if normalized:
+        return "\n".join(normalized)
+
+    regions = page.get("regions") if isinstance(page.get("regions"), list) else []
+    region_texts = [str(region.get("content") or "").strip() for region in regions if isinstance(region, dict)]
+    normalized_regions = [text for text in region_texts if text]
+    return "\n".join(normalized_regions)
+
+
+def _infer_result_page_layout(page: dict[str, Any]) -> str | None:
+    regions = page.get("regions") if isinstance(page.get("regions"), list) else []
+    types = {
+        str(region.get("type") or "").strip().lower()
+        for region in regions
+        if isinstance(region, dict) and str(region.get("type") or "").strip()
+    }
+    if not types:
+        return "text" if _extract_result_page_text(page) else None
+    if len(types) == 1:
+        return next(iter(types))
+    return "mixed"
+
+
+def _build_workflow_pages_from_ocr_tasks(tasks: list[OCRTask], batch_id: str) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+
+    for task in tasks:
+        raw_pages = _normalize_result_page_list(task.result_json)
+        if not raw_pages and str(task.full_text or "").strip():
+            raw_pages = [{
+                "page_num": 1,
+                "regions": [],
+                "lines": [{"line_num": 1, "text": str(task.full_text or "").strip(), "confidence": 1.0, "bbox": []}],
+            }]
+
+        for raw_page in raw_pages:
+            page_num = int(raw_page.get("page_num") or len(pages) + 1)
+            pages.append(
+                {
+                    "page_id": f"{batch_id}-task-{task.id}-page-{page_num}",
+                    "page_index": len(pages),
+                    "image_uri": "",
+                    "preview_uri": "",
+                    "ocr_text": _extract_result_page_text(raw_page),
+                    "ocr_blocks": dict(raw_page),
+                    "layout_type": _infer_result_page_layout(raw_page),
+                }
+            )
+
+    return pages
+
+
+def _build_workflow_pages_from_source_files(source_files: list[SourceFile], batch_id: str) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    for source_file in source_files:
+        suffix = Path(str(source_file.original_filename or "")).suffix.lower()
+        mime_type = str(source_file.mime_type or "").lower()
+        if suffix not in _IMAGE_FILE_EXTENSIONS and not mime_type.startswith("image/"):
+            continue
+        pages.append(
+            {
+                "page_id": source_file.file_id,
+                "page_index": len(pages),
+                "image_uri": str(source_file.storage_uri or "").strip(),
+                "preview_uri": "",
+                "ocr_text": "",
+                "ocr_blocks": {},
+                "layout_type": None,
+            }
+        )
+    return pages
+
+
+async def _resolve_batch_start_inputs(
+    db: AsyncSession,
+    *,
+    batch_id: str,
+    tenant_id: str,
+) -> tuple[list[dict[str, Any]], list[str], int, str]:
+    source_files = (
+        await db.execute(
+            select(SourceFile)
+            .where(SourceFile.batch_id == batch_id, SourceFile.tenant_id == tenant_id)
+            .order_by(SourceFile.created_at.asc(), SourceFile.id.asc())
+        )
+    ).scalars().all()
+    source_file_uris = [str(source_file.storage_uri or "").strip() for source_file in source_files if str(source_file.storage_uri or "").strip()]
+
+    tasks = (
+        await db.execute(
+            select(OCRTask)
+            .where(OCRTask.batch_id == batch_id, OCRTask.tenant_id == tenant_id)
+            .order_by(OCRTask.created_at.asc(), OCRTask.id.asc())
+        )
+    ).scalars().all()
+    completed_tasks = [
+        task
+        for task in tasks
+        if str(task.status or "").strip().lower() in {"done", "completed"}
+        and (_normalize_result_page_list(task.result_json) or str(task.full_text or "").strip())
+    ]
+
+    pages = _build_workflow_pages_from_ocr_tasks(completed_tasks, batch_id)
+    input_source = "ocr_tasks"
+    if not pages:
+        pages = _build_workflow_pages_from_source_files(source_files, batch_id)
+        input_source = "source_files" if pages else "empty"
+
+    page_count = len(pages)
+    if page_count <= 0:
+        page_count = sum(max(0, int(source_file.page_count or 0)) for source_file in source_files)
+    if page_count <= 0:
+        page_count = sum(max(0, int(task.page_count or 0)) for task in completed_tasks)
+
+    return pages, source_file_uris, page_count, input_source
 
 
 async def _doc_counts_by_batch(db: AsyncSession, batch_ids: list[str]) -> tuple[dict[str, int], dict[str, int]]:
@@ -300,6 +407,56 @@ async def _batch_pdf_urls_by_batch(db: AsyncSession, batch_ids: list[str]) -> di
     return urls
 
 
+def _format_progress_count(progress: dict[str, Any] | None) -> str | None:
+    if not progress:
+        return None
+    total = progress.get("total")
+    completed = progress.get("completed")
+    if total in {None, ""}:
+        return None
+    try:
+        total_num = int(total)
+        completed_num = int(completed or 0)
+    except (TypeError, ValueError):
+        return None
+    if total_num <= 0:
+        return None
+    return f"{completed_num}/{total_num}"
+
+
+def _queue_stage_status(progress: dict[str, Any] | None) -> str:
+    normalized = str((progress or {}).get("status") or "").strip().lower()
+    if normalized in {"done", "failed", "processing", "pending"}:
+        return normalized
+    return "pending"
+
+
+def _queue_workflow_stages(latest_run: WorkflowRun | None) -> list[dict[str, Any]]:
+    if not latest_run:
+        return []
+    queue_progress = dict((latest_run.state_json or {}).get("queue_progress") or {})
+    definitions = [
+        ("page_preprocess", "页面预处理"),
+        ("ocr", "页面 OCR"),
+        ("page_features", "页面特征"),
+        ("relation_analysis", "关系分析"),
+    ]
+    stages: list[dict[str, Any]] = []
+    for key, label in definitions:
+        progress = queue_progress.get(key)
+        if not progress:
+            continue
+        stages.append(
+            {
+                "name": key,
+                "label": label,
+                "status": _queue_stage_status(progress),
+                "count": _format_progress_count(progress),
+            }
+        )
+    return stages
+
+
 def _workflow_stages(batch: BatchRecord, latest_run: WorkflowRun | None, review_counts: dict[str, int], total_docs: int, done_docs: int) -> list[dict[str, Any]]:
     review_pending = review_counts.get("pending", 0) + review_counts.get("claimed", 0)
     review_status = "pending" if review_pending else ("done" if review_counts.get("submitted", 0) else "pending")
@@ -320,6 +477,7 @@ def _workflow_stages(batch: BatchRecord, latest_run: WorkflowRun | None, review_
 
     stages = [
         {"name": "ingest", "label": "批次建立", "status": "done", "count": None},
+        *_queue_workflow_stages(latest_run),
         {"name": "draft", "label": "草稿处理", "status": stage_status(batch.draft_status), "count": total_docs or None},
         {"name": "review", "label": "人工审核", "status": review_status, "count": review_pending or None},
         {"name": "final", "label": "正式编目", "status": stage_status(batch.final_status), "count": done_docs or None},
@@ -364,6 +522,7 @@ def _serialize_batch(
     policy_version: str,
 ) -> dict[str, Any]:
     file_count = source_count or total_docs or batch.page_count or 0
+    queue_progress = dict((latest_run.state_json or {}).get("queue_progress") or {}) if latest_run else {}
     return {
         "id": batch.id,
         "batch_id": batch.batch_id,
@@ -381,6 +540,7 @@ def _serialize_batch(
         "export_status": batch.export_status,
         "current_stage": latest_run.current_stage if latest_run else None,
         "run_status": latest_run.run_status if latest_run else None,
+        "queue_progress": queue_progress,
         "workflow_stages": _workflow_stages(batch, latest_run, review_counts, total_docs, done_docs),
         "total_docs": total_docs,
         "done_docs": done_docs,
@@ -485,48 +645,30 @@ async def _serialize_doc_versions(db: AsyncSession, batch_id: str, doc_ids: list
                     **metadata,
                     "responsible": metadata.get("responsible") or metadata.get("responsible_party") or "",
                 },
-                "pdf_url": batch_pdf_url,
-                "preview_url": batch_pdf_url,
+                "start_page": version.start_page if version.start_page else (page_records[0].page_index + 1 if page_records else 1),
+                "end_page": version.end_page if version.end_page else (page_records[-1].page_index + 1 if page_records else 1),
+                "pdf_url": f"/api/archive/batches/{batch_id}/source-pdf",
+                "preview_url": f"/api/archive/batches/{batch_id}/source-pdf",
                 "ocr_pages": [
                     {
                         "page_no": index + 1,
                         "page": index + 1,
+                        "page_id": page.page_id,
                         "text": page.ocr_text or "",
+                        "rotation": page.rotation or 0,
+                        "image_url": f"/api/archive/batches/{batch_id}/pages/{page.page_id}/image"
+                        if (page.preview_uri or page.image_uri)
+                        else None,
                     }
                     for index, page in enumerate(page_records)
                 ],
+                "has_page_images": any(page.preview_uri or page.image_uri for page in page_records),
                 "risk_level": "medium"
                 if not (metadata.get("title") and metadata.get("date"))
                 else "",
             }
         )
     return items
-
-
-def _archive_record_to_output(record: ArchiveRecord, *, last_rework_status: str | None = None) -> dict[str, Any]:
-    file_url = f"/api/ocr/tasks/{record.task_id}/file" if record.task_id else None
-    return {
-        "id": record.id,
-        "record_id": record.id,
-        "task_id": record.task_id,
-        "batch_id": record.batch_id,
-        "folder": record.batch_folder,
-        "archive_no": record.archive_no,
-        "doc_no": record.doc_no,
-        "responsible": record.responsible,
-        "title": record.title,
-        "date": record.date,
-        "pages": record.pages,
-        "classification": record.classification,
-        "remarks": record.remarks,
-        "storage_path": record.storage_path,
-        "created_at": record.created_at.isoformat() if record.created_at else None,
-        "status": "archived",
-        "file_url": file_url,
-        "pdf_url": file_url,
-        "preservation_period": None,
-        "last_rework_status": last_rework_status,
-    }
 
 
 def _review_task_item(task: ReviewTask, users: dict[int, AppUser]) -> dict[str, Any]:
@@ -867,11 +1009,22 @@ async def start_batch_workflow(
             "message": "workflow_already_exists",
         }
 
+    pages, source_file_uris, page_count, input_source = await _resolve_batch_start_inputs(
+        db,
+        batch_id=batch_id,
+        tenant_id=batch.tenant_id,
+    )
+    if not pages and not source_file_uris:
+        raise HTTPException(status_code=400, detail="Batch has no source files or completed OCR task results to start workflow.")
+    if not pages:
+        raise HTTPException(status_code=400, detail="Batch inputs are not page-ready yet. Complete OCR first or upload image files before starting workflow.")
+
     policy_snapshot_id = body.policy_snapshot_id if body else None
     if policy_snapshot_id:
         batch.policy_snapshot_id = policy_snapshot_id
     batch.status = "processing"
     batch.draft_status = "running"
+    batch.page_count = max(int(batch.page_count or 0), int(page_count or 0), len(pages))
 
     run_id = f"wf_{batch_id}_{uuid4().hex[:8]}"
     workflow = WorkflowRun(
@@ -885,7 +1038,7 @@ async def start_batch_workflow(
         state_json={
             "request_id": str(uuid4()),
             "submitted_by": current.get("username") or "",
-            "extra": {},
+            "extra": {"input_source": input_source},
         },
     )
     db.add(workflow)
@@ -893,7 +1046,17 @@ async def start_batch_workflow(
 
     queued = True
     try:
-        await enqueue_workflow_start(run_id=run_id, batch_id=batch_id, tenant_id=batch.tenant_id)
+        await enqueue_workflow_start(
+            run_id=run_id,
+            batch_id=batch_id,
+            tenant_id=batch.tenant_id,
+            policy_snapshot_id=batch.policy_snapshot_id,
+            source_file_uris=source_file_uris,
+            page_count=page_count,
+            submitted_by=current.get("username") or "",
+            pages=pages,
+            extra={"input_source": input_source},
+        )
     except Exception:
         queued = False
 
@@ -935,72 +1098,6 @@ async def list_review_tasks(
         items.append(_review_task_item(task, users))
 
     return _paginate(items, page, page_size)
-
-
-@router.get("/tasks/my-assigned")
-async def list_my_assigned_tasks(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=500),
-    status_filter: str | None = Query(None, alias="status"),
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    user_id = current.get("user_id")
-    if not user_id:
-        return {"items": [], "total": 0}
-    stmt = select(ReviewTask).where(ReviewTask.assignee_user_id == user_id).order_by(desc(ReviewTask.created_at))
-    if not _is_platform_admin(current):
-        stmt = stmt.where(ReviewTask.tenant_id == _tenant_id(current))
-    tasks = (await db.execute(stmt)).scalars().all()
-    allowed_statuses = _normalize_review_filter(status_filter)
-    users = await _users_by_id(db, [user_id])
-    items = [
-        _review_task_item(task, users)
-        for task in tasks
-        if not allowed_statuses or str(task.status or "").lower() in allowed_statuses
-    ]
-    return _paginate(items, page, page_size)
-
-
-@router.post("/tasks/assign")
-async def assign_review_task(
-    body: TaskAssignRequest,
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    task_ids = list(body.task_ids or [])
-    if body.task_id:
-        task_ids.append(body.task_id)
-    if not task_ids:
-        raise HTTPException(status_code=400, detail="No task selected.")
-
-    assignee_user: AppUser | None = None
-    if body.assignee_id:
-        assignee_user = (
-            await db.execute(select(AppUser).where(AppUser.id == body.assignee_id).limit(1))
-        ).scalar_one_or_none()
-    elif body.assignee_username:
-        assignee_user = (
-            await db.execute(select(AppUser).where(AppUser.username == body.assignee_username).limit(1))
-        ).scalar_one_or_none()
-    if not assignee_user:
-        raise HTTPException(status_code=404, detail="Assignee not found.")
-
-    affected = 0
-    for raw_task_id in task_ids:
-        task = await _find_review_task(db, str(raw_task_id), current)
-        if not task:
-            continue
-        task.assignee_user_id = assignee_user.id
-        if task.status == "pending":
-            task.status = "pending"
-        affected += 1
-
-    await db.commit()
-    return {
-        "affected": affected,
-        "message": f"已分配 {affected} 个任务",
-    }
 
 
 @router.get("/tasks/{task_id}")
@@ -1185,240 +1282,6 @@ async def update_doc_metadata(
         "metadata": metadata,
         "fields": metadata,
     }
-
-
-@router.get("/archive-records")
-async def list_archive_records(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=500),
-    keyword: str | None = Query(None, alias="q"),
-    date_from: str | None = Query(None),
-    date_to: str | None = Query(None),
-    batch_id: str | None = Query(None),
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    records_stmt = select(ArchiveRecord).order_by(desc(ArchiveRecord.created_at))
-    if not _is_platform_admin(current):
-        records_stmt = records_stmt.where(ArchiveRecord.tenant_id == _tenant_id(current))
-    records = (await db.execute(records_stmt)).scalars().all()
-
-    items: list[dict[str, Any]] = []
-    for record in records:
-        output = _archive_record_to_output(record)
-        if batch_id and str(record.batch_id or "") != batch_id:
-            continue
-        if keyword and not _matches_keyword([record.title, record.doc_no, record.responsible, record.archive_no, record.storage_path], keyword):
-            continue
-        created_key = str(output.get("created_at") or "")[:10]
-        if date_from and created_key and created_key < date_from:
-            continue
-        if date_to and created_key and created_key > date_to:
-            continue
-        items.append(output)
-
-    return _paginate(items, page, page_size)
-
-
-@router.get("/archive-records/{record_id}")
-async def get_archive_record(
-    record_id: int,
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    record = (await db.execute(select(ArchiveRecord).where(ArchiveRecord.id == record_id).limit(1))).scalar_one_or_none()
-    if not record:
-        raise HTTPException(status_code=404, detail="Archive record not found.")
-    if not _is_platform_admin(current) and record.tenant_id != _tenant_id(current):
-        raise HTTPException(status_code=404, detail="Archive record not found.")
-
-    reworks = (await db.execute(select(ReworkTask).where(ReworkTask.batch_id == (record.batch_id or "")).order_by(desc(ReworkTask.created_at)))).scalars().all()
-    last_rework_status = None
-    for rework in reworks:
-        scope = dict(rework.affected_scope_json or {})
-        if str(scope.get("record_id") or "") == str(record.id):
-            last_rework_status = _normalize_rework_status(rework.status)
-            break
-    return _archive_record_to_output(record, last_rework_status=last_rework_status)
-
-
-@router.get("/rework-tasks")
-async def list_rework_tasks(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=500),
-    status_filter: str | None = Query(None, alias="status"),
-    keyword: str | None = Query(None, alias="q"),
-    mine: bool | None = Query(None),
-    reporter: str | None = Query(None),
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    stmt = select(ReworkTask).order_by(desc(ReworkTask.created_at))
-    if not _is_platform_admin(current):
-        stmt = stmt.where(ReworkTask.tenant_id == _tenant_id(current))
-    tasks = (await db.execute(stmt)).scalars().all()
-    users = await _users_by_id(db, [task.reported_by or 0 for task in tasks])
-    items: list[dict[str, Any]] = []
-    normalized_filter = str(status_filter or "").strip().lower()
-    for task in tasks:
-        reporter_user = users.get(task.reported_by or 0)
-        if mine or (reporter and reporter_user and reporter_user.username == reporter):
-            if task.reported_by != current.get("user_id"):
-                continue
-        reporter_name = (reporter_user.display_name or reporter_user.username) if reporter_user else ""
-        output = {
-            "id": task.rework_task_id,
-            "rework_task_id": task.rework_task_id,
-            "record_id": (task.affected_scope_json or {}).get("record_id"),
-            "batch_id": task.batch_id,
-            "issue_type": task.issue_type,
-            "priority": (task.affected_scope_json or {}).get("priority", "normal"),
-            "status": _normalize_rework_status(task.status),
-            "created_at": task.created_at.isoformat() if task.created_at else None,
-            "description": task.description,
-            "reported_by": reporter_name,
-            "affected_scope": task.affected_scope_json or {},
-        }
-        if normalized_filter and output["status"] != normalized_filter:
-            continue
-        if keyword and not _matches_keyword([output["id"], output["record_id"], output["batch_id"], output["description"]], keyword):
-            continue
-        items.append(output)
-    return _paginate(items, page, page_size)
-
-
-@router.post("/rework-tasks", status_code=status.HTTP_201_CREATED)
-async def create_rework_task(
-    body: ReworkCreateRequest,
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    batch_id = str(body.batch_id or "").strip()
-    record_id = str(body.record_id or "").strip() or None
-    if record_id and not batch_id:
-        record = None
-        if record_id.isdigit():
-            record = (await db.execute(select(ArchiveRecord).where(ArchiveRecord.id == int(record_id)).limit(1))).scalar_one_or_none()
-        if record:
-            batch_id = str(record.batch_id or "").strip()
-    if not batch_id:
-        batch_id = f"record_{record_id or uuid4().hex[:8]}"
-
-    affected_scope = body.affected_scope if isinstance(body.affected_scope, dict) else {"label": body.affected_scope or ""}
-    rework = await _create_rework_task(
-        db,
-        current=current,
-        batch_id=batch_id,
-        record_id=record_id,
-        record_version=body.record_version,
-        issue_type=body.issue_type,
-        description=body.description,
-        priority=body.priority,
-        rework_level=body.rework_level,
-        affected_scope=affected_scope,
-    )
-    return {
-        "id": rework.rework_task_id,
-        "status": _normalize_rework_status(rework.status),
-        "batch_id": rework.batch_id,
-    }
-
-
-@router.get("/rework-tasks/{task_id}")
-async def get_rework_task(
-    task_id: str,
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    task = (
-        await db.execute(select(ReworkTask).where(ReworkTask.rework_task_id == task_id).limit(1))
-    ).scalar_one_or_none()
-    if not task or (not _is_platform_admin(current) and task.tenant_id != _tenant_id(current)):
-        raise HTTPException(status_code=404, detail="Rework task not found.")
-    return {
-        "id": task.rework_task_id,
-        "rework_task_id": task.rework_task_id,
-        "record_id": (task.affected_scope_json or {}).get("record_id"),
-        "batch_id": task.batch_id,
-        "issue_type": task.issue_type,
-        "priority": (task.affected_scope_json or {}).get("priority", "normal"),
-        "status": _normalize_rework_status(task.status),
-        "description": task.description,
-        "affected_scope": task.affected_scope_json or {},
-        "created_at": task.created_at.isoformat() if task.created_at else None,
-        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
-    }
-
-
-# ── Audit logs ──────────────────────────────────────────────────────────────
-
-
-@router.get("/audit-logs")
-async def list_audit_logs(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    action: str | None = Query(None),
-    batch_id: str | None = Query(None),
-    operator_user_id: int | None = Query(None),
-    q: str | None = Query(None),
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """审阅记录列表：返回当前租户（或全平台）的审核动作日志。"""
-    stmt = select(ReviewActionLog).order_by(desc(ReviewActionLog.occurred_at))
-
-    if not _is_platform_admin(current):
-        tenant_id = _tenant_id(current)
-        tenant_batch_ids_stmt = select(BatchRecord.batch_id).where(BatchRecord.tenant_id == tenant_id)
-        tenant_batch_ids = (await db.execute(tenant_batch_ids_stmt)).scalars().all()
-        if tenant_batch_ids:
-            stmt = stmt.where(ReviewActionLog.batch_id.in_(tenant_batch_ids))
-        else:
-            return {"items": [], "total": 0, "page": page, "page_size": page_size}
-
-    if action:
-        stmt = stmt.where(ReviewActionLog.action == action)
-    if batch_id:
-        stmt = stmt.where(ReviewActionLog.batch_id == batch_id)
-    if operator_user_id:
-        stmt = stmt.where(ReviewActionLog.operator_user_id == operator_user_id)
-    if q:
-        pattern = f"%{q}%"
-        stmt = stmt.where(
-            ReviewActionLog.note.ilike(pattern)
-            | ReviewActionLog.review_task_id.ilike(pattern)
-            | ReviewActionLog.batch_id.ilike(pattern)
-        )
-
-    all_logs = (await db.execute(stmt)).scalars().all()
-    total = len(all_logs)
-    start = (page - 1) * page_size
-    page_logs = all_logs[start : start + page_size]
-
-    user_ids = {log.operator_user_id for log in page_logs if log.operator_user_id}
-    user_map: dict[int, str] = {}
-    if user_ids:
-        users = (await db.execute(select(AppUser).where(AppUser.id.in_(user_ids)))).scalars().all()
-        user_map = {u.id: u.display_name or u.username for u in users}
-
-    items = []
-    for log in page_logs:
-        items.append({
-            "id": log.id,
-            "review_task_id": log.review_task_id,
-            "batch_id": log.batch_id,
-            "action": log.action,
-            "operator_user_id": log.operator_user_id,
-            "operator_name": user_map.get(log.operator_user_id) or "" if log.operator_user_id else "",
-            "note": log.note,
-            "before_snapshot": log.before_snapshot_json,
-            "after_snapshot": log.after_snapshot_json,
-            "occurred_at": log.occurred_at.isoformat() if log.occurred_at else None,
-        })
-
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
-
-
 # ── Policy snapshot CRUD ─────────────────────────────────────────────────────
 
 
@@ -1575,110 +1438,6 @@ async def upload_batch_files(
     return {"uploaded": uploaded, "count": len(uploaded)}
 
 
-# ── Rework task accept / reject ──────────────────────────────────────────────
-
-
-@router.post("/rework-tasks/{task_id}/accept")
-async def accept_rework_task(
-    task_id: str,
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    if not _is_platform_admin(current):
-        raise HTTPException(status_code=403, detail="Only admins can accept rework tasks.")
-    task = (
-        await db.execute(select(ReworkTask).where(ReworkTask.rework_task_id == task_id).limit(1))
-    ).scalar_one_or_none()
-    if not task or (not _is_platform_admin(current) and task.tenant_id != _tenant_id(current)):
-        raise HTTPException(status_code=404, detail="Rework task not found.")
-    if task.status != "pending":
-        raise HTTPException(status_code=400, detail=f"Task is '{task.status}', expected 'pending'.")
-    task.status = "accepted"
-    task.accepted_by = current.get("user_id")
-    await db.commit()
-    await db.refresh(task)
-    return {
-        "id": task.rework_task_id,
-        "status": _normalize_rework_status(task.status),
-    }
-
-
-@router.post("/rework-tasks/{task_id}/reject")
-async def reject_rework_task(
-    task_id: str,
-    body: dict[str, Any] | None = None,
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    if not _is_platform_admin(current):
-        raise HTTPException(status_code=403, detail="Only admins can reject rework tasks.")
-    task = (
-        await db.execute(select(ReworkTask).where(ReworkTask.rework_task_id == task_id).limit(1))
-    ).scalar_one_or_none()
-    if not task or (not _is_platform_admin(current) and task.tenant_id != _tenant_id(current)):
-        raise HTTPException(status_code=404, detail="Rework task not found.")
-    if task.status != "pending":
-        raise HTTPException(status_code=400, detail=f"Task is '{task.status}', expected 'pending'.")
-    reason = str((body or {}).get("reason", "")).strip()
-    task.status = "rejected"
-    task.accepted_by = current.get("user_id")
-    scope = dict(task.affected_scope_json or {})
-    scope["reject_reason"] = reason
-    task.affected_scope_json = scope
-    await db.commit()
-    await db.refresh(task)
-    return {
-        "id": task.rework_task_id,
-        "status": _normalize_rework_status(task.status),
-    }
-
-
-# ── Archive PDF download ─────────────────────────────────────────────────────
-
-
-@router.get("/archive-records/{record_id}/pdf")
-async def download_archive_pdf(
-    record_id: str,
-    current: dict[str, Any] = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> FileResponse:
-    record: ArchiveRecord | None = None
-    if record_id.isdigit():
-        record = (await db.execute(select(ArchiveRecord).where(ArchiveRecord.id == int(record_id)).limit(1))).scalar_one_or_none()
-    if not record:
-        record = (
-            await db.execute(select(ArchiveRecord).where(ArchiveRecord.archive_no == record_id).limit(1))
-        ).scalar_one_or_none()
-    if not record:
-        raise HTTPException(status_code=404, detail="Archive record not found.")
-
-    batch_id = str(record.batch_id or "")
-    # Look for a final searchable PDF artifact
-    artifact = (
-        await db.execute(
-            select(ArtifactFile)
-            .where(
-                ArtifactFile.batch_id == batch_id,
-                ArtifactFile.artifact_type.in_(["final_searchable_pdf", "draft_searchable_pdf", "export_zip"]),
-            )
-            .order_by(desc(ArtifactFile.created_at))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if not artifact:
-        raise HTTPException(status_code=404, detail="No PDF artifact found for this record.")
-
-    file_path = Path(artifact.storage_uri)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="PDF file not found on disk.")
-
-    return FileResponse(
-        path=str(file_path),
-        media_type="application/pdf",
-        filename=f"archive_{record_id}.pdf",
-    )
-
-
 @router.post("/batches/{batch_id}/export/final-pdf")
 async def export_batch_final_pdf(
     batch_id: str,
@@ -1696,3 +1455,80 @@ async def export_batch_final_pdf(
         "export_status": "pending",
         "message": "Final PDF export has been queued.",
     }
+
+
+@router.get("/batches/{batch_id}/pages/{page_id}/image")
+async def get_batch_page_image(
+    batch_id: str,
+    page_id: str,
+    current: dict[str, Any] = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """Serve a single page's preview or original image."""
+    batch = await _find_batch(db, batch_id, current)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    page = (
+        await db.execute(
+            select(PageRecord)
+            .where(PageRecord.page_id == page_id, PageRecord.batch_id == batch_id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not page:
+        raise HTTPException(status_code=404, detail="Page not found.")
+    image_path_str = page.preview_uri or page.image_uri
+    if not image_path_str:
+        raise HTTPException(status_code=404, detail="No image available for this page.")
+    image_path = Path(image_path_str)
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="Image file not found on disk.")
+    suffix = image_path.suffix.lower()
+    media_type = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".bmp": "image/bmp",
+        ".tif": "image/tiff", ".tiff": "image/tiff",
+        ".webp": "image/webp",
+    }.get(suffix, "image/jpeg")
+    return FileResponse(str(image_path), media_type=media_type)
+
+
+@router.get("/batches/{batch_id}/source-pdf")
+async def get_batch_source_pdf(
+    batch_id: str,
+    current: dict[str, Any] = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """Serve the source or artifact PDF for a batch (used by the review workbench preview)."""
+    batch = await _find_batch(db, batch_id, current)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found.")
+
+    storage_path: str | None = None
+
+    # Prefer the generated artifact PDF (final or draft output)
+    artifact_urls = await _batch_pdf_urls_by_batch(db, [batch_id])
+    storage_path = artifact_urls.get(batch_id)
+
+    # Fall back to the original source file
+    if not storage_path:
+        source_file = (
+            await db.execute(
+                select(SourceFile)
+                .where(SourceFile.batch_id == batch_id)
+                .where(SourceFile.mime_type.ilike("%pdf%"))
+                .order_by(SourceFile.created_at)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if source_file and source_file.storage_uri:
+            storage_path = source_file.storage_uri
+
+    if not storage_path:
+        raise HTTPException(status_code=404, detail="No PDF file is available for this batch yet.")
+
+    pdf_path = Path(storage_path)
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF file not found on disk.")
+
+    return FileResponse(str(pdf_path), media_type="application/pdf")

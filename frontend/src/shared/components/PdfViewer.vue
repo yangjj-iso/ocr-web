@@ -61,7 +61,7 @@ const props = defineProps({
   page: { type: Number, default: 1 },   // initial page to show
 })
 
-const emit = defineEmits(['page-change', 'loaded'])
+const emit = defineEmits(['page-change', 'loaded', 'load-error'])
 
 const canvas = ref(null)
 const container = ref(null)
@@ -82,12 +82,13 @@ async function loadPdf(url) {
       'pdfjs-dist/build/pdf.worker.min.mjs',
       import.meta.url
     ).toString()
-    pdfDoc = await pdfjsLib.getDocument(url).promise
+    pdfDoc = await pdfjsLib.getDocument({ url, withCredentials: true }).promise
     numPages.value = pdfDoc.numPages
     emit('loaded', pdfDoc.numPages)
     await renderPage(currentPage.value)
   } catch (e) {
     console.error('PdfViewer load error', e)
+    emit('load-error', e)
   } finally {
     loading.value = false
   }

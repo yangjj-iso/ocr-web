@@ -76,15 +76,36 @@ async def _get_shared_connection(broker_url: str) -> Any:
     return conn
 
 
-async def enqueue_workflow_start(*, run_id: str, batch_id: str, tenant_id: str) -> None:
+async def enqueue_workflow_start(
+    *,
+    run_id: str,
+    batch_id: str,
+    tenant_id: str,
+    policy_snapshot_id: str | None = None,
+    source_file_uris: list[str] | None = None,
+    page_count: int = 0,
+    submitted_by: str = "",
+    run_mode: str = "normal",
+    request_id: str | None = None,
+    pages: list[dict[str, Any]] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
     """将工作流启动命令投入接入队列。"""
     await _publish_to_queue(
         QUEUE_INGEST,
         {
             "command": "WORKFLOW_START",
             "run_id": run_id,
+            "request_id": request_id or "",
             "batch_id": batch_id,
             "tenant_id": tenant_id,
+            "policy_snapshot_id": policy_snapshot_id,
+            "source_file_uris": list(source_file_uris or []),
+            "page_count": max(0, int(page_count or 0)),
+            "submitted_by": submitted_by,
+            "run_mode": run_mode,
+            "pages": list(pages or []),
+            "extra": dict(extra or {}),
             "published_at": _utc_now(),
         },
     )
@@ -117,6 +138,9 @@ async def enqueue_workflow_rework(
     *,
     run_id: str,
     batch_id: str,
+    tenant_id: str = "default",
+    source_run_id: str | None = None,
+    reason: str = "rework_requested",
     rework_level: str,
     affected_scope: dict[str, Any],
     resume_from_checkpoint: str | None,
@@ -127,9 +151,13 @@ async def enqueue_workflow_rework(
         {
             "command": "WORKFLOW_REWORK",
             "run_id": run_id,
+            "source_run_id": source_run_id or run_id,
             "batch_id": batch_id,
+            "tenant_id": tenant_id,
+            "reason": reason,
             "rework_level": rework_level,
             "affected_scope": affected_scope,
+            "rework_scope": affected_scope,
             "resume_from_checkpoint": resume_from_checkpoint,
             "published_at": _utc_now(),
         },
@@ -140,6 +168,7 @@ async def enqueue_export_pdf(
     *,
     run_id: str,
     batch_id: str,
+    tenant_id: str,
     export_type: str,
     doc_ids: list[str],
 ) -> None:
@@ -150,6 +179,7 @@ async def enqueue_export_pdf(
             "command": "EXPORT_SEARCHABLE_PDF",
             "run_id": run_id,
             "batch_id": batch_id,
+            "tenant_id": tenant_id,
             "export_type": export_type,
             "doc_ids": doc_ids,
             "published_at": _utc_now(),
@@ -161,8 +191,11 @@ async def enqueue_recompute(
     *,
     run_id: str,
     batch_id: str,
+    tenant_id: str = "default",
+    source_run_id: str | None = None,
     affected_scope: dict[str, Any],
     recompute_targets: list[str],
+    resume_from_checkpoint: str | None = None,
 ) -> None:
     """将局部重算任务投入 Draft 流水线队列。"""
     await _publish_to_queue(
@@ -170,9 +203,12 @@ async def enqueue_recompute(
         {
             "command": "RECOMPUTE_AFFECTED_SCOPE",
             "run_id": run_id,
+            "source_run_id": source_run_id or run_id,
             "batch_id": batch_id,
+            "tenant_id": tenant_id,
             "affected_scope": affected_scope,
             "recompute_targets": recompute_targets,
+            "resume_from_checkpoint": resume_from_checkpoint,
             "published_at": _utc_now(),
         },
     )
@@ -233,14 +269,57 @@ async def enqueue_relation_analysis(*, run_id: str, batch_id: str) -> None:
     )
 
 
-async def enqueue_final_pipeline(*, run_id: str, batch_id: str) -> None:
+async def enqueue_draft_pipeline(
+    *,
+    run_id: str,
+    batch_id: str,
+    tenant_id: str = "default",
+    current_stage: str = "run_draft_subgraph",
+    source_run_id: str | None = None,
+    affected_scope: dict[str, Any] | None = None,
+    resume_from_checkpoint: str | None = None,
+    recompute_targets: list[str] | None = None,
+) -> None:
+    """将 Draft 轨流水线任务投入 Draft 队列。"""
+    await _publish_to_queue(
+        QUEUE_DRAFT_PIPELINE,
+        {
+            "command": "RUN_DRAFT_PIPELINE",
+            "run_id": run_id,
+            "source_run_id": source_run_id or run_id,
+            "batch_id": batch_id,
+            "tenant_id": tenant_id,
+            "current_stage": current_stage,
+            "affected_scope": dict(affected_scope or {}),
+            "resume_from_checkpoint": resume_from_checkpoint,
+            "recompute_targets": list(recompute_targets or []),
+            "published_at": _utc_now(),
+        },
+    )
+
+
+async def enqueue_final_pipeline(
+    *,
+    run_id: str,
+    batch_id: str,
+    tenant_id: str = "default",
+    current_stage: str = "sort_documents_final",
+    source_run_id: str | None = None,
+    affected_scope: dict[str, Any] | None = None,
+    resume_from_checkpoint: str | None = None,
+) -> None:
     """将 Final 轨流水线任务投入 Final 队列。"""
     await _publish_to_queue(
         QUEUE_FINAL_PIPELINE,
         {
             "command": "RUN_FINAL_PIPELINE",
             "run_id": run_id,
+            "source_run_id": source_run_id or run_id,
             "batch_id": batch_id,
+            "tenant_id": tenant_id,
+            "current_stage": current_stage,
+            "affected_scope": dict(affected_scope or {}),
+            "resume_from_checkpoint": resume_from_checkpoint,
             "published_at": _utc_now(),
         },
     )

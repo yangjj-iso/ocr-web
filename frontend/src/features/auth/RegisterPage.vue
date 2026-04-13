@@ -207,10 +207,9 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import axios from 'axios'
 
 import { useAuthState } from '@/composables/useAuthState.js'
-import { aiApiBase, requestDefaults } from '@/api/runtime.js'
+import { listPublicTenants } from '@/api/tenants.js'
 
 const authState = useAuthState()
 
@@ -230,8 +229,7 @@ const availableTenants = ref([{ id: 'default', name: '默认机构' }])
 
 onMounted(async () => {
   try {
-    const api = axios.create({ baseURL: aiApiBase('/tenants'), ...requestDefaults })
-    const { data } = await api.get('')
+    const { data } = await listPublicTenants()
     if (data?.items?.length) {
       availableTenants.value = data.items
       selectedTenantId.value = data.items[0].id

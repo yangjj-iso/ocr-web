@@ -123,7 +123,7 @@ import AppShell from '@/layouts/AppShell.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import PdfViewer from '@/shared/components/PdfViewer.vue'
 import ReworkModal from '@/shared/components/ReworkModal.vue'
-import { getArchiveRecord, createReworkTask, downloadArchivePdf } from '@/api/archive'
+import { getArchiveRecord, createReworkTask, downloadArchivePdf, listDocUnits } from '@/api/archive'
 
 const route = useRoute()
 const showModal = ref(false)
@@ -134,7 +134,9 @@ const loadError = ref('')
 const opMsg = ref(null)
 const downloading = ref(false)
 
-const pdfUrl = computed(() => record.value.pdf_url || record.value.file_url || null)
+const pdfUrl = computed(() => {
+  return record.value.pdf_url || record.value.file_url || docUnits.value[0]?.pdf_url || docUnits.value[0]?.preview_url || null
+})
 const reworkHint = computed(() => record.value.last_rework_status || '暂无')
 
 function fmt(v) {
@@ -148,6 +150,15 @@ async function load() {
     record.value = res.data || {}
     docUnits.value = record.value.doc_units || record.value.docs || []
     versions.value = record.value.versions || record.value.doc_versions || []
+    if (!docUnits.value.length && record.value.batch_id) {
+      try {
+        const docsRes = await listDocUnits(record.value.batch_id)
+        const items = Array.isArray(docsRes.data?.items) ? docsRes.data.items : []
+        docUnits.value = items
+      } catch (detailError) {
+        console.warn('加载归档文档单元失败', detailError)
+      }
+    }
   } catch (e) {
     loadError.value = e?.response?.data?.detail || '加载归档详情失败，请稍后重试。'
     console.error('加载归档详情失败', e)
@@ -182,6 +193,7 @@ async function handleSubmitRework(payload) {
     })
     showModal.value = false
     opMsg.value = { ok: true, text: '返工提报已提交' }
+    await load()
   } catch (e) {
     opMsg.value = { ok: false, text: '提报失败：' + (e?.response?.data?.detail || e.message || '未知错误') }
     console.error('提报返工失败', e)

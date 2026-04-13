@@ -116,6 +116,10 @@ CONTROL_PLANE_INTERNAL_TOKEN = os.getenv(
     "CONTROL_PLANE_INTERNAL_TOKEN",
     os.getenv("OCR_INTERNAL_API_TOKEN", "change-this-internal-token"),
 ).strip()
+CONTROL_PLANE_WORKFLOW_EVENTS_PATH = os.getenv(
+    "CONTROL_PLANE_WORKFLOW_EVENTS_PATH",
+    "",
+).strip()
 CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS = float(os.getenv("CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS", "15"))
 CONTROL_PLANE_VERIFY_TLS = _env_flag("CONTROL_PLANE_VERIFY_TLS", True)
 COMPUTE_WORKER_ID = os.getenv("COMPUTE_WORKER_ID", "py-compute-worker").strip() or "py-compute-worker"

@@ -9,6 +9,7 @@ import com.ocrweb.controlplane.config.AuthProperties;
 import com.ocrweb.controlplane.config.ControlPlaneSecurityProperties;
 import com.ocrweb.controlplane.config.RateLimitProperties;
 import com.ocrweb.controlplane.task.service.AiProxyTimeoutException;
+import com.ocrweb.controlplane.tenant.service.TenantService;
 import com.ocrweb.controlplane.trace.TraceContextFilter;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -119,11 +120,13 @@ class ControlPlaneWebInfrastructureTest {
         authProperties.setUsername("admin");
         authProperties.setPassword("change-me");
         AppUserRepository appUserRepository = mock(AppUserRepository.class);
+        TenantService tenantService = mock(TenantService.class);
         AuthService authService = new AuthService(
                 appUserRepository,
                 new PasswordHashService(),
                 new SessionTokenService(authProperties, objectMapper),
-                authProperties
+            authProperties,
+            tenantService
         );
         return MockMvcBuilders
                 .standaloneSetup(new TestController())

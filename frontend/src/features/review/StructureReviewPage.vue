@@ -12,7 +12,13 @@
           </div>
           <span class="text-[11px] tabular-nums text-[var(--gov-text-muted)]">{{ confirmedCount }}/{{ docs.length }}</span>
         </div>
-        <div class="hidden md:inline-flex items-center gap-1.5 ml-auto text-[11px] text-[var(--gov-text-muted)]">
+        <div class="ml-auto flex items-center gap-2">
+          <span v-if="refreshStatusText" class="hidden lg:inline">{{ refreshStatusText }}</span>
+          <button @click="handleManualRefresh" :disabled="refreshing" class="h-8 rounded-md border border-[var(--gov-border)] px-3 text-[11px] text-[var(--gov-text-muted)] hover:bg-slate-50 disabled:opacity-50">
+            {{ refreshing ? '刷新中...' : '刷新' }}
+          </button>
+        </div>
+        <div class="hidden md:inline-flex items-center gap-1.5 text-[11px] text-[var(--gov-text-muted)]">
           <span class="gov-kbd">&uarr;</span><span class="gov-kbd">&darr;</span> 切换件
           <span class="gov-kbd ml-1">Space</span> 确认
           <span class="gov-kbd ml-1">Enter</span> 提交
@@ -138,7 +144,13 @@
 
         <div class="flex-1 min-h-0 flex">
           <div class="flex-1 min-w-0 min-h-0">
-            <PdfViewer v-if="previewUrl" :src="previewUrl" :page="currentPage" class="h-full" @page-change="(p) => (currentPage = p)" />
+            <PdfViewer v-if="previewUrl && !pdfLoadFailed" :src="previewUrl" :page="currentPage" class="h-full"
+              @page-change="(p) => (currentPage = p)" @load-error="pdfLoadFailed = true" />
+            <div v-else-if="pageImageUrl" class="h-full flex items-center justify-center overflow-auto bg-slate-100 p-4">
+              <img :src="pageImageUrl"
+                :style="pageImageRotation ? { transform: `rotate(${pageImageRotation}deg)`, maxHeight: [90, 270].includes(pageImageRotation) ? '80vw' : undefined } : {}"
+                class="max-h-full max-w-full shadow-lg object-contain" alt="页面预览" />
+            </div>
             <div v-else class="h-full flex items-center justify-center text-sm text-[var(--gov-text-muted)]">暂无预览</div>
           </div>
         </div>
@@ -257,13 +269,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import PdfViewer from '@/shared/components/PdfViewer.vue'
 import ReworkModal from '@/shared/components/ReworkModal.vue'
 import { getReviewTask, listDocUnits, submitReview } from '@/api/archive'
+import { formatRefreshTime } from '@/features/batches/progress'
 
 const route = useRoute()
 const router = useRouter()
@@ -280,6 +293,13 @@ const showReworkModal = ref(false)
 const activeTab = ref('boundary')
 const dragFrom = ref(-1)
 const dragOverIdx = ref(-1)
+const refreshing = ref(false)
+const lastRefreshedAt = ref(null)
+const hasLocalStructureChanges = ref(false)
+
+const AUTO_REFRESH_MS = 10000
+const ACTIVE_REVIEW_TASK_STATUSES = new Set(['pending', 'processing', 'human_review', 'claimed', 'running'])
+let structureRefreshTimer = null
 
 const evidenceTabs = [
   { key: 'boundary', label: '边界证据' },
@@ -290,10 +310,34 @@ const selectedDoc = computed(() => docs.value[selectedIdx.value] || null)
 const selectedDocTitle = computed(() => selectedDoc.value?.title || selectedDoc.value?.name || '未选择文档')
 const previewUrl = computed(() => selectedDoc.value?.pdf_url || selectedDoc.value?.preview_url || null)
 const totalPages = computed(() => Number(selectedDoc.value?.page_count || selectedDoc.value?.pages?.length || 1))
+const pdfLoadFailed = ref(false)
+const _currentPageEntry = computed(() => {
+  const doc = selectedDoc.value
+  if (!doc?.ocr_pages?.length) return null
+  const start = Number(doc.start_page || 1)
+  const localIdx = Math.max(0, Number(currentPage.value) - start)
+  return doc.ocr_pages[localIdx] || doc.ocr_pages[0] || null
+})
+const pageImageUrl = computed(() => _currentPageEntry.value?.image_url || null)
+const pageImageRotation = computed(() => Number(_currentPageEntry.value?.rotation || 0))
 const confirmedCount = computed(() => docs.value.filter(d => d._confirmed).length)
 const progressPercent = computed(() => docs.value.length ? Math.round((confirmedCount.value / docs.value.length) * 100) : 0)
 const needAttentionCount = computed(() => docs.value.filter(d => (d.risk_level && d.risk_level !== 'none') || (docConfidence(d) != null && docConfidence(d) < 0.6)).length)
 const hasUnconfirmedSafe = computed(() => docs.value.some(d => !d._confirmed && (!d.risk_level || d.risk_level === 'none') && (docConfidence(d) == null || docConfidence(d) >= 0.6)))
+const autoRefreshEnabled = computed(() => {
+  const status = String(task.value?.status || '').trim().toLowerCase()
+  return ACTIVE_REVIEW_TASK_STATUSES.has(status) && !hasLocalStructureChanges.value
+})
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (hasLocalStructureChanges.value) {
+    return stamp ? `${stamp} 更新 · 存在未提交的边界调整，已暂停自动刷新` : '存在未提交的边界调整，已暂停自动刷新'
+  }
+  if (autoRefreshEnabled.value) {
+    return stamp ? `${stamp} 更新 · 结构审核页每10s自动刷新` : '结构审核页每10s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
 
 const pageRange = computed(() => {
   const start = Number(selectedDoc.value?.start_page || 1)
@@ -328,15 +372,31 @@ function confColor(c) { return c == null ? 'text-slate-400' : c >= 0.8 ? 'text-g
 function docSeqClass(doc) { return doc.risk_level === 'high' ? 'bg-red-100 text-red-700' : doc.risk_level === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600' }
 function riskTagClass(level) { return level === 'high' ? 'bg-red-100 text-red-700' : level === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500' }
 function isBoundaryPage(p) { return docs.value.some(d => Number(d.start_page) === p) }
+function getDocKey(doc) { const key = doc?.id ?? doc?.doc_id; return key == null ? '' : String(key) }
+function getDocSpan(doc) {
+  const start = Number(doc?.start_page || 1)
+  const end = Number(doc?.end_page || start)
+  if (Number.isFinite(start) && Number.isFinite(end) && end >= start) return { start, end }
+  const pageCount = Number(doc?.page_count || (Array.isArray(doc?.pages) ? doc.pages.length : doc?.pages) || 1)
+  const count = Number.isFinite(pageCount) && pageCount > 0 ? pageCount : 1
+  return { start, end: start + count - 1 }
+}
+function markStructureDirty() { hasLocalStructureChanges.value = true }
 
 function confirmDoc(idx) {
   if (idx < 0 || idx >= docs.value.length) return
+  markStructureDirty()
   docs.value[idx]._confirmed = true
   opMsg.value = { ok: true, text: `件 ${idx + 1} 已确认` }
   const next = docs.value.findIndex((d, i) => i > idx && !d._confirmed)
   if (next >= 0) setTimeout(() => selectDoc(next), 200)
 }
-function unconfirmDoc(idx) { if (idx >= 0 && idx < docs.value.length) docs.value[idx]._confirmed = false }
+function unconfirmDoc(idx) {
+  if (idx >= 0 && idx < docs.value.length) {
+    markStructureDirty()
+    docs.value[idx]._confirmed = false
+  }
+}
 function confirmAllSafe() {
   let count = 0
   docs.value.forEach(d => {
@@ -344,11 +404,22 @@ function confirmAllSafe() {
       const c = docConfidence(d); if (c == null || c >= 0.6) { d._confirmed = true; count++ }
     }
   })
+  if (count > 0) markStructureDirty()
   opMsg.value = { ok: true, text: `已批量确认 ${count} 件` }
 }
 
-async function loadTask() {
+function extractArray(data, keys = ['items']) {
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  if (Array.isArray(data)) return data
+  return []
+}
+
+async function loadTask(options = {}) {
   loadError.value = ''
+  const previousDocKey = options.preserveSelection === false ? '' : getDocKey(selectedDoc.value)
+  const previousPage = currentPage.value
   try {
     const res = await getReviewTask(taskId)
     task.value = res.data || null
@@ -357,24 +428,48 @@ async function loadTask() {
       docs.value = taskDocs.map(d => ({ ...d, _confirmed: false }))
     } else if (task.value?.batch_id) {
       const r = await listDocUnits(task.value.batch_id)
-      docs.value = (r.data?.items || r.data || []).map(d => ({ ...d, _confirmed: false }))
+      docs.value = extractArray(r.data).map(d => ({ ...d, _confirmed: false }))
     } else { docs.value = [] }
-    if (docs.value.length) selectDoc(0)
+    if (docs.value.length) {
+      const nextIndex = previousDocKey
+        ? docs.value.findIndex((doc) => getDocKey(doc) === previousDocKey)
+        : 0
+      const targetIndex = nextIndex >= 0 ? nextIndex : 0
+      const preservePage = Boolean(previousDocKey) && targetIndex >= 0 && getDocKey(docs.value[targetIndex]) === previousDocKey
+      selectDoc(targetIndex, { preservePage, page: previousPage })
+    } else {
+      selectedIdx.value = 0
+      currentPage.value = 1
+    }
+    hasLocalStructureChanges.value = false
+    lastRefreshedAt.value = new Date()
   } catch (error) { loadError.value = error?.response?.data?.detail || '加载审核任务失败，请返回重试。' }
 }
-function selectDoc(idx) { selectedIdx.value = idx; currentPage.value = Number(docs.value[idx]?.start_page || 1) }
+function selectDoc(idx, options = {}) {
+  selectedIdx.value = idx
+  const doc = docs.value[idx]
+  if (!doc) {
+    currentPage.value = 1
+    return
+  }
+  const span = getDocSpan(doc)
+  const requestedPage = options.preservePage ? Number(options.page || span.start) : span.start
+  currentPage.value = Math.min(Math.max(requestedPage, span.start), span.end)
+}
 
 function onDragStart(idx, e) { dragFrom.value = idx; e.dataTransfer.effectAllowed = 'move' }
 function onDrop(idx) {
   dragOverIdx.value = -1
   if (dragFrom.value < 0 || dragFrom.value === idx) return
   const list = [...docs.value]; const [moved] = list.splice(dragFrom.value, 1); list.splice(idx, 0, moved)
+  markStructureDirty()
   docs.value = list; selectedIdx.value = idx; dragFrom.value = -1
   opMsg.value = { ok: true, text: '已调整顺序（本地）' }
 }
 
 function mergeWithPrev() {
   if (selectedIdx.value <= 0) return
+  markStructureDirty()
   const prev = docs.value[selectedIdx.value - 1], cur = docs.value[selectedIdx.value]
   prev.end_page = cur.end_page || prev.end_page
   prev.page_count = (Number(prev.page_count) || 0) + (Number(cur.page_count) || 0)
@@ -384,6 +479,7 @@ function mergeWithPrev() {
 }
 function splitAsNew() {
   if (selectedIdx.value < 0) return
+  markStructureDirty()
   const cur = docs.value[selectedIdx.value]
   const newDoc = { id: `new_${Date.now()}`, title: `拆分件（从第${currentPage.value}页）`, start_page: currentPage.value, end_page: cur.end_page, page_count: (Number(cur.end_page) || currentPage.value) - currentPage.value + 1, status: 'pending', risk_level: 'medium', _confirmed: false }
   cur.end_page = currentPage.value - 1; cur.page_count = (Number(cur.end_page) || 0) - (Number(cur.start_page) || 0) + 1; cur._confirmed = false
@@ -392,6 +488,7 @@ function splitAsNew() {
 }
 function setAsNextFirst() {
   if (selectedIdx.value < 0 || selectedIdx.value >= docs.value.length - 1) return
+  markStructureDirty()
   const cur = docs.value[selectedIdx.value], next = docs.value[selectedIdx.value + 1]
   next.start_page = currentPage.value; cur.end_page = currentPage.value - 1
   cur.page_count = Math.max(0, (Number(cur.end_page) || 0) - (Number(cur.start_page) || 0) + 1)
@@ -400,8 +497,40 @@ function setAsNextFirst() {
 }
 function markEscalate() {
   if (selectedIdx.value < 0) return
+  markStructureDirty()
   docs.value[selectedIdx.value].risk_level = 'high'; docs.value[selectedIdx.value].escalated = true; docs.value[selectedIdx.value]._confirmed = false
   opMsg.value = { ok: true, text: '已标记升级处理' }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!autoRefreshEnabled.value) return
+  structureRefreshTimer = window.setInterval(() => {
+    if (!document.hidden && !showReworkModal.value && !submitting.value && !hasLocalStructureChanges.value) {
+      loadTask()
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (structureRefreshTimer) {
+    window.clearInterval(structureRefreshTimer)
+    structureRefreshTimer = null
+  }
+}
+
+async function handleManualRefresh() {
+  if (refreshing.value) return
+  if (hasLocalStructureChanges.value) {
+    opMsg.value = { ok: false, text: '存在未提交的边界调整，请先提交或撤销后再刷新' }
+    return
+  }
+  refreshing.value = true
+  try {
+    await loadTask()
+  } finally {
+    refreshing.value = false
+  }
 }
 
 async function submitStructure(decision, rejectPayload) {
@@ -423,6 +552,17 @@ function handleKeyboard(e) {
   else if (e.key === ' ' && !e.shiftKey) { e.preventDefault(); if (selectedDoc.value && !selectedDoc.value._confirmed) confirmDoc(selectedIdx.value) }
   else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (confirmedCount.value >= docs.value.length) submitStructure('approve') }
 }
+
+watch(autoRefreshEnabled, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
+watch(selectedIdx, () => { pdfLoadFailed.value = false })
+
 onMounted(() => { loadTask(); document.addEventListener('keydown', handleKeyboard) })
-onUnmounted(() => { document.removeEventListener('keydown', handleKeyboard) })
+onUnmounted(() => { stopAutoRefresh(); document.removeEventListener('keydown', handleKeyboard) })
 </script>

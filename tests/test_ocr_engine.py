@@ -37,6 +37,25 @@ class _FakeOCR:
 
 
 class OCREngineTests(unittest.TestCase):
+    def test_get_ocr_uses_safe_predictor_options_on_cpu(self):
+        fake_ocr = _FakeOCR()
+
+        with (
+            patch.object(ocr_engine, "_ocr_instance", None),
+            patch.object(ocr_engine, "OCR_DEVICE", "cpu"),
+            patch.object(ocr_engine, "PaddleOCR", return_value=fake_ocr) as paddle_ocr_cls,
+        ):
+            result = ocr_engine.get_ocr()
+
+        self.assertIs(result, fake_ocr)
+        kwargs = paddle_ocr_cls.call_args.kwargs
+        self.assertEqual(kwargs["text_detection_model_name"], "PP-OCRv5_mobile_det")
+        self.assertEqual(kwargs["text_recognition_model_name"], "PP-OCRv5_mobile_rec")
+        self.assertFalse(kwargs["enable_mkldnn"])
+        self.assertFalse(kwargs["enable_hpi"])
+        self.assertFalse(kwargs["enable_cinn"])
+        self.assertEqual(kwargs["cpu_threads"], 1)
+
     def test_predict_structured_retries_without_unsupported_argument(self):
         pipeline = _FakePipeline(
             [

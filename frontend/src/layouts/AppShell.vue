@@ -118,9 +118,10 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthState } from '@/composables/useAuthState.js'
+import { getMyAssignedTasks, listReviewTasks, listReworkTasks } from '@/api/archive.js'
 
 const UserMenu = defineAsyncComponent(() => import('./UserMenu.vue'))
 
@@ -154,11 +155,99 @@ const roleBadgeColor = computed(() => {
   return 'bg-slate-500'
 })
 
-// Todo count placeholder (override via provide/inject or store)
-const todoCount = computed(() => 0)
+const todoCount = ref(0)
 const todoRoute = computed(() => {
-  if (isTenantAdmin.value || isSysAdmin.value) return '/tasks'
+  if (isSearcher.value) return '/rework/my'
   return '/tasks'
+})
+
+const TODO_REFRESH_MS = 30000
+let todoRefreshTimer = null
+
+function extractItems(payload) {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.items)) return payload.items
+  if (Array.isArray(payload?.tasks)) return payload.tasks
+  return []
+}
+
+function extractTotal(payload) {
+  if (Array.isArray(payload)) return payload.length
+  if (typeof payload?.total === 'number') return payload.total
+  return extractItems(payload).length
+}
+
+async function refreshTodoCount() {
+  if (!auth.value?.authenticated) {
+    todoCount.value = 0
+    return
+  }
+
+  try {
+    if (isSysAdmin.value || isTenantAdmin.value) {
+      const { data } = await listReviewTasks({
+        status: 'human_review',
+        page: 1,
+        page_size: 1,
+      })
+      todoCount.value = Math.max(0, extractTotal(data))
+      return
+    }
+
+    if (isSearcher.value) {
+      const { data } = await listReworkTasks({
+        page: 1,
+        page_size: 200,
+        mine: true,
+      })
+      const items = extractItems(data)
+      todoCount.value = items.filter((item) => ['pending', 'processing'].includes(String(item?.status || '').toLowerCase())).length
+      return
+    }
+
+    const { data } = await getMyAssignedTasks({
+      status: 'human_review',
+      page: 1,
+      page_size: 1,
+    })
+    todoCount.value = Math.max(0, extractTotal(data))
+  } catch {
+    todoCount.value = 0
+  }
+}
+
+function startTodoRefresh() {
+  stopTodoRefresh()
+  if (!auth.value?.authenticated) return
+  todoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      refreshTodoCount()
+    }
+  }, TODO_REFRESH_MS)
+}
+
+function stopTodoRefresh() {
+  if (todoRefreshTimer) {
+    window.clearInterval(todoRefreshTimer)
+    todoRefreshTimer = null
+  }
+}
+
+onMounted(() => {
+  refreshTodoCount()
+  startTodoRefresh()
+})
+
+watch(
+  () => [auth.value?.authenticated, authProfile.value.role, route.fullPath],
+  () => {
+    refreshTodoCount()
+    startTodoRefresh()
+  }
+)
+
+onBeforeUnmount(() => {
+  stopTodoRefresh()
 })
 
 // Icon components (inline SVG as object)

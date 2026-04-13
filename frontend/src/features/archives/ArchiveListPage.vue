@@ -96,13 +96,20 @@ function buildParams() {
   }
 }
 
+function extractRows(data) {
+  if (Array.isArray(data?.items)) return data.items
+  if (Array.isArray(data?.records)) return data.records
+  if (Array.isArray(data)) return data
+  return []
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
     const res = await listArchiveRecords(buildParams())
     const data = res.data || {}
-    rows.value = data.items || data.records || data || []
+    rows.value = extractRows(data)
     total.value = data.total || rows.value.length
   } catch (e) {
     console.error('加载归档列表失败', e)

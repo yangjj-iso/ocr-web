@@ -5,6 +5,10 @@
         <span class="font-mono text-xs text-[var(--gov-text-muted)]">#{{ taskId }}</span>
         <StatusBadge :status="task?.status" />
         <span class="text-[11px] font-semibold text-purple-600">放行控制</span>
+        <span v-if="refreshStatusText" class="hidden text-[11px] text-[var(--gov-text-muted)] lg:inline">{{ refreshStatusText }}</span>
+        <button @click="handleManualRefresh" :disabled="refreshing" class="h-8 rounded-md border border-[var(--gov-border)] px-3 text-[11px] text-[var(--gov-text-muted)] hover:bg-slate-50 disabled:opacity-50">
+          {{ refreshing ? '刷新中...' : '刷新' }}
+        </button>
       </div>
     </template>
 
@@ -188,13 +192,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import StatCard from '@/shared/components/StatCard.vue'
 import ReworkModal from '@/shared/components/ReworkModal.vue'
-import { getReviewTask, listDocUnits, releaseBatch, rejectRelease, exportBatchFinalPdf, submitReview } from '@/api/archive'
+import { getReviewTask, listDocUnits, releaseBatch, rejectRelease, exportBatchFinalPdf } from '@/api/archive'
+import { formatRefreshTime } from '@/features/batches/progress'
 
 const route = useRoute()
 const router = useRouter()
@@ -208,6 +213,12 @@ const exporting = ref(false)
 const opMsg = ref(null)
 const showReworkModal = ref(false)
 const showReleaseConfirm = ref(false)
+const refreshing = ref(false)
+const lastRefreshedAt = ref(null)
+
+const AUTO_REFRESH_MS = 10000
+const ACTIVE_RELEASE_TASK_STATUSES = new Set(['pending', 'processing', 'human_review', 'claimed', 'running'])
+let releaseConsoleRefreshTimer = null
 
 const overview = computed(() => {
   const t = task.value || {}; const ev = t.evidence || {}; const docsArr = docUnits.value
@@ -234,6 +245,14 @@ const risks = computed(() => {
 
 const hasBlockingRisks = computed(() => risks.value.some(r => r.level === 'high'))
 const blockingCount = computed(() => risks.value.filter(r => r.level === 'high').length)
+const autoRefreshEnabled = computed(() => ACTIVE_RELEASE_TASK_STATUSES.has(String(task.value?.status || '').trim().toLowerCase()))
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (autoRefreshEnabled.value) {
+    return stamp ? `${stamp} 更新 · 当前放行页每10s自动刷新` : '当前放行页每10s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
 
 const checklistPassed = computed(() => {
   const out = []; const ov = overview.value
@@ -245,14 +264,50 @@ const checklistPassed = computed(() => {
   return out
 })
 
-async function loadTask() {
+function extractArray(data, keys = ['items']) {
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  if (Array.isArray(data)) return data
+  return []
+}
+
+async function loadTask(options = {}) {
   loadError.value = ''
   try {
     const res = await getReviewTask(taskId); task.value = res.data || null
     const taskDocs = task.value?.docs || task.value?.doc_units || []
     if (Array.isArray(taskDocs) && taskDocs.length) { docUnits.value = taskDocs }
-    else if (task.value?.batch_id) { const r = await listDocUnits(task.value.batch_id); docUnits.value = r.data?.items || r.data || [] }
+    else if (task.value?.batch_id) { const r = await listDocUnits(task.value.batch_id); docUnits.value = extractArray(r.data) }
+    lastRefreshedAt.value = new Date()
   } catch (error) { loadError.value = error?.response?.data?.detail || '加载放行任务失败，请返回重试。' }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!autoRefreshEnabled.value) return
+  releaseConsoleRefreshTimer = window.setInterval(() => {
+    if (!document.hidden && !showReworkModal.value && !showReleaseConfirm.value && !submitting.value && !exporting.value) {
+      loadTask({ silent: true })
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (releaseConsoleRefreshTimer) {
+    window.clearInterval(releaseConsoleRefreshTimer)
+    releaseConsoleRefreshTimer = null
+  }
+}
+
+async function handleManualRefresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await loadTask()
+  } finally {
+    refreshing.value = false
+  }
 }
 
 async function doRelease() {
@@ -267,7 +322,7 @@ async function doRelease() {
 
 async function doArchive() {
   submitting.value = true; opMsg.value = null
-  try { await submitReview(taskId, { decision: 'approve', action: 'archive' }); opMsg.value = { ok: true, text: '入库确认已提交' } }
+  try { await releaseBatch(taskId, { action: 'archive' }); opMsg.value = { ok: true, text: '入库确认已完成' } }
   catch (error) { opMsg.value = { ok: false, text: '入库失败：' + (error?.response?.data?.detail || error.message || '未知错误') } }
   finally { submitting.value = false }
 }
@@ -284,11 +339,24 @@ function openRework() { showReworkModal.value = true }
 async function handleRework(payload) {
   submitting.value = true; opMsg.value = null
   try {
-    await rejectRelease(taskId, payload.description); showReworkModal.value = false
+    await rejectRelease(taskId, payload.description, payload)
+    showReworkModal.value = false
     opMsg.value = { ok: true, text: '已发起返工，即将跳转…' }; setTimeout(() => router.push('/tasks'), 1200)
   } catch (error) { opMsg.value = { ok: false, text: '返工失败：' + (error?.response?.data?.detail || error.message || '未知错误') } }
   finally { submitting.value = false }
 }
 
+watch(autoRefreshEnabled, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
 onMounted(loadTask)
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
+})
 </script>

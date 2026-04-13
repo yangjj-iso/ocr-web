@@ -1,6 +1,8 @@
 import axios from 'axios'
 import { aiApiBase, controlPlaneApiBase, requestDefaults } from './runtime.js'
 
+const adminUsersApi = axios.create({ baseURL: controlPlaneApiBase('/admin'), ...requestDefaults })
+const operatorSelfApi = axios.create({ baseURL: controlPlaneApiBase('/operator'), ...requestDefaults })
 const adminApi = axios.create({ baseURL: aiApiBase('/admin'), ...requestDefaults })
 const operatorApi = axios.create({ baseURL: aiApiBase('/operator'), ...requestDefaults })
 const taskApi = axios.create({ baseURL: controlPlaneApiBase('/ocr'), ...requestDefaults })
@@ -65,14 +67,14 @@ function summarizeAssignedTasks(tasks = []) {
 }
 
 // ── Users ──────────────────────────────────────────────────────────────────
-export const listUsers = (params = {}) => adminApi.get('/users', { params })
-export const setUserRole = (userId, role, capabilities) => adminApi.put(`/users/${userId}/role`, { role, capabilities: capabilities ?? null })
-export const setDisplayName = (userId, display_name) => adminApi.put(`/users/${userId}/display-name`, { display_name })
+export const listUsers = (params = {}) => adminUsersApi.get('/users', { params })
+export const setUserRole = (userId, role, capabilities) => adminUsersApi.put(`/users/${userId}/role`, { role, capabilities: capabilities ?? null })
+export const setDisplayName = (userId, display_name) => adminUsersApi.put(`/users/${userId}/display-name`, { display_name })
 
 // ── Quotas ─────────────────────────────────────────────────────────────────
-export const getUserQuota = (userId) => adminApi.get(`/users/${userId}/quota`)
-export const updateUserQuota = (userId, data) => adminApi.put(`/users/${userId}/quota`, data)
-export const resetUserQuota = (userId) => adminApi.post(`/users/${userId}/quota/reset`)
+export const getUserQuota = (userId) => adminUsersApi.get(`/users/${userId}/quota`)
+export const updateUserQuota = (userId, data) => adminUsersApi.put(`/users/${userId}/quota`, data)
+export const resetUserQuota = (userId) => adminUsersApi.post(`/users/${userId}/quota/reset`)
 
 // ── Assignments ────────────────────────────────────────────────────────────
 export const listAssignments = (params = {}) => adminApi.get('/assignments', { params })
@@ -83,7 +85,7 @@ export const updateAssignmentStatus = (id, status) => adminApi.put(`/assignments
 export const listOperationLogs = (params = {}) => adminApi.get('/operation-logs', { params })
 
 // ── Operator self-service ──────────────────────────────────────────────────
-export const getMyQuota = () => operatorApi.get('/my-quota')
+export const getMyQuota = () => operatorSelfApi.get('/my-quota')
 export const getMyAssignments = async (params = {}) => {
   const { data } = await taskApi.get('/tasks/my-assigned', {
     params: {
@@ -97,4 +99,4 @@ export const getMyAssignments = async (params = {}) => {
     : items
   return { data: { items: filteredItems, total: filteredItems.length } }
 }
-export const consumeQuota = (data) => operatorApi.post('/my-quota/consume', data)
+export const consumeQuota = (data) => operatorSelfApi.post('/my-quota/consume', data)

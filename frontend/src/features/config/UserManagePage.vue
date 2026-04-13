@@ -70,6 +70,13 @@
         </div>
 
         <div class="mt-3">
+          <label class="text-xs text-[var(--gov-text-muted)] block mb-1">所属租户</label>
+          <select v-model="editForm.tenant_id" class="w-full gov-select text-sm">
+            <option v-for="t in tenantOptions" :key="t.id" :value="t.id">{{ t.name || t.id }} ({{ t.id }})</option>
+          </select>
+        </div>
+
+        <div class="mt-3">
           <label class="text-xs text-[var(--gov-text-muted)] block mb-1">能力</label>
           <div class="flex gap-3 text-sm">
             <label class="inline-flex items-center gap-1.5">
@@ -102,6 +109,7 @@ import AppShell from '@/layouts/AppShell.vue'
 import DataTable from '@/shared/components/DataTable.vue'
 import { listUsers, setUserRole, setDisplayName } from '@/api/admin'
 import { resetUserPassword } from '@/api/auth'
+import { assignUserToTenant, listTenants } from '@/api/tenants.js'
 import { useAuthState } from '@/composables/useAuthState'
 
 const auth = useAuthState()
@@ -118,13 +126,15 @@ const pendingLoading = computed(() => auth.pendingLoading.value)
 const userColumns = [
   { key: 'username', label: '用户名', width: '130px', mono: true },
   { key: 'display_name', label: '显示名', width: '140px' },
+  { key: 'tenant_id', label: '所属租户', width: '140px', mono: true },
   { key: 'role', label: '角色', width: '120px' },
   { key: 'capabilities', label: '能力' },
 ]
 
 const editing = ref(null)
 const saving = ref(false)
-const editForm = ref({ role: 'member', display_name: '', new_password: '' })
+const editForm = ref({ role: 'member', display_name: '', new_password: '', tenant_id: 'default' })
+const tenantOptions = ref([{ id: 'default', name: '默认机构' }])
 const capOperator = ref(false)
 const capSearcher = ref(false)
 
@@ -135,12 +145,37 @@ function capsToString() {
   return arr.join(',')
 }
 
+function extractUsers(data) {
+  const rows = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : [])
+  return rows.map((row) => ({
+    ...row,
+    tenant_id: row?.tenant_id || row?.tenantId || 'default',
+  }))
+}
+
+function extractTenants(data) {
+  if (Array.isArray(data?.items)) return data.items
+  if (Array.isArray(data)) return data
+  return []
+}
+
+async function loadTenants() {
+  try {
+    const res = await listTenants()
+    const rows = extractTenants(res.data)
+    tenantOptions.value = rows.length ? rows : [{ id: 'default', name: '默认机构' }]
+  } catch (e) {
+    console.error('加载租户列表失败', e)
+    tenantOptions.value = [{ id: 'default', name: '默认机构' }]
+  }
+}
+
 async function loadUsers() {
   loading.value = true
   try {
     const res = await listUsers({ page: page.value, page_size: pageSize.value })
     const data = res.data || {}
-    users.value = data.items || data || []
+    users.value = extractUsers(data)
     total.value = data.total || users.value.length
   } catch (e) {
     console.error('加载用户失败', e)
@@ -165,6 +200,7 @@ function openEdit(user) {
     role: user.role || 'member',
     display_name: user.display_name || '',
     new_password: '',
+    tenant_id: user.tenant_id || user.tenantId || 'default',
   }
 }
 
@@ -174,6 +210,11 @@ async function saveEdit() {
   try {
     await setUserRole(editing.value.id, editForm.value.role, capsToString())
     await setDisplayName(editing.value.id, editForm.value.display_name || null)
+    const currentTenantId = editing.value.tenant_id || editing.value.tenantId || 'default'
+    const targetTenantId = editForm.value.tenant_id || 'default'
+    if (targetTenantId !== currentTenantId) {
+      await assignUserToTenant(targetTenantId, editing.value.id)
+    }
     if (editForm.value.new_password) {
       await resetUserPassword(editing.value.id, editForm.value.new_password)
     }
@@ -197,6 +238,6 @@ async function reject(userId) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadUsers(), auth.loadPendingUsers()])
+  await Promise.all([loadUsers(), loadTenants(), auth.loadPendingUsers()])
 })
 </script>

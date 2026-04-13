@@ -10,7 +10,7 @@
       </div>
 
       <!-- Header -->
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-3">
         <div>
           <h1 class="text-lg font-semibold text-[var(--gov-text)]">
             {{ greeting }}，{{ displayName }}
@@ -19,6 +19,14 @@
         </div>
         <!-- Quick action buttons based on role -->
         <div class="flex gap-2">
+          <span v-if="refreshStatusText" class="hidden self-center text-xs text-[var(--gov-text-muted)] md:inline">{{ refreshStatusText }}</span>
+          <button
+            class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-2 text-sm font-medium text-[var(--gov-text)] hover:bg-slate-50 disabled:opacity-50"
+            :disabled="refreshing"
+            @click="handleManualRefresh"
+          >
+            {{ refreshing ? '刷新中...' : '刷新' }}
+          </button>
           <button
             v-if="canImport"
             class="flex items-center gap-1.5 rounded-lg bg-[var(--gov-primary)] px-4 py-2 text-sm font-medium text-white hover:brightness-105"
@@ -124,7 +132,19 @@
               </span>
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-medium text-[var(--gov-text)]">{{ item.filename || item.batch_id || item.title || item.id }}</p>
-                <p class="text-[11px] text-[var(--gov-text-muted)]">{{ item.page_count || item.doc_count || 0 }} 件 · {{ formatTime(item.created_at) }}</p>
+                <p class="text-[11px] text-[var(--gov-text-muted)]">{{ getRecentItemMeta(item) }}</p>
+                <template v-if="!isSearcher">
+                  <div class="mt-1 flex items-center gap-2">
+                    <div class="h-1.5 min-w-[72px] flex-1 rounded-full bg-slate-200">
+                      <div
+                        class="h-1.5 rounded-full bg-[var(--gov-primary)] transition-all"
+                        :style="{ width: `${getRecentBatchProgress(item)}%` }"
+                      ></div>
+                    </div>
+                    <span class="w-10 text-right text-[10px] font-mono text-[var(--gov-text-muted)]">{{ getRecentBatchProgress(item) }}%</span>
+                  </div>
+                  <p v-if="getRecentBatchSummary(item)" class="mt-1 truncate text-[10px] text-[var(--gov-text-muted)]">{{ getRecentBatchSummary(item) }}</p>
+                </template>
               </div>
               <StatusBadge :status="item.status" />
             </div>
@@ -156,13 +176,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import StatCard from '@/shared/components/StatCard.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import { useAuthState } from '@/composables/useAuthState.js'
-import { getArchiveDashboardStats, getMyAssignedTasks, listBatches, listArchiveRecords } from '@/api/archive.js'
+import {
+  formatRefreshTime,
+  getBatchProgressPercent,
+  getBatchProgressSummary,
+  isBatchAutoRefreshable,
+} from '@/features/batches/progress'
+import { getArchiveDashboardStats, getMyAssignedTasks, listBatches, listArchiveRecords, listPendingRelease, listReviewTasks, listReworkTasks } from '@/api/archive.js'
 
 const router = useRouter()
 const authState = useAuthState()
@@ -178,6 +204,14 @@ const stats = ref({})
 const pendingTasks = ref([])
 const recentItems = ref([])
 const alerts = ref([])
+const lastRefreshedAt = ref(null)
+const refreshing = ref(false)
+const activeBatchItems = ref([])
+const pendingReleaseTotal = ref(null)
+
+const AUTO_REFRESH_MS = 15000
+const BATCH_KPI_PAGE_SIZE = 500
+let dashboardAutoRefreshTimer = null
 
 const displayName = computed(() =>
   auth.value?.display_name || auth.value?.username || '用户'
@@ -200,7 +234,33 @@ const todayStr = computed(() =>
   new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
 )
 
-const todoRoute = computed(() => '/tasks')
+const todoRoute = computed(() => (isSearcher.value ? '/rework/my' : '/tasks'))
+const resolvedProcessingTasks = computed(() => {
+  const base = Number(stats.value?.processingTasks)
+  const derived = activeBatchItems.value.length
+  if (Number.isFinite(base)) {
+    return Math.max(base, derived)
+  }
+  return derived
+})
+const resolvedPendingRelease = computed(() => {
+  if (pendingReleaseTotal.value != null) {
+    return pendingReleaseTotal.value
+  }
+  return stats.value?.pendingRelease ?? 0
+})
+const activeBatchStageSummary = computed(() => summarizeActiveBatchStages(activeBatchItems.value))
+const hasActiveDashboardBatches = computed(() => {
+  if (isSearcher.value) return false
+  return activeBatchItems.value.length > 0 || Number(stats.value?.processingTasks || 0) > 0
+})
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (hasActiveDashboardBatches.value) {
+    return stamp ? `${stamp} 更新 · 首页每15s自动刷新` : '首页每15s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
 
 // KPI cards definition based on role
 const kpiCards = computed(() => {
@@ -209,15 +269,15 @@ const kpiCards = computed(() => {
     return [
       { label: '租户总数', value: s.tenants ?? '—', color: 'purple' },
       { label: '今日处理量', value: s.todayTasks ?? '—', color: 'blue' },
-      { label: '活跃任务', value: s.processingTasks ?? '—', color: 'amber' },
+      { label: '活跃任务', value: resolvedProcessingTasks.value, color: 'amber', sub: activeBatchStageSummary.value },
       { label: 'OCR失败率', value: s.failRate ? `${s.failRate}%` : '—', color: 'red', sub: '近24小时' },
     ]
   }
   if (isTenantAdmin.value) {
     return [
       { label: '待导入批次', value: s.pendingBatches ?? '—', color: 'amber' },
-      { label: '处理中卷宗', value: s.processingTasks ?? '—', color: 'blue' },
-      { label: '待最终确认', value: s.pendingRelease ?? '—', color: 'purple' },
+      { label: '处理中卷宗', value: resolvedProcessingTasks.value, color: 'blue', sub: activeBatchStageSummary.value },
+      { label: '待最终确认', value: resolvedPendingRelease.value, color: 'purple', sub: '按放行列表实时重算' },
       { label: '返工中', value: s.reworking ?? '—', color: 'red' },
     ]
   }
@@ -249,7 +309,68 @@ function formatTime(ts) {
   return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
+function normalizeStatus(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function extractItems(data, keys = ['items', 'tasks', 'records']) {
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  if (Array.isArray(data)) return data
+  return []
+}
+
+function extractTotal(data) {
+  if (typeof data?.total === 'number') return data.total
+  return extractItems(data).length
+}
+
+function getActiveBatchStageLabel(batch) {
+  const stages = Array.isArray(batch?.workflow_stages) ? batch.workflow_stages.filter(Boolean) : []
+  const processingStage = stages.find((stage) => normalizeStatus(stage?.status) === 'processing')
+  if (processingStage?.label) return processingStage.label
+  if (normalizeStatus(batch?.status) === 'review_required') return '人工审核'
+  return batch?.current_stage || ''
+}
+
+function summarizeActiveBatchStages(batches) {
+  const counters = new Map()
+  for (const batch of batches) {
+    const label = getActiveBatchStageLabel(batch)
+    if (!label) continue
+    counters.set(label, (counters.get(label) || 0) + 1)
+  }
+  return Array.from(counters.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 3)
+    .map(([label, count]) => `${label} ${count}`)
+    .join(' · ')
+}
+
+function getRecentItemMeta(item) {
+  if (isSearcher.value) {
+    return `${item.page_count || item.doc_count || 0} 件 · ${formatTime(item.created_at)}`
+  }
+  return `${item.file_count || item.doc_count || 0} 件 · ${formatTime(item.created_at)}`
+}
+
+function getRecentBatchProgress(item) {
+  return getBatchProgressPercent(item)
+}
+
+function getRecentBatchSummary(item) {
+  return getBatchProgressSummary(item)
+}
+
 function goTask(task) {
+  if (isSearcher.value && (task?.rework_task_id || task?.issue_type)) {
+    router.push({
+      path: '/rework/my',
+      query: { keyword: String(task.id || task.rework_task_id || task.record_id || '') },
+    })
+    return
+  }
   if (['boundary', 'boundary_review', 'ordering', 'order_review'].includes(task.type)) {
     router.push(`/review/structure/${task.id}`)
   } else if (['metadata', 'metadata_review'].includes(task.type)) {
@@ -269,8 +390,10 @@ function goItem(item) {
   }
 }
 
-onMounted(async () => {
-  // Load stats
+async function loadStats(options = {}) {
+  if (!options.silent) {
+    statsLoading.value = true
+  }
   try {
     const { data } = await getArchiveDashboardStats()
     stats.value = data || {}
@@ -279,29 +402,139 @@ onMounted(async () => {
       ? '数据服务认证失败，请尝试重新登录。'
       : '工作台数据加载失败，部分统计信息不可用。'
   } finally {
-    statsLoading.value = false
+    if (!options.silent) {
+      statsLoading.value = false
+    }
   }
+}
 
-  // Load pending tasks
+async function loadPendingTaskItems(options = {}) {
+  if (!options.silent) {
+    tasksLoading.value = true
+  }
   try {
-    const { data } = await getMyAssignedTasks({ status: 'human_review', page_size: 10 })
-    const items = Array.isArray(data) ? data : (data?.items || data?.tasks || [])
-    pendingTasks.value = items
-  } catch { /* non-blocking */ } finally {
-    tasksLoading.value = false
+    if (isSearcher.value) {
+      const { data } = await listReworkTasks({ page: 1, page_size: 50, mine: true })
+      const items = extractItems(data)
+      pendingTasks.value = items.filter((item) => ['pending', 'processing'].includes(String(item?.status || '').toLowerCase()))
+    } else {
+      const response = (isSysAdmin.value || isTenantAdmin.value)
+        ? await listReviewTasks({ status: 'human_review', page_size: 10 })
+        : await getMyAssignedTasks({ status: 'human_review', page_size: 10 })
+      const { data } = response
+      pendingTasks.value = extractItems(data)
+    }
+  } catch {
+    pendingTasks.value = []
+  } finally {
+    if (!options.silent) {
+      tasksLoading.value = false
+    }
+  }
+}
+
+async function loadKpiActivity(options = {}) {
+  if (isSearcher.value) {
+    activeBatchItems.value = []
+    pendingReleaseTotal.value = null
+    return
   }
 
-  // Load recent items
+  try {
+    const requests = [
+      listBatches({ page: 1, page_size: BATCH_KPI_PAGE_SIZE, status: 'processing' }),
+      listBatches({ page: 1, page_size: BATCH_KPI_PAGE_SIZE, status: 'review_required' }),
+    ]
+    if (isTenantAdmin.value || isSysAdmin.value) {
+      requests.push(listPendingRelease({ page: 1, page_size: 1 }))
+    }
+
+    const [processingRes, reviewRes, releaseRes] = await Promise.all(requests)
+    const merged = new Map()
+    for (const batch of [...extractItems(processingRes.data), ...extractItems(reviewRes.data)]) {
+      const key = String(batch?.batch_id || batch?.id || '')
+      if (!key) continue
+      merged.set(key, batch)
+    }
+    activeBatchItems.value = Array.from(merged.values()).filter((item) => isBatchAutoRefreshable(item))
+    pendingReleaseTotal.value = releaseRes ? extractTotal(releaseRes.data) : null
+  } catch {
+    activeBatchItems.value = []
+    pendingReleaseTotal.value = null
+  }
+}
+
+async function loadRecentActivity(options = {}) {
+  if (!options.silent) {
+    recentLoading.value = true
+  }
   try {
     if (isSearcher.value) {
       const { data } = await listArchiveRecords({ page_size: 5, sort: 'newest' })
-      recentItems.value = Array.isArray(data) ? data : (data?.items || data?.records || [])
+      recentItems.value = extractItems(data)
     } else {
       const { data } = await listBatches({ page_size: 5, sort: 'newest' })
-      recentItems.value = Array.isArray(data) ? data : (data?.items || data?.batches || [])
+      recentItems.value = extractItems(data)
     }
-  } catch { /* non-blocking */ } finally {
-    recentLoading.value = false
+  } catch {
+    recentItems.value = []
+  } finally {
+    if (!options.silent) {
+      recentLoading.value = false
+    }
   }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!hasActiveRecentBatches.value) return
+  dashboardAutoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      refreshAll({ silent: true })
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (dashboardAutoRefreshTimer) {
+    window.clearInterval(dashboardAutoRefreshTimer)
+    dashboardAutoRefreshTimer = null
+  }
+}
+
+async function refreshAll(options = {}) {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([
+      loadStats(options),
+      loadPendingTaskItems(options),
+      loadKpiActivity(options),
+      loadRecentActivity(options),
+    ])
+    lastRefreshedAt.value = new Date()
+  } finally {
+    refreshing.value = false
+  }
+}
+
+async function handleManualRefresh() {
+  await refreshAll()
+}
+
+watch(hasActiveDashboardBatches, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
+onMounted(async () => {
+  await refreshAll()
+})
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
 })
 </script>

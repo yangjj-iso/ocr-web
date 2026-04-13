@@ -14,4 +14,6 @@ public interface AppUserRepository extends JpaRepository<AppUserEntity, Long> {
     List<AppUserEntity> findByStatusAndTenantIdOrderByCreatedAtDesc(String status, String tenantId);
 
     List<AppUserEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId);
+
+    long countByTenantId(String tenantId);
 }

@@ -1,9 +1,15 @@
 <template>
   <AppShell>
     <div class="p-5 space-y-4">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-3">
         <div>
           <h1 class="gov-page-header">返工跟踪</h1>
+        </div>
+        <div class="flex items-center gap-2">
+          <span v-if="refreshStatusText" class="hidden text-xs text-[var(--gov-text-muted)] md:inline">{{ refreshStatusText }}</span>
+          <button @click="handleManualRefresh" class="px-3 py-2 border border-[var(--gov-border)] text-sm rounded-md text-[var(--gov-text-muted)] hover:bg-slate-50 transition">
+            刷新
+          </button>
         </div>
       </div>
 
@@ -51,8 +57,8 @@
         <template #actions="{ row }">
           <div class="flex gap-2 justify-end">
             <button @click="viewDetail(row)" class="text-xs text-[var(--gov-primary)] hover:underline">详情</button>
-            <button v-if="isAdmin && row.status === 'pending'" @click="handleAccept(row)" :disabled="actionId === row.id" class="text-xs text-green-600 hover:underline disabled:opacity-50">受理</button>
-            <button v-if="isAdmin && row.status === 'pending'" @click="openReject(row)" :disabled="actionId === row.id" class="text-xs text-red-600 hover:underline disabled:opacity-50">驳回</button>
+            <button v-if="canManageRework && row.status === 'pending'" @click="handleAccept(row)" :disabled="actionId === row.id" class="text-xs text-green-600 hover:underline disabled:opacity-50">受理</button>
+            <button v-if="canManageRework && row.status === 'pending'" @click="openReject(row)" :disabled="actionId === row.id" class="text-xs text-red-600 hover:underline disabled:opacity-50">驳回</button>
           </div>
         </template>
       </DataTable>
@@ -92,7 +98,7 @@
           </div>
           <div class="col-span-2">
             <p class="text-xs text-[var(--gov-text-muted)]">影响范围</p>
-            <p class="mt-0.5 text-sm text-[var(--gov-text)]">{{ drawerRow.affected_scope || drawerRow.description || '-' }}</p>
+            <p class="mt-0.5 text-sm text-[var(--gov-text)]">{{ formatAffectedScope(drawerRow.affected_scope, drawerRow.description) }}</p>
           </div>
           <div>
             <p class="text-xs text-[var(--gov-text-muted)]">创建时间</p>
@@ -101,7 +107,7 @@
         </div>
       </div>
       <template #footer>
-        <div v-if="isAdmin && drawerRow?.status === 'pending'" class="flex gap-2">
+        <div v-if="canManageRework && drawerRow?.status === 'pending'" class="flex gap-2">
           <button @click="handleAccept(drawerRow)" :disabled="actionId === drawerRow?.id" class="px-4 py-2 text-sm rounded-md bg-green-600 text-white hover:bg-green-700 transition disabled:opacity-50">受理</button>
           <button @click="openReject(drawerRow)" :disabled="actionId === drawerRow?.id" class="px-4 py-2 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50">驳回</button>
         </div>
@@ -124,7 +130,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 
@@ -134,9 +140,10 @@ import StatusBadge from '@/shared/components/StatusBadge.vue'
 import DetailDrawer from '@/shared/components/DetailDrawer.vue'
 import { useAuthState } from '@/composables/useAuthState'
 import { listReworkTasks, acceptReworkTask, rejectReworkTask } from '@/api/archive'
+import { formatRefreshTime } from '@/features/batches/progress'
 
 const route = useRoute()
-const { auth } = useAuthState()
+const { auth, authProfile } = useAuthState()
 
 const rows = ref([])
 const total = ref(0)
@@ -153,9 +160,30 @@ const showDrawer = ref(false)
 const drawerRow = ref(null)
 const rejectingRow = ref(null)
 const rejectReason = ref('')
+const lastRefreshedAt = ref(null)
+
+const AUTO_REFRESH_MS = 15000
+const ACTIVE_REWORK_STATUSES = new Set(['pending', 'processing', 'accepted', 'in_rework', 'running'])
+let reworkAutoRefreshTimer = null
+let reworkLoadInFlight = false
 
 const isMineMode = computed(() => route.path === '/rework/my')
-const isAdmin = computed(() => auth.value?.is_admin || auth.value?.role === 'tenant_admin')
+const canManageRework = computed(() => authProfile.value.isSysAdmin)
+const canViewTenantWide = computed(() => authProfile.value.isSysAdmin || authProfile.value.isTenantAdmin)
+const shouldPollReworks = computed(() => {
+  const selectedStatus = String(filters.value.status || '').trim().toLowerCase()
+  if (!selectedStatus || ACTIVE_REWORK_STATUSES.has(selectedStatus)) {
+    return true
+  }
+  return rows.value.some((row) => ACTIVE_REWORK_STATUSES.has(String(row?.status || '').trim().toLowerCase()))
+})
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (shouldPollReworks.value) {
+    return stamp ? `${stamp} 更新 · 返工列表每15s自动刷新` : '返工列表每15s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
 
 const columns = [
   { key: 'id', label: '返工任务ID', width: '140px', mono: true },
@@ -165,6 +193,14 @@ const columns = [
   { key: 'status', label: '状态', width: '120px' },
   { key: 'created_at', label: '创建时间', width: '170px' },
 ]
+
+function applyRouteFilters() {
+  filters.value = {
+    ...filters.value,
+    status: route.query.status ? String(route.query.status) : '',
+    keyword: route.query.keyword ? String(route.query.keyword) : '',
+  }
+}
 
 function fmt(v) {
   return v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'
@@ -178,6 +214,17 @@ function priorityClass(priority) {
   return 'border-blue-300 text-blue-600 bg-blue-50'
 }
 
+function formatAffectedScope(scope, fallback = '') {
+  if (!scope) return fallback || '-'
+  if (typeof scope === 'string') return scope
+  const summary = [
+    scope.label,
+    scope.record_id ? `卷宗 ${scope.record_id}` : '',
+    scope.reject_reason ? `驳回原因：${scope.reject_reason}` : '',
+  ].filter(Boolean)
+  return summary.join(' / ') || fallback || JSON.stringify(scope)
+}
+
 function buildParams() {
   return {
     page: page.value,
@@ -185,25 +232,66 @@ function buildParams() {
     status: filters.value.status || undefined,
     q: filters.value.keyword || undefined,
     mine: isMineMode.value ? true : undefined,
-    reporter: !isAdmin.value ? auth.value?.username || undefined : undefined,
+    reporter: !canViewTenantWide.value ? auth.value?.username || undefined : undefined,
   }
 }
 
-async function load() {
-  loading.value = true
+function extractRows(data) {
+  if (Array.isArray(data?.items)) return data.items
+  if (Array.isArray(data?.tasks)) return data.tasks
+  if (Array.isArray(data)) return data
+  return []
+}
+
+function syncDrawerRow(nextRows) {
+  if (!drawerRow.value?.id) return
+  const nextSelected = nextRows.find((row) => String(row.id) === String(drawerRow.value.id))
+  if (nextSelected) {
+    drawerRow.value = nextSelected
+  }
+}
+
+async function load(options = {}) {
+  if (reworkLoadInFlight) return
+  reworkLoadInFlight = true
+  if (!options.silent) {
+    loading.value = true
+  }
   loadError.value = ''
   try {
     const res = await listReworkTasks(buildParams())
     const data = res.data || {}
-    rows.value = data.items || data.tasks || data || []
+    rows.value = extractRows(data)
     total.value = data.total || rows.value.length
+    syncDrawerRow(rows.value)
+    lastRefreshedAt.value = new Date()
   } catch (e) {
     console.error('加载返工列表失败', e)
     loadError.value = '加载返工列表失败，请稍后重试。'
     rows.value = []
     total.value = 0
   } finally {
-    loading.value = false
+    if (!options.silent) {
+      loading.value = false
+    }
+    reworkLoadInFlight = false
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!shouldPollReworks.value) return
+  reworkAutoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden && !rejectingRow.value && !actionId.value && !showDrawer.value) {
+      load({ silent: true })
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (reworkAutoRefreshTimer) {
+    window.clearInterval(reworkAutoRefreshTimer)
+    reworkAutoRefreshTimer = null
   }
 }
 
@@ -215,6 +303,10 @@ function reload() {
 function reset() {
   filters.value = { status: '', keyword: '' }
   reload()
+}
+
+async function handleManualRefresh() {
+  await load()
 }
 
 function onPageChange(p) {
@@ -267,5 +359,28 @@ async function confirmReject() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  applyRouteFilters()
+  load()
+})
+
+watch(shouldPollReworks, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
+watch(
+  () => [route.path, route.query.status, route.query.keyword],
+  () => {
+    applyRouteFilters()
+    reload()
+  }
+)
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
+})
 </script>
