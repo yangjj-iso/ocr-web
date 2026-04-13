@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BatchBoundaryDecision, BatchDocumentGroup, BatchPageSequence
@@ -17,6 +19,37 @@ def _coerce_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _dedupe_rows(rows: list[dict[str, Any]], key_fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    keyed: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        keyed[tuple(row[field] for field in key_fields)] = row
+    return list(keyed.values())
+
+
+async def _upsert_rows(
+    db: AsyncSession,
+    model: Any,
+    rows: list[dict[str, Any]],
+    *,
+    index_elements: tuple[str, ...],
+    update_columns: tuple[str, ...],
+) -> None:
+    if not rows:
+        return
+
+    values = _dedupe_rows(rows, index_elements)
+    statement = pg_insert(model).values(values)
+    excluded = statement.excluded
+    update_values = {column: getattr(excluded, column) for column in update_columns}
+    update_values["updated_at"] = func.now()
+    await db.execute(
+        statement.on_conflict_do_update(
+            index_elements=list(index_elements),
+            set_=update_values,
+        )
+    )
+
+
 async def save_boundary_analysis(
     db: AsyncSession,
     *,
@@ -24,54 +57,94 @@ async def save_boundary_analysis(
     sequences: list[dict[str, Any]],
     boundary_result: BoundaryResult,
 ) -> None:
-    await db.execute(delete(BatchPageSequence).where(BatchPageSequence.batch_id == batch_id))
-    await db.execute(delete(BatchBoundaryDecision).where(BatchBoundaryDecision.batch_id == batch_id))
-    await db.execute(delete(BatchDocumentGroup).where(BatchDocumentGroup.batch_id == batch_id))
+    try:
+        await db.execute(delete(BatchPageSequence).where(BatchPageSequence.batch_id == batch_id))
+        await db.execute(delete(BatchBoundaryDecision).where(BatchBoundaryDecision.batch_id == batch_id))
+        await db.execute(delete(BatchDocumentGroup).where(BatchDocumentGroup.batch_id == batch_id))
 
-    for sequence in sequences:
-        db.add(
-            BatchPageSequence(
-                batch_id=batch_id,
-                prefix=str(sequence.get("prefix", "") or ""),
-                task_ids_json=_coerce_list(sequence.get("task_ids")),
-                filenames_json=_coerce_list(sequence.get("filenames")),
-            )
+        await _upsert_rows(
+            db,
+            BatchPageSequence,
+            [
+                {
+                    "batch_id": batch_id,
+                    "prefix": str(sequence.get("prefix", "") or ""),
+                    "task_ids_json": _coerce_list(sequence.get("task_ids")),
+                    "filenames_json": _coerce_list(sequence.get("filenames")),
+                }
+                for sequence in sequences
+            ],
+            index_elements=("batch_id", "prefix"),
+            update_columns=("task_ids_json", "filenames_json"),
         )
 
-    for decision in boundary_result.adjacent_decisions:
-        db.add(
-            BatchBoundaryDecision(
-                batch_id=batch_id,
-                left_task_id=decision.left_task_id,
-                right_task_id=decision.right_task_id,
-                prefix=decision.prefix,
-                left_page_no=decision.left_page_no,
-                right_page_no=decision.right_page_no,
-                same_document_score=decision.same_document_score,
-                should_merge=decision.should_merge,
-                is_ambiguous=decision.is_ambiguous,
-                strong_split=decision.strong_split,
-                reason=decision.reason,
-                signals_json=decision.signals,
-            )
+        await _upsert_rows(
+            db,
+            BatchBoundaryDecision,
+            [
+                {
+                    "batch_id": batch_id,
+                    "left_task_id": decision.left_task_id,
+                    "right_task_id": decision.right_task_id,
+                    "prefix": decision.prefix,
+                    "left_page_no": decision.left_page_no,
+                    "right_page_no": decision.right_page_no,
+                    "same_document_score": decision.same_document_score,
+                    "should_merge": decision.should_merge,
+                    "is_ambiguous": decision.is_ambiguous,
+                    "strong_split": decision.strong_split,
+                    "reason": decision.reason,
+                    "signals_json": decision.signals,
+                }
+                for decision in boundary_result.adjacent_decisions
+            ],
+            index_elements=("batch_id", "left_task_id", "right_task_id"),
+            update_columns=(
+                "prefix",
+                "left_page_no",
+                "right_page_no",
+                "same_document_score",
+                "should_merge",
+                "is_ambiguous",
+                "strong_split",
+                "reason",
+                "signals_json",
+            ),
         )
 
-    for group in boundary_result.groups:
-        db.add(
-            BatchDocumentGroup(
-                batch_id=batch_id,
-                group_key=group.group_id,
-                prefix=group.prefix,
-                task_ids_json=group.task_ids,
-                filenames_json=group.filenames,
-                start_page=group.start_page,
-                end_page=group.end_page,
-                confidence=group.confidence,
-                reasons_json=group.reasons,
-            )
+        await _upsert_rows(
+            db,
+            BatchDocumentGroup,
+            [
+                {
+                    "batch_id": batch_id,
+                    "group_key": group.group_id,
+                    "prefix": group.prefix,
+                    "task_ids_json": group.task_ids,
+                    "filenames_json": group.filenames,
+                    "start_page": group.start_page,
+                    "end_page": group.end_page,
+                    "confidence": group.confidence,
+                    "reasons_json": group.reasons,
+                }
+                for group in boundary_result.groups
+            ],
+            index_elements=("batch_id", "group_key"),
+            update_columns=(
+                "prefix",
+                "task_ids_json",
+                "filenames_json",
+                "start_page",
+                "end_page",
+                "confidence",
+                "reasons_json",
+            ),
         )
 
-    await db.commit()
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise
 
 
 async def load_boundary_analysis(

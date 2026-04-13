@@ -20,9 +20,10 @@ router = APIRouter(
 
 
 @router.get("/tasks/{task_id}/file")
-async def get_task_file(task_id: int, db: AsyncSession = Depends(get_db)):
+async def get_task_file(task_id: int, current: dict = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    tenant_id = current.get("tenant_id", "default")
     try:
-        context, state = await get_task_file_context(task_id=task_id, db=db)
+        context, state = await get_task_file_context(task_id=task_id, db=db, tenant_id=tenant_id)
     except Exception as error:  # noqa: BLE001
         raise_for_error(error)
 
@@ -43,9 +44,10 @@ async def get_task_file(task_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/tasks/{task_id}/thumbnail")
-async def get_task_thumbnail(task_id: int, db: AsyncSession = Depends(get_db)):
+async def get_task_thumbnail(task_id: int, current: dict = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    tenant_id = current.get("tenant_id", "default")
     try:
-        context, state = await get_task_file_context(task_id=task_id, db=db)
+        context, state = await get_task_file_context(task_id=task_id, db=db, tenant_id=tenant_id)
     except Exception as error:  # noqa: BLE001
         raise_for_error(error)
 
@@ -56,9 +58,10 @@ async def get_task_thumbnail(task_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/tasks/{task_id}/pages/{page_num}/image")
-async def get_task_page_image(task_id: int, page_num: int, db: AsyncSession = Depends(get_db)):
+async def get_task_page_image(task_id: int, page_num: int, current: dict = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    tenant_id = current.get("tenant_id", "default")
     try:
-        context, state = await get_task_file_context(task_id=task_id, db=db)
+        context, state = await get_task_file_context(task_id=task_id, db=db, tenant_id=tenant_id)
     except Exception as error:  # noqa: BLE001
         raise_for_error(error)
 

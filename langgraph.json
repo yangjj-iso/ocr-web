@@ -1,8 +1,10 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "batch_supervisor": "./app/studio/langgraph_graphs.py:batch_supervisor_graph",
-    "page_agent": "./app/studio/langgraph_graphs.py:page_agent_graph"
+    "archive_main": "./app/studio/langgraph_graphs.py:archive_main_graph",
+    "archive_draft": "./app/studio/langgraph_graphs.py:archive_draft_graph",
+    "archive_final": "./app/studio/langgraph_graphs.py:archive_final_graph",
+    "archive_resume": "./app/studio/langgraph_graphs.py:archive_resume_graph"
   },
   "env": "./.env",
   "http": {

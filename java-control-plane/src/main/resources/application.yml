@@ -7,9 +7,9 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://154.219.109.125:${POSTGRES_PORT:5432}/ocr_db}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:${POSTGRES_PORT:5432}/ocr_db}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:StrongPass_123!}
+    password: ${SPRING_DATASOURCE_PASSWORD:123456}
   jpa:
     hibernate:
       ddl-auto: update
@@ -48,20 +48,23 @@ ocr:
     session-ttl: ${AUTH_SESSION_TTL:28800}
   dev-dashboard:
     enabled: ${DEV_DASHBOARD_ENABLED:true}
-    username: ${DEV_DASHBOARD_USERNAME:}
-    password: ${DEV_DASHBOARD_PASSWORD:}
+    username: ${DEV_DASHBOARD_USERNAME:devadmin}
+    password: ${DEV_DASHBOARD_PASSWORD:change-me-dev-dashboard}
+    two-factor-secret: ${DEV_DASHBOARD_2FA_SECRET:JBSWY3DPEHPK3PXP}
+    session-secret: ${DEV_DASHBOARD_SESSION_SECRET:change-this-dev-dashboard-session-secret}
     cookie-name: ${DEV_DASHBOARD_COOKIE_NAME:ocr_dev_dashboard_session}
+    cookie-secure: ${DEV_DASHBOARD_COOKIE_SECURE:false}
+    cookie-same-site: ${DEV_DASHBOARD_COOKIE_SAMESITE:lax}
     session-ttl: ${DEV_DASHBOARD_SESSION_TTL:28800}
-    celery-queue: ${CELERY_TASK_QUEUE:ocr.compute.internal.queue}
-    python-metrics-path: ${DEV_DASHBOARD_PYTHON_METRICS_PATH:/internal/api/v1/worker/metrics}
+    two-factor-window-steps: ${DEV_DASHBOARD_2FA_WINDOW_STEPS:1}
   storage:
     backend: ${OCR_STORAGE_BACKEND:s3}
     upload-dir: ${OCR_STORAGE_UPLOAD_DIR:./uploads-java}
     bucket: ${OCR_STORAGE_BUCKET:ocr-source}
-    endpoint: ${OCR_STORAGE_ENDPOINT:http://154.219.109.125:9000}
+    endpoint: ${OCR_STORAGE_ENDPOINT:http://127.0.0.1:9000}
     region: ${OCR_STORAGE_REGION:us-east-1}
-    access-key: ${OCR_STORAGE_ACCESS_KEY:minioadmin}
-    secret-key: ${OCR_STORAGE_SECRET_KEY:change_me_minio}
+    access-key: ${OCR_STORAGE_ACCESS_KEY:admin}
+    secret-key: ${OCR_STORAGE_SECRET_KEY:admin123456}
     key-prefix: ${OCR_STORAGE_KEY_PREFIX:uploads}
     path-style: ${OCR_STORAGE_PATH_STYLE:true}
   local-path:
@@ -76,7 +79,6 @@ ocr:
   processing:
     layout-backend: ${OCR_LAYOUT_BACKEND:local}
     vl-backend: ${OCR_VL_BACKEND:auto}
-    enable-hierarchical-agent: ${ENABLE_HIERARCHICAL_AGENT:false}
     llm-backend: ${OCR_PROCESSING_LLM_BACKEND:local}
     llm-model: ${OCR_PROCESSING_LLM_MODEL:}
     processing-strategy: ${OCR_PROCESSING_STRATEGY:auto}
@@ -86,7 +88,7 @@ ocr:
     human-review-threshold-high: ${HUMAN_REVIEW_MAX_CONFIDENCE:0.85}
     timeout-seconds: ${OCR_PROCESSING_TIMEOUT_SECONDS:1800}
     gpu-profile: ${OCR_GPU_PROFILE:single_gpu}
-    langgraph-graph: ${OCR_LANGGRAPH_GRAPH:batch_supervisor_v1}
+    langgraph-graph: ${OCR_LANGGRAPH_GRAPH:archive_main}
   rate-limit:
     enabled: ${OCR_RATE_LIMIT_ENABLED:true}
     window-seconds: ${OCR_RATE_LIMIT_WINDOW_SECONDS:60}
@@ -96,11 +98,11 @@ ocr:
     general-max-requests: ${OCR_RATE_LIMIT_GENERAL_MAX_REQUESTS:600}
   mq:
     command:
-      exchange: ocr.task.command.exchange
-      queue: ocr.task.command.queue
-      routing-key: ocr.task.submit.v1
-      dead-letter-exchange: ocr.task.command.dlx
-      dead-letter-queue: ocr.task.command.dlq
+      exchange: ${MQ_COMMAND_EXCHANGE:ocr.task.command.exchange}
+      queue: ${MQ_COMMAND_QUEUE:ocr.task.command.queue}
+      routing-key: ${MQ_COMMAND_ROUTING_KEY:ocr.task.submit.v1}
+      dead-letter-exchange: ${MQ_COMMAND_DLX:ocr.task.command.dlx}
+      dead-letter-queue: ${MQ_COMMAND_DLQ:ocr.task.command.dlq}
   internal-api:
     token: ${OCR_INTERNAL_API_TOKEN:change-this-internal-token}
     base-url: ${OCR_CONTROL_PLANE_BASE_URL:http://127.0.0.1:8080}

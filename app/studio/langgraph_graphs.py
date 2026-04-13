@@ -1,12 +1,16 @@
-"""LangGraph Studio exports for local debugging via `langgraph dev`."""
+"""LangGraph Studio exports for archive workflow debugging via `langgraph dev`."""
 
 from __future__ import annotations
 
-from app.services.agent_ocr_workflow import (
-    get_batch_supervisor_graph_for_studio,
-    get_page_agent_graph,
+from app.services.archive_workflow import (
+    archive_draft_subgraph as _archive_draft_subgraph,
+    archive_final_subgraph as _archive_final_subgraph,
+    archive_main_graph as _archive_main_graph,
+    archive_resume_subgraph as _archive_resume_subgraph,
 )
 
 # Export compiled graphs for LangGraph Studio / local agent server.
-batch_supervisor_graph = get_batch_supervisor_graph_for_studio()
-page_agent_graph = get_page_agent_graph()
+archive_main_graph = _archive_main_graph
+archive_draft_graph = _archive_draft_subgraph
+archive_final_graph = _archive_final_subgraph
+archive_resume_graph = _archive_resume_subgraph

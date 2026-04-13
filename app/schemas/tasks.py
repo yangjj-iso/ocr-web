@@ -73,6 +73,16 @@ class OCRTaskOut(BaseModel):
     status: str
     page_count: int
     error_message: str | None = None
+    tenant_id: str | None = None
+    batch_id: str | None = None
+    assignee_username: str | None = None
+    submitter_username: str | None = None
+    submission_name: str | None = None
+    progress_percent: float | None = None
+    processed_pages: int | None = None
+    total_pages: int | None = None
+    review_status: str | None = None
+    review_reason: str | None = None
     created_at: datetime
     updated_at: datetime
 

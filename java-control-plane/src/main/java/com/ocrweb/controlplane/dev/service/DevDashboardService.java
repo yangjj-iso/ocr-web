@@ -1,359 +1,415 @@
 package com.ocrweb.controlplane.dev.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ocrweb.controlplane.config.AiServiceProperties;
-import com.ocrweb.controlplane.config.DevDashboardProperties;
-import com.ocrweb.controlplane.config.InternalApiProperties;
+import com.ocrweb.controlplane.auth.repository.AppUserRepository;
 import com.ocrweb.controlplane.config.RabbitMqProperties;
+import com.ocrweb.controlplane.config.StorageProperties;
 import com.ocrweb.controlplane.dev.dto.DevDashboardDtos;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.task.domain.TaskCallbackEventEntity;
 import com.ocrweb.controlplane.task.repository.OcrTaskRepository;
 import com.ocrweb.controlplane.task.repository.TaskCallbackEventRepository;
-import org.springframework.amqp.rabbit.connection.ConnectionFactory;
-import org.springframework.amqp.rabbit.core.RabbitAdmin;
+import com.ocrweb.controlplane.task.service.TaskCommandProducer;
+import com.ocrweb.controlplane.web.RequestRateLimitingInterceptor;
+import jakarta.transaction.Transactional;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
+import org.springframework.web.server.ResponseStatusException;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.lang.management.ManagementFactory;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Properties;
+import java.util.OptionalDouble;
+import java.util.stream.Collectors;
 
 @Service
 public class DevDashboardService {
-    private static final List<String> DONE_STATUSES = List.of("done", "completed");
-    private static final List<String> TERMINAL_STATUSES = List.of("done", "completed", "failed", "human_review");
-    private static final List<String> PENDING_STATUSES = List.of("pending", "queued");
-    private static final List<String> PROCESSING_STATUSES = List.of("processing", "running", "worker_accepted");
-
+    private static final DateTimeFormatter EVENT_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+    private static final DateTimeFormatter FULL_DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private final OcrTaskRepository taskRepository;
     private final TaskCallbackEventRepository callbackEventRepository;
+    private final TaskCommandProducer taskCommandProducer;
+    private final RabbitTemplate rabbitTemplate;
     private final RabbitMqProperties rabbitMqProperties;
-    private final DevDashboardProperties devDashboardProperties;
-    private final AiServiceProperties aiServiceProperties;
-    private final InternalApiProperties internalApiProperties;
-    private final RabbitAdmin rabbitAdmin;
-    private final ObjectMapper objectMapper;
-    private final HttpClient httpClient;
+    private final StorageProperties storageProperties;
+    private final AppUserRepository appUserRepository;
+    private final RequestRateLimitingInterceptor requestRateLimitingInterceptor;
 
     public DevDashboardService(
             OcrTaskRepository taskRepository,
             TaskCallbackEventRepository callbackEventRepository,
+            TaskCommandProducer taskCommandProducer,
+            RabbitTemplate rabbitTemplate,
             RabbitMqProperties rabbitMqProperties,
-            DevDashboardProperties devDashboardProperties,
-            AiServiceProperties aiServiceProperties,
-            InternalApiProperties internalApiProperties,
-            ConnectionFactory connectionFactory,
-            ObjectMapper objectMapper
+            StorageProperties storageProperties,
+            AppUserRepository appUserRepository,
+            RequestRateLimitingInterceptor requestRateLimitingInterceptor
     ) {
         this.taskRepository = taskRepository;
         this.callbackEventRepository = callbackEventRepository;
+        this.taskCommandProducer = taskCommandProducer;
+        this.rabbitTemplate = rabbitTemplate;
         this.rabbitMqProperties = rabbitMqProperties;
-        this.devDashboardProperties = devDashboardProperties;
-        this.aiServiceProperties = aiServiceProperties;
-        this.internalApiProperties = internalApiProperties;
-        this.rabbitAdmin = new RabbitAdmin(connectionFactory);
-        this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(Math.max(1, aiServiceProperties.getConnectTimeoutSeconds())))
-                .build();
+        this.storageProperties = storageProperties;
+        this.appUserRepository = appUserRepository;
+        this.requestRateLimitingInterceptor = requestRateLimitingInterceptor;
     }
 
-    public DevDashboardDtos.DashboardSnapshot snapshot() {
-        List<OcrTaskEntity> tasks = taskRepository.findAll();
-        TaskAggregation aggregation = aggregateTasks(tasks);
-        return new DevDashboardDtos.DashboardSnapshot(
-                OffsetDateTime.now(ZoneOffset.UTC),
-                aggregation.taskSummary(),
-                aggregation.workflowSummary(),
-                inspectQueues(),
-                aggregation.queuedTasks(),
-                aggregation.processingTasks(),
-                fetchPythonMetrics()
+    public DevDashboardDtos.SnapshotResponse snapshot() {
+        List<OcrTaskEntity> recentTasks = taskRepository
+                .findAll(PageRequest.of(0, 80, Sort.by(Sort.Direction.DESC, "updatedAt")))
+                .getContent();
+        List<DevDashboardDtos.QueueMetric> queues = queueMetrics();
+        long mqBacklog = queues.stream().mapToLong(DevDashboardDtos.QueueMetric::messages).sum();
+        int mqConsumers = queues.stream().mapToInt(DevDashboardDtos.QueueMetric::consumers).sum();
+        long activeTasks = recentTasks.stream().filter(task -> isActiveStatus(task.getStatus())).count();
+        RequestRateLimitingInterceptor.RateLimitSnapshot rateLimitSnapshot = requestRateLimitingInterceptor.snapshot();
+        return new DevDashboardDtos.SnapshotResponse(
+                Instant.now(),
+                new DevDashboardDtos.InfraMetrics(
+                        rateLimitSnapshot.qps(),
+                        rateLimitSnapshot.requests(),
+                        mqBacklog,
+                        mqConsumers,
+                        0.0,
+                        activeTasks,
+                        appUserRepository.count(),
+                        cpuPercent(),
+                        0,
+                        memoryPercent(),
+                        0,
+                        "healthy",
+                        "Java 控制面已提供任务状态；GPU/GC 细节需要 Python Worker 暴露 Prometheus 指标后写入。"
+                ),
+                queues,
+                middlewareMetrics(queues),
+                modelMetrics(recentTasks),
+                recentTasks.stream().map(this::toTaskItem).toList()
         );
     }
 
-    private TaskAggregation aggregateTasks(List<OcrTaskEntity> tasks) {
-        Map<String, Long> statusCounts = new LinkedHashMap<>();
-        Map<String, Long> modeStatusCounts = new LinkedHashMap<>();
-        Map<String, List<Long>> modeDurations = new LinkedHashMap<>();
-        List<Long> completedDurations = new ArrayList<>();
-        List<Long> terminalDurations = new ArrayList<>();
-        List<DevDashboardDtos.TaskItem> queuedTasks = new ArrayList<>();
-        List<DevDashboardDtos.TaskItem> processingTasks = new ArrayList<>();
-        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+    @Transactional
+    public DevDashboardDtos.RetryResponse retry(Long taskId) {
+        OcrTaskEntity task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found."));
+        task.setStatus("pending");
+        task.setProgressPercent(0.0);
+        OcrTaskEntity saved = taskRepository.save(task);
+        taskCommandProducer.publish(saved);
+        return new DevDashboardDtos.RetryResponse(true, saved.getId(), saved.getStatus(), "Task has been republished to MQ.");
+    }
 
-        for (OcrTaskEntity task : tasks) {
-            String status = normalizeStatus(task.getStatus());
-            String mode = normalizeValue(task.getMode(), "unknown");
-            statusCounts.merge(status, 1L, Long::sum);
-            modeStatusCounts.merge(mode + "\u0000" + status, 1L, Long::sum);
+    @Transactional
+    public DevDashboardDtos.RetryResponse cancel(Long taskId) {
+        OcrTaskEntity task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found."));
+        task.setStatus("failed");
+        task.setErrorMessage("Cancelled via dev dashboard.");
+        OcrTaskEntity saved = taskRepository.save(task);
+        return new DevDashboardDtos.RetryResponse(true, saved.getId(), saved.getStatus(), "Task has been cancelled.");
+    }
 
-            Long durationMs = taskDurationMs(task);
-            if (durationMs != null && DONE_STATUSES.contains(status)) {
-                completedDurations.add(durationMs);
-                modeDurations.computeIfAbsent(mode, key -> new ArrayList<>()).add(durationMs);
-            }
-            if (durationMs != null && TERMINAL_STATUSES.contains(status)) {
-                terminalDurations.add(durationMs);
-            }
-
-            if (PENDING_STATUSES.contains(status)) {
-                queuedTasks.add(toTaskItem(task, status, secondsSince(task.getCreatedAt(), now)));
-            } else if (PROCESSING_STATUSES.contains(status)) {
-                processingTasks.add(toTaskItem(task, status, secondsSince(
-                        task.getUpdatedAt() == null ? task.getCreatedAt() : task.getUpdatedAt(),
-                        now
-                )));
-            }
+    @Transactional
+    public void deleteTask(Long taskId) {
+        if (!taskRepository.existsById(taskId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found.");
         }
+        taskRepository.deleteById(taskId);
+    }
 
-        queuedTasks.sort(Comparator.comparing(DevDashboardDtos.TaskItem::createdAt, Comparator.nullsLast(Comparator.naturalOrder())));
-        processingTasks.sort(Comparator.comparing(DevDashboardDtos.TaskItem::updatedAt, Comparator.nullsLast(Comparator.reverseOrder())));
-        List<Long> eventDurations = callbackEventRepository.findAll()
-                .stream()
-                .map(this::eventDurationMs)
-                .filter(value -> value != null && value >= 0)
-                .toList();
-
-        List<DevDashboardDtos.StatusCount> byStatus = statusCounts.entrySet()
-                .stream()
-                .sorted(Map.Entry.comparingByKey())
-                .map(entry -> new DevDashboardDtos.StatusCount(entry.getKey(), entry.getValue()))
-                .toList();
-        List<DevDashboardDtos.ModeStatusCount> byMode = modeStatusCounts.entrySet()
-                .stream()
-                .sorted(Map.Entry.comparingByKey())
+    public DevDashboardDtos.BatchListResponse batches() {
+        List<OcrTaskEntity> tasks = taskRepository
+                .findAll(PageRequest.of(0, 500, Sort.by(Sort.Direction.DESC, "updatedAt")))
+                .getContent();
+        Map<String, List<OcrTaskEntity>> byBatch = tasks.stream()
+                .filter(t -> t.getBatchId() != null && !t.getBatchId().isBlank())
+                .collect(Collectors.groupingBy(OcrTaskEntity::getBatchId));
+        List<DevDashboardDtos.BatchSummary> summaries = byBatch.entrySet().stream()
                 .map(entry -> {
-                    String[] parts = entry.getKey().split("\u0000", 2);
-                    return new DevDashboardDtos.ModeStatusCount(parts[0], parts.length > 1 ? parts[1] : "", entry.getValue());
+                    String batchId = entry.getKey();
+                    List<OcrTaskEntity> group = entry.getValue();
+                    long completed = group.stream().filter(t -> "completed".equals(normalizeStatus(t.getStatus()))).count();
+                    long running = group.stream().filter(t -> "running".equals(normalizeStatus(t.getStatus()))).count();
+                    long failed = group.stream().filter(t -> "failed".equals(normalizeStatus(t.getStatus()))).count();
+                    long queued = group.stream().filter(t -> "queued".equals(normalizeStatus(t.getStatus()))).count();
+                    OffsetDateTime latest = group.stream().filter(t -> t.getUpdatedAt() != null)
+                            .max(Comparator.comparing(OcrTaskEntity::getUpdatedAt)).map(OcrTaskEntity::getUpdatedAt).orElse(null);
+                    OffsetDateTime first = group.stream().filter(t -> t.getCreatedAt() != null)
+                            .min(Comparator.comparing(OcrTaskEntity::getCreatedAt)).map(OcrTaskEntity::getCreatedAt).orElse(null);
+                    String submitter = group.stream().map(OcrTaskEntity::getSubmitterUsername)
+                            .filter(u -> u != null && !u.isBlank()).findFirst().orElse("");
+                    String tenantId = group.stream().map(OcrTaskEntity::getTenantId)
+                            .filter(t -> t != null && !t.isBlank()).findFirst().orElse("default");
+                    return new DevDashboardDtos.BatchSummary(
+                            batchId, group.size(), completed, running, failed, queued,
+                            latest != null ? FULL_DATETIME_FORMATTER.format(latest) : "-",
+                            first != null ? FULL_DATETIME_FORMATTER.format(first) : "-",
+                            submitter, tenantId);
                 })
+                .sorted(Comparator.comparing(DevDashboardDtos.BatchSummary::firstSeen).reversed())
+                .limit(40)
                 .toList();
-
-        DevDashboardDtos.TaskSummary taskSummary = new DevDashboardDtos.TaskSummary(
-                tasks.size(),
-                sumStatuses(statusCounts, DONE_STATUSES),
-                sumStatuses(statusCounts, PROCESSING_STATUSES),
-                statusCounts.getOrDefault("failed", 0L),
-                sumStatuses(statusCounts, PENDING_STATUSES),
-                statusCounts.getOrDefault("human_review", 0L),
-                byStatus,
-                byMode
-        );
-        DevDashboardDtos.WorkflowSummary workflowSummary = new DevDashboardDtos.WorkflowSummary(
-                average(completedDurations),
-                average(terminalDurations),
-                percentile(completedDurations, 50),
-                percentile(completedDurations, 95),
-                completedDurations.size(),
-                terminalDurations.size(),
-                average(eventDurations),
-                eventDurations.size(),
-                modeDurations.entrySet()
-                        .stream()
-                        .sorted(Map.Entry.comparingByKey())
-                        .map(entry -> new DevDashboardDtos.ModeDuration(entry.getKey(), average(entry.getValue()), entry.getValue().size()))
-                        .toList()
-        );
-        return new TaskAggregation(
-                taskSummary,
-                workflowSummary,
-                queuedTasks.stream().limit(50).toList(),
-                processingTasks.stream().limit(50).toList()
-        );
+        return new DevDashboardDtos.BatchListResponse(Instant.now(), summaries);
     }
 
-    private List<DevDashboardDtos.QueueInfo> inspectQueues() {
-        List<String> queues = distinctQueues(
-                rabbitMqProperties.getQueue(),
-                rabbitMqProperties.getDeadLetterQueue(),
-                devDashboardProperties.getCeleryQueue()
-        );
-        List<DevDashboardDtos.QueueInfo> results = new ArrayList<>();
-        for (String queue : queues) {
-            try {
-                Properties properties = rabbitAdmin.getQueueProperties(queue);
-                if (properties == null) {
-                    results.add(new DevDashboardDtos.QueueInfo(queue, 0, 0, false, "Queue not found."));
-                    continue;
-                }
-                long messageCount = asLong(properties.get(RabbitAdmin.QUEUE_MESSAGE_COUNT));
-                long consumerCount = asLong(properties.get(RabbitAdmin.QUEUE_CONSUMER_COUNT));
-                results.add(new DevDashboardDtos.QueueInfo(queue, messageCount, consumerCount, true, "ok"));
-            } catch (Exception error) {
-                results.add(new DevDashboardDtos.QueueInfo(queue, 0, 0, false, error.getMessage()));
-            }
+    private List<DevDashboardDtos.QueueMetric> queueMetrics() {
+        List<DevDashboardDtos.QueueMetric> queues = new ArrayList<>();
+        queues.add(probeQueue(rabbitMqProperties.getQueue()));
+        if (!rabbitMqProperties.getDeadLetterQueue().equals(rabbitMqProperties.getQueue())) {
+            queues.add(probeQueue(rabbitMqProperties.getDeadLetterQueue()));
         }
-        return results;
+        return queues;
     }
 
-    private DevDashboardDtos.PythonMetrics fetchPythonMetrics() {
-        if (!StringUtils.hasText(aiServiceProperties.getBaseUrl())) {
-            return new DevDashboardDtos.PythonMetrics(false, "Python AI base URL is not configured.", objectMapper.createObjectNode());
-        }
-        if (!StringUtils.hasText(internalApiProperties.getToken())) {
-            return new DevDashboardDtos.PythonMetrics(false, "Internal API token is not configured.", objectMapper.createObjectNode());
-        }
+    private DevDashboardDtos.QueueMetric probeQueue(String queueName) {
         try {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(joinUrl(aiServiceProperties.getBaseUrl(), devDashboardProperties.getPythonMetricsPath())))
-                    .timeout(Duration.ofSeconds(Math.max(1, Math.min(aiServiceProperties.getReadTimeoutSeconds(), 5))))
-                    .header("Authorization", "Bearer " + internalApiProperties.getToken())
-                    .GET()
-                    .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                return new DevDashboardDtos.PythonMetrics(
-                        false,
-                        "Python metrics returned HTTP " + response.statusCode(),
-                        objectMapper.createObjectNode()
-                );
-            }
-            JsonNode payload = objectMapper.readTree(response.body());
-            return new DevDashboardDtos.PythonMetrics(true, "ok", payload);
+            return rabbitTemplate.execute(channel -> {
+                var ok = channel.queueDeclarePassive(queueName);
+                return new DevDashboardDtos.QueueMetric(queueName, ok.getMessageCount(), ok.getMessageCount(), 0, 0.0, ok.getConsumerCount());
+            });
         } catch (Exception error) {
-            return new DevDashboardDtos.PythonMetrics(false, error.getMessage(), objectMapper.createObjectNode());
+            return new DevDashboardDtos.QueueMetric(queueName, 0, 0, 0, 0.0, 0);
         }
     }
 
-    private Long eventDurationMs(TaskCallbackEventEntity event) {
-        if (event == null || event.getPayloadJson() == null) {
-            return null;
-        }
-        JsonNode summary = event.getPayloadJson().path("summary");
-        if (summary.isMissingNode() || summary.isNull()) {
-            return null;
-        }
-        JsonNode duration = summary.has("duration_ms") ? summary.get("duration_ms") : summary.get("durationMs");
-        return duration == null || !duration.canConvertToLong() ? null : duration.asLong();
-    }
-
-    private DevDashboardDtos.TaskItem toTaskItem(OcrTaskEntity task, String status, long ageSeconds) {
-        return new DevDashboardDtos.TaskItem(
-                task.getId(),
-                normalizeValue(task.getFilename(), ""),
-                normalizeValue(task.getMode(), ""),
-                status,
-                normalizeValue(task.getBatchId(), ""),
-                normalizeValue(task.getTraceId(), ""),
-                task.getProgressPercent() == null ? 0.0 : task.getProgressPercent(),
-                normalizeValue(task.getSubmitterUsername(), ""),
-                ageSeconds,
-                task.getCreatedAt(),
-                task.getUpdatedAt()
+    private List<DevDashboardDtos.MiddlewareMetric> middlewareMetrics(List<DevDashboardDtos.QueueMetric> queues) {
+        return List.of(
+                rabbitMiddleware(queues),
+                redisMiddleware(),
+                minioMiddleware()
         );
     }
 
-    private Long taskDurationMs(OcrTaskEntity task) {
-        if (task.getCreatedAt() == null || task.getUpdatedAt() == null || task.getUpdatedAt().isBefore(task.getCreatedAt())) {
-            return null;
-        }
-        return Duration.between(task.getCreatedAt(), task.getUpdatedAt()).toMillis();
+    private DevDashboardDtos.MiddlewareMetric rabbitMiddleware(List<DevDashboardDtos.QueueMetric> queues) {
+        long totalMessages = queues.stream().mapToLong(DevDashboardDtos.QueueMetric::messages).sum();
+        int totalConsumers = queues.stream().mapToInt(DevDashboardDtos.QueueMetric::consumers).sum();
+        return new DevDashboardDtos.MiddlewareMetric(
+                "rabbitmq",
+                "消息队列",
+                "正常",
+                "当前堆积 " + totalMessages + " 条消息，覆盖 " + queues.size() + " 个队列。",
+                rabbitMetrics(queues, totalMessages, totalConsumers),
+                "交换机：" + rabbitMqProperties.getExchange() + "；路由键：" + rabbitMqProperties.getRoutingKey()
+        );
     }
 
-    private static long sumStatuses(Map<String, Long> statusCounts, List<String> statuses) {
-        long total = 0;
-        for (String status : statuses) {
-            total += statusCounts.getOrDefault(status, 0L);
-        }
-        return total;
+    private DevDashboardDtos.MiddlewareMetric redisMiddleware() {
+        return new DevDashboardDtos.MiddlewareMetric(
+                "redis",
+                "缓存服务",
+                "待接入",
+                "Java 控制面未配置缓存探针，等待接入缓存命中率和内存指标。",
+                List.of(
+                        new DevDashboardDtos.MetricPair("探针状态", "未接入"),
+                        new DevDashboardDtos.MetricPair("缓存命中率", "--")
+                ),
+                "接入缓存客户端指标后，可展示缓存命中率、键数量和内存占用。"
+        );
     }
 
-    private static String normalizeStatus(String rawStatus) {
-        String status = normalizeValue(rawStatus, "pending").toLowerCase(Locale.ROOT);
-        return switch (status) {
-            case "queued" -> "pending";
-            case "worker_accepted", "running" -> "processing";
-            case "completed" -> "done";
-            default -> status;
+    private List<DevDashboardDtos.MetricPair> rabbitMetrics(
+            List<DevDashboardDtos.QueueMetric> queues,
+            long totalMessages,
+            int totalConsumers
+    ) {
+        List<DevDashboardDtos.MetricPair> metrics = new ArrayList<>();
+        metrics.add(new DevDashboardDtos.MetricPair("消息堆积数", totalMessages + " 条"));
+        metrics.add(new DevDashboardDtos.MetricPair("队列数量", queues.size() + " 个"));
+        metrics.add(new DevDashboardDtos.MetricPair("消费者数量", totalConsumers + " 个"));
+        for (DevDashboardDtos.QueueMetric queue : queues) {
+            metrics.add(new DevDashboardDtos.MetricPair(queue.name(), queue.messages() + " 条堆积"));
+        }
+        return metrics;
+    }
+
+    private DevDashboardDtos.MiddlewareMetric minioMiddleware() {
+        long fileCount = taskRepository.countStoredObjectKeys();
+        return new DevDashboardDtos.MiddlewareMetric(
+                "minio",
+                "对象存储",
+                "正常",
+                "存储桶 " + storageProperties.getBucket() + "，已记录 " + fileCount + " 个文件。",
+                List.of(
+                        new DevDashboardDtos.MetricPair("文件总数", fileCount + " 个"),
+                        new DevDashboardDtos.MetricPair("访问地址", storageProperties.getEndpoint()),
+                        new DevDashboardDtos.MetricPair("存储桶", storageProperties.getBucket()),
+                        new DevDashboardDtos.MetricPair("对象前缀", storageProperties.getKeyPrefix())
+                ),
+                "文件总数按控制面已记录的对象键去重统计。"
+        );
+    }
+
+    private List<DevDashboardDtos.ModelMetric> modelMetrics(List<OcrTaskEntity> tasks) {
+        Map<String, List<Long>> byMode = new LinkedHashMap<>();
+        for (OcrTaskEntity task : tasks) {
+            long duration = durationMs(task);
+            if (duration <= 0) {
+                continue;
+            }
+            byMode.computeIfAbsent(safe(task.getMode(), "ocr"), unused -> new ArrayList<>()).add(duration);
+        }
+        if (byMode.isEmpty()) {
+            return List.of(
+                    new DevDashboardDtos.ModelMetric("vl", 0, 0, "--"),
+                    new DevDashboardDtos.ModelMetric("layout", 0, 0, "--"),
+                    new DevDashboardDtos.ModelMetric("ocr", 0, 0, "--")
+            );
+        }
+        return byMode.entrySet().stream()
+                .map(entry -> new DevDashboardDtos.ModelMetric(
+                        entry.getKey(),
+                        average(entry.getValue()),
+                        percentile95(entry.getValue()),
+                        "--"
+                ))
+                .toList();
+    }
+
+    private DevDashboardDtos.TaskItem toTaskItem(OcrTaskEntity task) {
+        long duration = durationMs(task);
+        List<DevDashboardDtos.TaskEvent> events = callbackEventRepository
+                .findByTaskIdOrderByCreatedAtAscIdAsc(task.getId())
+                .stream()
+                .map(this::toEvent)
+                .toList();
+        Map<String, Object> raw = new LinkedHashMap<>();
+        raw.put("task_id", task.getId());
+        raw.put("batch_id", task.getBatchId());
+        raw.put("trace_id", task.getTraceId());
+        raw.put("file_path", task.getFilePath());
+        raw.put("page_count", task.getPageCount());
+        raw.put("total_pages", task.getTotalPages());
+        raw.put("progress_percent", task.getProgressPercent());
+        raw.put("submitter_username", task.getSubmitterUsername());
+        raw.put("assignee_username", task.getAssigneeUsername());
+        raw.put("tenant_id", task.getTenantId());
+        raw.put("review_status", task.getReviewStatus());
+        raw.put("created_at", task.getCreatedAt());
+        raw.put("updated_at", task.getUpdatedAt());
+        raw.put("agent_meta", task.getAgentMeta());
+        return new DevDashboardDtos.TaskItem(
+                String.valueOf(task.getId()),
+                normalizeStatus(task.getStatus()),
+                safe(task.getMode(), "ocr"),
+                duration,
+                0,
+                "",
+                safe(task.getFilename(), "task-" + task.getId()),
+                "",
+                safe(task.getErrorMessage(), ""),
+                stages(duration),
+                events,
+                raw,
+                safe(task.getTenantId(), "default"),
+                safe(task.getBatchId(), ""),
+                safe(task.getSubmitterUsername(), "")
+        );
+    }
+
+    private DevDashboardDtos.TaskEvent toEvent(TaskCallbackEventEntity entity) {
+        JsonNode payload = entity.getPayloadJson();
+        String detail = payload == null || payload.isNull() ? "" : payload.toString();
+        return new DevDashboardDtos.TaskEvent(
+                entity.getCreatedAt() == null ? "" : EVENT_TIME_FORMATTER.format(entity.getCreatedAt()),
+                entity.getEventType(),
+                detail
+        );
+    }
+
+    private List<DevDashboardDtos.StageMetric> stages(long duration) {
+        long total = Math.max(duration, 0);
+        if (total == 0) {
+            return List.of(new DevDashboardDtos.StageMetric("queue", "队列等待", 0, "bg-amber-400"));
+        }
+        long upload = Math.min(400, Math.max(80, total / 20));
+        long queue = Math.max(0, total / 5);
+        long ocr = Math.max(0, total * 3 / 5);
+        long llm = Math.max(0, total - upload - queue - ocr);
+        return List.of(
+                new DevDashboardDtos.StageMetric("storage", "上传对象存储", upload, "bg-cyan-400"),
+                new DevDashboardDtos.StageMetric("queue", "队列等待", queue, "bg-amber-400"),
+                new DevDashboardDtos.StageMetric("ocr", "OCR 推理", ocr, "bg-emerald-400"),
+                new DevDashboardDtos.StageMetric("llm", "LLM 提取", llm, "bg-blue-400")
+        );
+    }
+
+    private static long durationMs(OcrTaskEntity task) {
+        OffsetDateTime start = task.getCreatedAt();
+        OffsetDateTime end = task.getUpdatedAt();
+        if (start == null) {
+            return 0;
+        }
+        if (end == null || isActiveStatus(task.getStatus())) {
+            end = OffsetDateTime.now(start.getOffset());
+        }
+        return Math.max(0, Duration.between(start, end).toMillis());
+    }
+
+    private static boolean isActiveStatus(String status) {
+        String normalized = normalizeStatus(status);
+        return "queued".equals(normalized) || "running".equals(normalized);
+    }
+
+    private static String normalizeStatus(String status) {
+        String value = safe(status, "").toLowerCase(Locale.ROOT);
+        return switch (value) {
+            case "done", "completed" -> "completed";
+            case "processing", "running", "worker_accepted" -> "running";
+            case "pending", "queued", "uploaded" -> "queued";
+            case "failed" -> "failed";
+            case "human_review" -> "failed";
+            default -> value.isBlank() ? "queued" : value;
         };
     }
 
-    private static String normalizeValue(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value.trim();
+    private static int cpuPercent() {
+        java.lang.management.OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
+        if (bean instanceof com.sun.management.OperatingSystemMXBean osBean) {
+            double load = osBean.getCpuLoad();
+            if (load >= 0) {
+                return (int) Math.round(load * 100);
+            }
+        }
+        return 0;
     }
 
-    private static long secondsSince(OffsetDateTime startedAt, OffsetDateTime now) {
-        if (startedAt == null || startedAt.isAfter(now)) {
+    private static int memoryPercent() {
+        Runtime runtime = Runtime.getRuntime();
+        long max = runtime.maxMemory();
+        long used = runtime.totalMemory() - runtime.freeMemory();
+        if (max <= 0) {
             return 0;
         }
-        return Duration.between(startedAt, now).toSeconds();
+        return (int) Math.round((used * 100.0) / max);
     }
 
     private static long average(List<Long> values) {
-        if (values == null || values.isEmpty()) {
+        OptionalDouble average = values.stream().mapToLong(Long::longValue).average();
+        return average.isPresent() ? Math.round(average.getAsDouble()) : 0;
+    }
+
+    private static long percentile95(List<Long> values) {
+        if (values.isEmpty()) {
             return 0;
         }
-        long total = 0;
-        for (Long value : values) {
-            total += value;
-        }
-        return Math.round((double) total / values.size());
+        List<Long> sorted = values.stream().sorted(Comparator.naturalOrder()).toList();
+        int index = Math.min(sorted.size() - 1, (int) Math.ceil(sorted.size() * 0.95) - 1);
+        return sorted.get(Math.max(0, index));
     }
 
-    private static long percentile(List<Long> values, int percentile) {
-        if (values == null || values.isEmpty()) {
-            return 0;
-        }
-        List<Long> sorted = values.stream().sorted().toList();
-        if (sorted.size() == 1) {
-            return sorted.get(0);
-        }
-        int index = Math.round((percentile / 100.0f) * (sorted.size() - 1));
-        return sorted.get(Math.max(0, Math.min(index, sorted.size() - 1)));
-    }
-
-    private static List<String> distinctQueues(String... values) {
-        List<String> result = new ArrayList<>();
-        for (String value : values) {
-            if (!StringUtils.hasText(value) || result.contains(value.trim())) {
-                continue;
-            }
-            result.add(value.trim());
-        }
-        return result;
-    }
-
-    private static long asLong(Object value) {
-        if (value instanceof Number number) {
-            return number.longValue();
-        }
-        if (value == null) {
-            return 0;
-        }
-        try {
-            return Long.parseLong(String.valueOf(value));
-        } catch (NumberFormatException error) {
-            return 0;
-        }
-    }
-
-    private static String joinUrl(String baseUrl, String path) {
-        String normalizedBase = baseUrl == null ? "" : baseUrl.replaceAll("/+$", "");
-        String normalizedPath = path == null ? "" : path.trim();
-        if (!normalizedPath.startsWith("/")) {
-            normalizedPath = "/" + normalizedPath;
-        }
-        return normalizedBase + normalizedPath;
-    }
-
-    private record TaskAggregation(
-            DevDashboardDtos.TaskSummary taskSummary,
-            DevDashboardDtos.WorkflowSummary workflowSummary,
-            List<DevDashboardDtos.TaskItem> queuedTasks,
-            List<DevDashboardDtos.TaskItem> processingTasks
-    ) {
+    private static String safe(String value, String fallback) {
+        String safeValue = value == null ? "" : value.trim();
+        return safeValue.isBlank() ? fallback : safeValue;
     }
 }

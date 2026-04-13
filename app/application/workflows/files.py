@@ -8,8 +8,8 @@ from app.domains.ingestion import task_service
 from app.infrastructure.storage import ensure_allowed_path
 
 
-async def get_task_file_context(*, task_id: int, db) -> tuple[dict | None, str]:
-    task = await task_service.get_task_detail(db, task_id)
+async def get_task_file_context(*, task_id: int, db, tenant_id: str = "") -> tuple[dict | None, str]:
+    task = await task_service.get_task_detail(db, task_id, tenant_id=tenant_id)
     if not task:
         return None, "not_found"
 

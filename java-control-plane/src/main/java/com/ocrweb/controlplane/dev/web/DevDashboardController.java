@@ -6,11 +6,15 @@ import com.ocrweb.controlplane.dev.service.DevDashboardService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/dev/dashboard")
@@ -23,30 +27,61 @@ public class DevDashboardController {
         this.dashboardService = dashboardService;
     }
 
-    @GetMapping("/me")
-    public DevDashboardDtos.AuthStatus me(HttpServletRequest request) {
-        String username = authService.resolveUsername(request);
-        return new DevDashboardDtos.AuthStatus(authService.isConfigured(), !username.isBlank(), username);
+    @GetMapping("/auth/status")
+    public DevDashboardDtos.AuthStatusResponse status(HttpServletRequest request) {
+        return authService.status(request);
     }
 
-    @PostMapping("/login")
-    public ResponseEntity<DevDashboardDtos.AuthStatus> login(@RequestBody DevDashboardDtos.LoginRequest request) {
-        String setCookie = authService.authenticate(request.username(), request.password());
+    @PostMapping("/auth/login")
+    public ResponseEntity<DevDashboardDtos.LoginResponse> login(@RequestBody(required = false) DevDashboardDtos.LoginRequest request) {
+        DevDashboardDtos.LoginRequest body = request == null ? new DevDashboardDtos.LoginRequest("", "", "") : request;
+        DevDashboardAuthService.LoginResult result = authService.login(body.username(), body.password(), body.twoFactorCode());
         return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, setCookie)
-                .body(new DevDashboardDtos.AuthStatus(true, true, request.username()));
+                .header(HttpHeaders.SET_COOKIE, result.setCookieHeader())
+                .body(result.payload());
     }
 
-    @PostMapping("/logout")
-    public ResponseEntity<DevDashboardDtos.AuthStatus> logout() {
+    @PostMapping("/auth/logout")
+    public ResponseEntity<Map<String, Object>> logout() {
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, authService.buildLogoutCookie())
-                .body(new DevDashboardDtos.AuthStatus(authService.isConfigured(), false, ""));
+                .body(Map.of("authenticated", false));
     }
 
-    @GetMapping("/metrics")
-    public DevDashboardDtos.DashboardSnapshot metrics(HttpServletRequest request) {
-        authService.requireAuthenticated(request);
+    @GetMapping("/snapshot")
+    public DevDashboardDtos.SnapshotResponse snapshot(HttpServletRequest request) {
+        authService.requireSession(request);
         return dashboardService.snapshot();
+    }
+
+    @GetMapping("/tasks")
+    public DevDashboardDtos.SnapshotResponse tasks(HttpServletRequest request) {
+        authService.requireSession(request);
+        return dashboardService.snapshot();
+    }
+
+    @PostMapping("/tasks/{taskId}/retry")
+    public DevDashboardDtos.RetryResponse retry(@PathVariable Long taskId, HttpServletRequest request) {
+        authService.requireSession(request);
+        return dashboardService.retry(taskId);
+    }
+
+    @GetMapping("/batches")
+    public DevDashboardDtos.BatchListResponse batches(HttpServletRequest request) {
+        authService.requireSession(request);
+        return dashboardService.batches();
+    }
+
+    @PostMapping("/tasks/{taskId}/cancel")
+    public DevDashboardDtos.RetryResponse cancel(@PathVariable Long taskId, HttpServletRequest request) {
+        authService.requireSession(request);
+        return dashboardService.cancel(taskId);
+    }
+
+    @DeleteMapping("/tasks/{taskId}")
+    public ResponseEntity<Map<String, Object>> deleteTask(@PathVariable Long taskId, HttpServletRequest request) {
+        authService.requireSession(request);
+        dashboardService.deleteTask(taskId);
+        return ResponseEntity.ok(Map.of("ok", true, "taskId", taskId));
     }
 }

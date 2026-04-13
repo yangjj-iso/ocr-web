@@ -115,7 +115,9 @@ def write_auth_cookie_for_user(response, user: AppUser) -> None:
         user_id=user.id,
         is_admin=bool(user.is_admin),
         user_status=user.status,
-        role=user.role or "operator",
+        role=user.role or "member",
+        capabilities=user.capabilities or "",
+        tenant_id=user.tenant_id or "default",
     )
 
 

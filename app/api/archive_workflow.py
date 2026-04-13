@@ -22,7 +22,6 @@ from app.db.models import (
     BatchRecord,
     DocUnit,
     DocVersion,
-    OCRTask,
     PageRecord,
     PolicySnapshot,
     ReworkTask,
@@ -33,12 +32,10 @@ from app.db.models import (
     WorkflowRun,
 )
 from app.domains.review.review_service import submit_review_result
-from app.infrastructure.queue.archive_publisher import enqueue_workflow_resume, enqueue_workflow_start
 
 router = APIRouter(prefix="/api/archive", tags=["archive-workflow"], dependencies=[Depends(require_auth)])
 
 _BATCH_ID_RE = re.compile(r"[^a-zA-Z0-9_-]+")
-_IMAGE_FILE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 class BatchCreateRequest(BaseModel):
@@ -82,69 +79,6 @@ class PolicySnapshotUpdateRequest(BaseModel):
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _as_utc_datetime(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _normalize_affected_scope(scope: dict[str, Any] | None) -> dict[str, Any]:
-    normalized = dict(scope or {})
-    if normalized.get("regenerate_catalog"):
-        normalized.setdefault("invalidate_catalog", True)
-    if normalized.get("regenerate_pdf"):
-        normalized.setdefault("invalidate_pdf", True)
-    if normalized.get("renumber_from_order_index") is not None:
-        normalized.setdefault("invalidate_numbering", True)
-    return normalized
-
-
-def _resolve_resume_checkpoint(scope: dict[str, Any]) -> str | None:
-    normalized_scope = _normalize_affected_scope(scope)
-    if not normalized_scope:
-        return None
-    from app.domains.rework.invalidation_service import earliest_invalidated_stage
-
-    return earliest_invalidated_stage(normalized_scope)
-
-
-async def _enqueue_review_resume_if_ready(
-    db: AsyncSession,
-    *,
-    task: ReviewTask,
-    review_result: dict[str, Any],
-) -> bool:
-    run_id = str(task.run_id or "").strip()
-    if not run_id:
-        return False
-
-    workflow_run = (
-        await db.execute(select(WorkflowRun).where(WorkflowRun.run_id == run_id).limit(1))
-    ).scalar_one_or_none()
-    if not workflow_run:
-        return False
-
-    if str(workflow_run.run_status or "").lower() != "running":
-        return False
-    if str(workflow_run.current_stage or "").strip().lower() != "resume_from_review":
-        return False
-
-    from app.domains.rework.invalidation_service import build_affected_scope_from_review
-
-    affected_scope = _normalize_affected_scope(build_affected_scope_from_review(review_result))
-    await enqueue_workflow_resume(
-        run_id=run_id,
-        batch_id=task.batch_id,
-        reason="review_submitted",
-        affected_scope=affected_scope,
-        resume_from_checkpoint=_resolve_resume_checkpoint(affected_scope),
-        review_result=review_result,
-    )
-    return True
 
 
 def _role(current: dict[str, Any]) -> str:
@@ -280,142 +214,7 @@ async def _source_counts_by_batch(db: AsyncSession, batch_ids: list[str]) -> dic
     counts: dict[str, int] = {}
     for row in rows:
         counts[row.batch_id] = counts.get(row.batch_id, 0) + 1
-    task_rows = (await db.execute(select(OCRTask).where(OCRTask.batch_id.in_(unique_ids)))).scalars().all()
-    task_counts: dict[str, int] = {}
-    for row in task_rows:
-        task_counts[row.batch_id] = task_counts.get(row.batch_id, 0) + 1
-    for batch_id, task_count in task_counts.items():
-        counts[batch_id] = max(counts.get(batch_id, 0), task_count)
     return counts
-
-
-def _normalize_result_page_list(result_json: Any) -> list[dict[str, Any]]:
-    if isinstance(result_json, list):
-        return [page for page in result_json if isinstance(page, dict)]
-    if isinstance(result_json, dict):
-        return [result_json]
-    return []
-
-
-def _extract_result_page_text(page: dict[str, Any]) -> str:
-    lines = page.get("lines") if isinstance(page.get("lines"), list) else []
-    texts = [str(line.get("text") or "").strip() for line in lines if isinstance(line, dict)]
-    normalized = [text for text in texts if text]
-    if normalized:
-        return "\n".join(normalized)
-
-    regions = page.get("regions") if isinstance(page.get("regions"), list) else []
-    region_texts = [str(region.get("content") or "").strip() for region in regions if isinstance(region, dict)]
-    normalized_regions = [text for text in region_texts if text]
-    return "\n".join(normalized_regions)
-
-
-def _infer_result_page_layout(page: dict[str, Any]) -> str | None:
-    regions = page.get("regions") if isinstance(page.get("regions"), list) else []
-    types = {
-        str(region.get("type") or "").strip().lower()
-        for region in regions
-        if isinstance(region, dict) and str(region.get("type") or "").strip()
-    }
-    if not types:
-        return "text" if _extract_result_page_text(page) else None
-    if len(types) == 1:
-        return next(iter(types))
-    return "mixed"
-
-
-def _build_workflow_pages_from_ocr_tasks(tasks: list[OCRTask], batch_id: str) -> list[dict[str, Any]]:
-    pages: list[dict[str, Any]] = []
-
-    for task in tasks:
-        raw_pages = _normalize_result_page_list(task.result_json)
-        if not raw_pages and str(task.full_text or "").strip():
-            raw_pages = [{
-                "page_num": 1,
-                "regions": [],
-                "lines": [{"line_num": 1, "text": str(task.full_text or "").strip(), "confidence": 1.0, "bbox": []}],
-            }]
-
-        for raw_page in raw_pages:
-            page_num = int(raw_page.get("page_num") or len(pages) + 1)
-            pages.append(
-                {
-                    "page_id": f"{batch_id}-task-{task.id}-page-{page_num}",
-                    "page_index": len(pages),
-                    "image_uri": "",
-                    "preview_uri": "",
-                    "ocr_text": _extract_result_page_text(raw_page),
-                    "ocr_blocks": dict(raw_page),
-                    "layout_type": _infer_result_page_layout(raw_page),
-                }
-            )
-
-    return pages
-
-
-def _build_workflow_pages_from_source_files(source_files: list[SourceFile], batch_id: str) -> list[dict[str, Any]]:
-    pages: list[dict[str, Any]] = []
-    for source_file in source_files:
-        suffix = Path(str(source_file.original_filename or "")).suffix.lower()
-        mime_type = str(source_file.mime_type or "").lower()
-        if suffix not in _IMAGE_FILE_EXTENSIONS and not mime_type.startswith("image/"):
-            continue
-        pages.append(
-            {
-                "page_id": source_file.file_id,
-                "page_index": len(pages),
-                "image_uri": str(source_file.storage_uri or "").strip(),
-                "preview_uri": "",
-                "ocr_text": "",
-                "ocr_blocks": {},
-                "layout_type": None,
-            }
-        )
-    return pages
-
-
-async def _resolve_batch_start_inputs(
-    db: AsyncSession,
-    *,
-    batch_id: str,
-    tenant_id: str,
-) -> tuple[list[dict[str, Any]], list[str], int, str]:
-    source_files = (
-        await db.execute(
-            select(SourceFile)
-            .where(SourceFile.batch_id == batch_id, SourceFile.tenant_id == tenant_id)
-            .order_by(SourceFile.created_at.asc(), SourceFile.id.asc())
-        )
-    ).scalars().all()
-    source_file_uris = [str(source_file.storage_uri or "").strip() for source_file in source_files if str(source_file.storage_uri or "").strip()]
-
-    tasks = (
-        await db.execute(
-            select(OCRTask)
-            .where(OCRTask.batch_id == batch_id, OCRTask.tenant_id == tenant_id)
-            .order_by(OCRTask.created_at.asc(), OCRTask.id.asc())
-        )
-    ).scalars().all()
-    completed_tasks = [
-        task
-        for task in tasks
-        if str(task.status or "").strip().lower() in {"done", "completed"}
-        and (_normalize_result_page_list(task.result_json) or str(task.full_text or "").strip())
-    ]
-
-    pages = _build_workflow_pages_from_ocr_tasks(completed_tasks, batch_id)
-    input_source = "ocr_tasks"
-    if not pages:
-        pages = _build_workflow_pages_from_source_files(source_files, batch_id)
-        input_source = "source_files" if pages else "empty"
-
-    page_count = len(pages)
-    if page_count <= 0:
-        page_count = sum(max(0, int(source_file.page_count or 0)) for source_file in source_files)
-    if page_count <= 0:
-        page_count = sum(max(0, int(task.page_count or 0)) for task in completed_tasks)
-
-    return pages, source_file_uris, page_count, input_source
 
 
 async def _doc_counts_by_batch(db: AsyncSession, batch_ids: list[str]) -> tuple[dict[str, int], dict[str, int]]:
@@ -469,56 +268,6 @@ async def _batch_pdf_urls_by_batch(db: AsyncSession, batch_ids: list[str]) -> di
     return urls
 
 
-def _format_progress_count(progress: dict[str, Any] | None) -> str | None:
-    if not progress:
-        return None
-    total = progress.get("total")
-    completed = progress.get("completed")
-    if total in {None, ""}:
-        return None
-    try:
-        total_num = int(total)
-        completed_num = int(completed or 0)
-    except (TypeError, ValueError):
-        return None
-    if total_num <= 0:
-        return None
-    return f"{completed_num}/{total_num}"
-
-
-def _queue_stage_status(progress: dict[str, Any] | None) -> str:
-    normalized = str((progress or {}).get("status") or "").strip().lower()
-    if normalized in {"done", "failed", "processing", "pending"}:
-        return normalized
-    return "pending"
-
-
-def _queue_workflow_stages(latest_run: WorkflowRun | None) -> list[dict[str, Any]]:
-    if not latest_run:
-        return []
-    queue_progress = dict((latest_run.state_json or {}).get("queue_progress") or {})
-    definitions = [
-        ("page_preprocess", "页面预处理"),
-        ("ocr", "页面 OCR"),
-        ("page_features", "页面特征"),
-        ("relation_analysis", "关系分析"),
-    ]
-    stages: list[dict[str, Any]] = []
-    for key, label in definitions:
-        progress = queue_progress.get(key)
-        if not progress:
-            continue
-        stages.append(
-            {
-                "name": key,
-                "label": label,
-                "status": _queue_stage_status(progress),
-                "count": _format_progress_count(progress),
-            }
-        )
-    return stages
-
-
 def _workflow_stages(batch: BatchRecord, latest_run: WorkflowRun | None, review_counts: dict[str, int], total_docs: int, done_docs: int) -> list[dict[str, Any]]:
     review_pending = review_counts.get("pending", 0) + review_counts.get("claimed", 0)
     review_status = "pending" if review_pending else ("done" if review_counts.get("submitted", 0) else "pending")
@@ -539,7 +288,6 @@ def _workflow_stages(batch: BatchRecord, latest_run: WorkflowRun | None, review_
 
     stages = [
         {"name": "ingest", "label": "批次建立", "status": "done", "count": None},
-        *_queue_workflow_stages(latest_run),
         {"name": "draft", "label": "草稿处理", "status": stage_status(batch.draft_status), "count": total_docs or None},
         {"name": "review", "label": "人工审核", "status": review_status, "count": review_pending or None},
         {"name": "final", "label": "正式编目", "status": stage_status(batch.final_status), "count": done_docs or None},
@@ -584,7 +332,6 @@ def _serialize_batch(
     policy_version: str,
 ) -> dict[str, Any]:
     file_count = source_count or total_docs or batch.page_count or 0
-    queue_progress = dict((latest_run.state_json or {}).get("queue_progress") or {}) if latest_run else {}
     return {
         "id": batch.id,
         "batch_id": batch.batch_id,
@@ -602,7 +349,6 @@ def _serialize_batch(
         "export_status": batch.export_status,
         "current_stage": latest_run.current_stage if latest_run else None,
         "run_status": latest_run.run_status if latest_run else None,
-        "queue_progress": queue_progress,
         "workflow_stages": _workflow_stages(batch, latest_run, review_counts, total_docs, done_docs),
         "total_docs": total_docs,
         "done_docs": done_docs,
@@ -707,24 +453,14 @@ async def _serialize_doc_versions(db: AsyncSession, batch_id: str, doc_ids: list
                     **metadata,
                     "responsible": metadata.get("responsible") or metadata.get("responsible_party") or "",
                 },
-                "start_page": version.start_page if version.start_page else (page_records[0].page_index + 1 if page_records else 1),
-                "end_page": version.end_page if version.end_page else (page_records[-1].page_index + 1 if page_records else 1),
-                "pdf_url": f"/api/archive/batches/{batch_id}/source-pdf",
-                "preview_url": f"/api/archive/batches/{batch_id}/source-pdf",
                 "ocr_pages": [
                     {
                         "page_no": index + 1,
                         "page": index + 1,
-                        "page_id": page.page_id,
                         "text": page.ocr_text or "",
-                        "rotation": page.rotation or 0,
-                        "image_url": f"/api/archive/batches/{batch_id}/pages/{page.page_id}/image"
-                        if (page.preview_uri or page.image_uri)
-                        else None,
                     }
                     for index, page in enumerate(page_records)
                 ],
-                "has_page_images": any(page.preview_uri or page.image_uri for page in page_records),
                 "risk_level": "medium"
                 if not (metadata.get("title") and metadata.get("date"))
                 else "",
@@ -851,13 +587,6 @@ async def get_dashboard_stats(
     archive_records = (await db.execute(select(ArchiveRecord).order_by(desc(ArchiveRecord.created_at)))).scalars().all()
     policies = (await db.execute(policy_stmt)).scalars().all()
 
-    now_utc = _utc_now()
-    today_key = now_utc.date()
-    today_batches = [
-        batch
-        for batch in batches
-        if (_as_utc_datetime(batch.created_at) and _as_utc_datetime(batch.created_at).date() == today_key)
-    ]
     failed_today = [batch for batch in today_batches if str(batch.status or "").lower() == "failed"]
     my_user_id = current.get("user_id")
 
@@ -869,11 +598,6 @@ async def get_dashboard_stats(
         "pendingBatches": len([batch for batch in batches if _batch_ui_status(batch, None, {}) == "draft"]),
         "pendingRelease": len([task for task in review_tasks if task.task_type == "final_release" and task.status in {"pending", "claimed"}]),
         "reworking": len([task for task in rework_tasks if task.status in {"accepted", "in_rework"}]),
-        "recentArchived": len([
-            record
-            for record in archive_records
-            if (_as_utc_datetime(record.created_at) and (now_utc - _as_utc_datetime(record.created_at)).days <= 7)
-        ]),
         "myReworks": len([task for task in rework_tasks if my_user_id and task.reported_by == my_user_id]),
         "pendingReworks": len([task for task in rework_tasks if task.status in {"pending", "accepted", "in_rework"}]),
         "totalArchived": len(archive_records),
@@ -1080,22 +804,11 @@ async def start_batch_workflow(
             "message": "workflow_already_exists",
         }
 
-    pages, source_file_uris, page_count, input_source = await _resolve_batch_start_inputs(
-        db,
-        batch_id=batch_id,
-        tenant_id=batch.tenant_id,
-    )
-    if not pages and not source_file_uris:
-        raise HTTPException(status_code=400, detail="Batch has no source files or completed OCR task results to start workflow.")
-    if not pages:
-        raise HTTPException(status_code=400, detail="Batch inputs are not page-ready yet. Complete OCR first or upload image files before starting workflow.")
-
     policy_snapshot_id = body.policy_snapshot_id if body else None
     if policy_snapshot_id:
         batch.policy_snapshot_id = policy_snapshot_id
     batch.status = "processing"
     batch.draft_status = "running"
-    batch.page_count = max(int(batch.page_count or 0), int(page_count or 0), len(pages))
 
     run_id = f"wf_{batch_id}_{uuid4().hex[:8]}"
     workflow = WorkflowRun(
@@ -1109,7 +822,6 @@ async def start_batch_workflow(
         state_json={
             "request_id": str(uuid4()),
             "submitted_by": current.get("username") or "",
-            "extra": {"input_source": input_source},
         },
     )
     db.add(workflow)
@@ -1117,17 +829,6 @@ async def start_batch_workflow(
 
     queued = True
     try:
-        await enqueue_workflow_start(
-            run_id=run_id,
-            batch_id=batch_id,
-            tenant_id=batch.tenant_id,
-            policy_snapshot_id=batch.policy_snapshot_id,
-            source_file_uris=source_file_uris,
-            page_count=page_count,
-            submitted_by=current.get("username") or "",
-            pages=pages,
-            extra={"input_source": input_source},
-        )
     except Exception:
         queued = False
 
@@ -1276,9 +977,6 @@ async def submit_review(
     resumed = False
     if task.run_id:
         try:
-            resumed = await _enqueue_review_resume_if_ready(
-                db,
-                task=task,
                 review_result=review_result,
             )
         except Exception:
@@ -1507,97 +1205,26 @@ async def upload_batch_files(
     return {"uploaded": uploaded, "count": len(uploaded)}
 
 
-@router.post("/batches/{batch_id}/export/final-pdf")
-async def export_batch_final_pdf(
-    batch_id: str,
     current: dict[str, Any] = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    batch = await _find_batch(db, batch_id, current)
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found.")
-    # Mark the batch export status as pending; the worker will pick it up
-    batch.export_status = "pending"
     await db.commit()
     return {
-        "batch_id": batch_id,
-        "export_status": "pending",
-        "message": "Final PDF export has been queued.",
     }
 
 
-@router.get("/batches/{batch_id}/pages/{page_id}/image")
-async def get_batch_page_image(
-    batch_id: str,
-    page_id: str,
     current: dict[str, Any] = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
-    """Serve a single page's preview or original image."""
-    batch = await _find_batch(db, batch_id, current)
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found.")
-    page = (
         await db.execute(
-            select(PageRecord)
-            .where(PageRecord.page_id == page_id, PageRecord.batch_id == batch_id)
             .limit(1)
         )
     ).scalar_one_or_none()
-    if not page:
-        raise HTTPException(status_code=404, detail="Page not found.")
-    image_path_str = page.preview_uri or page.image_uri
-    if not image_path_str:
-        raise HTTPException(status_code=404, detail="No image available for this page.")
-    image_path = Path(image_path_str)
-    if not image_path.exists():
-        raise HTTPException(status_code=404, detail="Image file not found on disk.")
-    suffix = image_path.suffix.lower()
-    media_type = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png", ".bmp": "image/bmp",
-        ".tif": "image/tiff", ".tiff": "image/tiff",
-        ".webp": "image/webp",
-    }.get(suffix, "image/jpeg")
-    return FileResponse(str(image_path), media_type=media_type)
 
 
-@router.get("/batches/{batch_id}/source-pdf")
-async def get_batch_source_pdf(
     batch_id: str,
     current: dict[str, Any] = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
-) -> FileResponse:
-    """Serve the source or artifact PDF for a batch (used by the review workbench preview)."""
     batch = await _find_batch(db, batch_id, current)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found.")
-
-    storage_path: str | None = None
-
-    # Prefer the generated artifact PDF (final or draft output)
-    artifact_urls = await _batch_pdf_urls_by_batch(db, [batch_id])
-    storage_path = artifact_urls.get(batch_id)
-
-    # Fall back to the original source file
-    if not storage_path:
-        source_file = (
-            await db.execute(
-                select(SourceFile)
-                .where(SourceFile.batch_id == batch_id)
-                .where(SourceFile.mime_type.ilike("%pdf%"))
-                .order_by(SourceFile.created_at)
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if source_file and source_file.storage_uri:
-            storage_path = source_file.storage_uri
-
-    if not storage_path:
-        raise HTTPException(status_code=404, detail="No PDF file is available for this batch yet.")
-
-    pdf_path = Path(storage_path)
-    if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="PDF file not found on disk.")
-
-    return FileResponse(str(pdf_path), media_type="application/pdf")
