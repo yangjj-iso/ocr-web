@@ -1341,15 +1341,19 @@ async def _writeback_recommended_fields(
     documents: list[dict[str, Any]],
 ) -> None:
     """Write recommended_fields from merge results back to all archive_records in each group."""
+    if not documents or not groups:
+        return
+
     group_id_to_task_ids = {g["group_id"]: g.get("task_ids", []) for g in groups}
-    for doc in documents:
-        rec_fields = doc.get("recommended_fields")
-        if not rec_fields:
-            continue
-        task_ids = group_id_to_task_ids.get(doc.get("group_id", ""), [])
-        if not task_ids:
-            continue
-        try:
+    updated = 0
+    try:
+        for doc in documents:
+            rec_fields = doc.get("recommended_fields")
+            if not rec_fields:
+                continue
+            task_ids = group_id_to_task_ids.get(doc.get("group_id", ""), [])
+            if not task_ids:
+                continue
             rows = (
                 await db.execute(
                     select(ArchiveRecord).where(ArchiveRecord.task_id.in_(task_ids))
@@ -1363,14 +1367,13 @@ async def _writeback_recommended_fields(
                 record.pages = rec_fields.get("页数", "") or ""
                 record.classification = rec_fields.get("密级", "") or ""
                 record.remarks = rec_fields.get("备注", "") or ""
+                updated += 1
+        if updated > 0:
             await db.commit()
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Failed to write back recommended_fields for group %s in batch %s.",
-                doc.get("group_id"),
-                batch_id,
-                exc_info=True,
-            )
+            logger.info("Writeback: updated %d archive_records for batch %s.", updated, batch_id)
+    except Exception:  # noqa: BLE001
+        await db.rollback()
+        logger.warning("Failed to writeback recommended_fields for batch %s.", batch_id, exc_info=True)
 
 
 async def batch_merge_extract_fields(

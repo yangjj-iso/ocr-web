@@ -172,7 +172,7 @@
 
 <script setup>
 import { onMounted, ref, computed } from 'vue'
-import { uploadOnly, assignTasks, getTaskFileUrl, listTasks, listMyAssignedTasks, submitBatch } from '@/api/ocr.js'
+import { uploadOnly, assignTasks, submitBatch, getTaskFileUrl, listTasks, listMyAssignedTasks } from '@/api/ocr.js'
 import { listUsers } from '@/api/admin.js'
 import { useAuthState } from '@/composables/useAuthState.js'
 import TreeNode from '@/features/storage/TreeNode.vue'
