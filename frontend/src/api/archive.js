@@ -245,6 +245,7 @@ export const listBatches = (params = {}) =>
       page: params.page || 1,
       page_size: params.page_size || 500,
       q: params.q,
+      status: params.status,
     })
     return { data: normalizeLegacyBatchListPayload(payload) }
   })
@@ -468,7 +469,14 @@ export const getArchiveDashboardStats = () =>
         rejectedTasks: countByStatus(['failed']),
         pendingRelease: countByStatus(['human_review']),
         totalArchived: countByStatus(['done', 'completed']),
-        recentArchived: countByStatus(['done', 'completed']),
+        recentArchived: (() => {
+          const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+          return items.filter((task) => {
+            if (!['done', 'completed'].includes(String(task.status || '').toLowerCase())) return false
+            const ts = task.updated_at || task.created_at
+            return ts ? new Date(ts) >= cutoff : false
+          }).length
+        })(),
       },
     }
   })

@@ -85,7 +85,7 @@
           <div v-else class="space-y-2">
             <div
               v-for="task in pendingTasks.slice(0, 5)"
-              :key="task.id"
+              :key="task.id ?? task.rework_task_id ?? task.record_id"
               class="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-slate-50"
               @click="goTask(task)"
             >
@@ -123,7 +123,7 @@
           <div v-else class="space-y-2">
             <div
               v-for="item in recentItems.slice(0, 5)"
-              :key="item.id"
+              :key="item.batch_id || item.id"
               class="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-slate-50"
               @click="goItem(item)"
             >
@@ -372,10 +372,13 @@ function goTask(task) {
     return
   }
   if (['boundary', 'boundary_review', 'ordering', 'order_review'].includes(task.type)) {
+    if (!task.id) { router.push('/tasks'); return }
     router.push(`/review/structure/${task.id}`)
   } else if (['metadata', 'metadata_review'].includes(task.type)) {
+    if (!task.id) { router.push('/tasks'); return }
     router.push(`/review/catalog/${task.id}`)
   } else if (task.type === 'final_release') {
+    if (!task.id) { router.push('/tasks'); return }
     router.push(`/release/console/${task.id}`)
   } else {
     router.push('/tasks')
@@ -403,9 +406,11 @@ async function loadStats(options = {}) {
     stats.value = data || {}
     loadError.value = ''
   } catch (err) {
-    loadError.value = err?.response?.status === 401
-      ? '数据服务认证失败，请尝试重新登录。'
-      : '工作台数据加载失败，部分统计信息不可用。'
+    if (!options.silent) {
+      loadError.value = err?.response?.status === 401
+        ? '数据服务认证失败，请尝试重新登录。'
+        : '工作台数据加载失败，部分统计信息不可用。'
+    }
   } finally {
     if (!options.silent) {
       statsLoading.value = false
@@ -430,7 +435,9 @@ async function loadPendingTaskItems(options = {}) {
       pendingTasks.value = extractItems(data)
     }
   } catch {
-    pendingTasks.value = []
+    if (!options.silent) {
+      pendingTasks.value = []
+    }
   } finally {
     if (!options.silent) {
       tasksLoading.value = false
@@ -464,8 +471,10 @@ async function loadKpiActivity(options = {}) {
     activeBatchItems.value = Array.from(merged.values()).filter((item) => isBatchAutoRefreshable(item))
     pendingReleaseTotal.value = releaseRes ? extractTotal(releaseRes.data) : null
   } catch {
-    activeBatchItems.value = []
-    pendingReleaseTotal.value = null
+    if (!options.silent) {
+      activeBatchItems.value = []
+      pendingReleaseTotal.value = null
+    }
   }
 }
 
@@ -482,7 +491,9 @@ async function loadRecentActivity(options = {}) {
       recentItems.value = extractItems(data)
     }
   } catch {
-    recentItems.value = []
+    if (!options.silent) {
+      recentItems.value = []
+    }
   } finally {
     if (!options.silent) {
       recentLoading.value = false

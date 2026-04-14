@@ -86,7 +86,7 @@ async function login(username, password) {
     role: data?.role || 'member',
     capabilities: data?.capabilities || '',
     user_status: data?.user_status ?? data?.userStatus ?? 'active',
-    display_name: null,
+    display_name: data?.display_name ?? data?.displayName ?? null,
   }
   authLoaded.value = true
   return auth.value

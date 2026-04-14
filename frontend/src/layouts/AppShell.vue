@@ -195,13 +195,11 @@ async function refreshTodoCount() {
     }
 
     if (isSearcher.value) {
-      const { data } = await listReworkTasks({
-        page: 1,
-        page_size: 200,
-        mine: true,
-      })
-      const items = extractItems(data)
-      todoCount.value = items.filter((item) => ['pending', 'processing'].includes(String(item?.status || '').toLowerCase())).length
+      const [{ data: pendingData }, { data: processingData }] = await Promise.all([
+        listReworkTasks({ page: 1, page_size: 1, mine: true, status: 'pending' }),
+        listReworkTasks({ page: 1, page_size: 1, mine: true, status: 'processing' }),
+      ])
+      todoCount.value = Math.max(0, extractTotal(pendingData)) + Math.max(0, extractTotal(processingData))
       return
     }
 
