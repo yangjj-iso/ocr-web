@@ -11,6 +11,24 @@ import {
 } from '../api/auth.js'
 import { buildAuthProfile } from '../utils/authz.js'
 
+// ── Session storage cache ─────────────────────────────────────────────────
+const _AUTH_CACHE_KEY = '_ocr_auth_v1'
+
+function _readAuthCache() {
+  try {
+    const raw = sessionStorage.getItem(_AUTH_CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function _writeAuthCache(value) {
+  try { sessionStorage.setItem(_AUTH_CACHE_KEY, JSON.stringify(value)) } catch {}
+}
+
+function _clearAuthCache() {
+  try { sessionStorage.removeItem(_AUTH_CACHE_KEY) } catch {}
+}
+
 const authLoading = ref(false)
 const authLoaded = ref(false)
 const authError = ref('')
@@ -26,14 +44,30 @@ const auth = ref({
   display_name: null,
 })
 
+// Seed from sessionStorage so the router guard never blocks on cold page load
+const _cachedAuth = _readAuthCache()
+if (_cachedAuth) {
+  auth.value = _cachedAuth
+  authLoaded.value = true
+}
+
 const pendingUsers = ref([])
 const pendingLoading = ref(false)
 const pendingError = ref('')
 
 let inflightRefresh = null
+let _bgRevalidated = false
 
 async function refreshAuthStatus(force = false) {
   if (inflightRefresh && !force) return inflightRefresh
+  if (authLoaded.value && !force) {
+    // One-time background re-validation per page session to catch stale caches
+    if (!_bgRevalidated) {
+      _bgRevalidated = true
+      setTimeout(() => refreshAuthStatus(true).catch(() => {}), 0)
+    }
+    return auth.value
+  }
   inflightRefresh = (async () => {
     authLoading.value = true
     authError.value = ''
@@ -50,6 +84,7 @@ async function refreshAuthStatus(force = false) {
         default_username: data?.default_username ?? data?.defaultUsername ?? null,
         display_name: data?.display_name ?? data?.displayName ?? null,
       }
+      _writeAuthCache(auth.value)
       authLoaded.value = true
       return auth.value
     } catch (error) {
@@ -65,6 +100,7 @@ async function refreshAuthStatus(force = false) {
         default_username: null,
         display_name: null,
       }
+      _clearAuthCache()
       authLoaded.value = true
       return auth.value
     } finally {
@@ -101,6 +137,7 @@ async function logout() {
   try {
     await logoutApi()
   } finally {
+    _clearAuthCache()
     auth.value = {
       ...auth.value,
       authenticated: false,

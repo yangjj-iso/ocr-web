@@ -17,6 +17,23 @@ function isNotFound(error) {
   return Number(error?.response?.status || 0) === 404
 }
 
+// ── AI-API probe cache ────────────────────────────────────────────────────
+// In legacy deployments every AI-API call returns 404 before falling back.
+// After the first 404 is observed we skip the probe for all subsequent calls,
+// halving round-trips for every API function on the page.  Resets on reload.
+let _legacyModeConfirmed = false
+
+async function _withAiFallback(aiCall, legacyFallback) {
+  if (_legacyModeConfirmed) return legacyFallback()
+  try {
+    return await aiCall()
+  } catch (error) {
+    if (!isNotFound(error)) throw error
+    _legacyModeConfirmed = true
+    return legacyFallback()
+  }
+}
+
 function normalizeLegacyTaskItem(task = {}) {
   const status = String(task.status || '').toLowerCase()
   const type = status === 'human_review' ? 'metadata_review' : (task.type || task.task_type || 'metadata_review')
@@ -239,16 +256,18 @@ function normalizeArchiveRecordListPayload(data = {}) {
 
 // ── Batches ────────────────────────────────────────────────────────────────
 export const listBatches = (params = {}) =>
-  aiApi.get('/batches', { params }).catch(async (error) => {
-    if (!isNotFound(error)) throw error
-    const payload = await listLegacyTasks({
-      page: params.page || 1,
-      page_size: params.page_size || 500,
-      q: params.q,
-      status: params.status,
-    })
-    return { data: normalizeLegacyBatchListPayload(payload) }
-  })
+  _withAiFallback(
+    () => aiApi.get('/batches', { params }),
+    async () => {
+      const payload = await listLegacyTasks({
+        page: params.page || 1,
+        page_size: params.page_size || 500,
+        q: params.q,
+        status: params.status,
+      })
+      return { data: normalizeLegacyBatchListPayload(payload) }
+    }
+  )
 
 export const createBatch = (data) =>
   aiApi.post('/batches', data).catch((error) => {
@@ -281,11 +300,13 @@ export const getBatchStatus = (batchId) =>
 
 // ── Review tasks ───────────────────────────────────────────────────────────
 export const listReviewTasks = (params = {}) =>
-  aiApi.get('/tasks', { params }).catch(async (error) => {
-    if (!isNotFound(error)) throw error
-    const payload = await listLegacyTasks(params)
-    return { data: payload }
-  })
+  _withAiFallback(
+    () => aiApi.get('/tasks', { params }),
+    async () => {
+      const payload = await listLegacyTasks(params)
+      return { data: payload }
+    }
+  )
 
 export const getReviewTask = (taskId) =>
   aiApi.get(`/tasks/${taskId}`).catch(async (error) => {
@@ -378,14 +399,16 @@ export const updateDocMetadata = (batchId, docId, fields) =>
 
 // ── Release / final confirmation ──────────────────────────────────────────
 export const listPendingRelease = (params = {}) =>
-  aiApi.get('/tasks', { params: { status: 'human_review', type: 'final_release', ...params } }).catch(async (error) => {
-    if (!isNotFound(error)) throw error
-    const payload = await listLegacyTasks({
-      ...params,
-      status: 'human_review',
-    })
-    return { data: payload }
-  })
+  _withAiFallback(
+    () => aiApi.get('/tasks', { params: { status: 'human_review', type: 'final_release', ...params } }),
+    async () => {
+      const payload = await listLegacyTasks({
+        ...params,
+        status: 'human_review',
+      })
+      return { data: payload }
+    }
+  )
 
 export const releaseBatch = (taskId, payload = {}) =>
   legacyOcrApi.post(`/tasks/${taskId}/release-decision`, { decision: 'approve', ...payload }).catch((error) => {
@@ -457,29 +480,31 @@ export const updatePolicySnapshot = (id, data) =>
 
 // ── Dashboard stats ────────────────────────────────────────────────────────
 export const getArchiveDashboardStats = () =>
-  aiApi.get('/dashboard/stats').catch(async (error) => {
-    if (!isNotFound(error)) throw error
-    const payload = await listLegacyTasks({ page: 1, page_size: 1000 })
-    const items = payload.items
-    const countByStatus = (statuses) => items.filter((task) => statuses.includes(String(task.status || '').toLowerCase())).length
-    return {
-      data: {
-        processingTasks: countByStatus(['processing', 'running', 'human_review']),
-        myPendingTasks: countByStatus(['pending', 'uploaded']),
-        rejectedTasks: countByStatus(['failed']),
-        pendingRelease: countByStatus(['human_review']),
-        totalArchived: countByStatus(['done', 'completed']),
-        recentArchived: (() => {
-          const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-          return items.filter((task) => {
-            if (!['done', 'completed'].includes(String(task.status || '').toLowerCase())) return false
-            const ts = task.updated_at || task.created_at
-            return ts ? new Date(ts) >= cutoff : false
-          }).length
-        })(),
-      },
+  _withAiFallback(
+    () => aiApi.get('/dashboard/stats'),
+    async () => {
+      const payload = await listLegacyTasks({ page: 1, page_size: 200 })
+      const items = payload.items
+      const countByStatus = (statuses) => items.filter((task) => statuses.includes(String(task.status || '').toLowerCase())).length
+      return {
+        data: {
+          processingTasks: countByStatus(['processing', 'running', 'human_review']),
+          myPendingTasks: countByStatus(['pending', 'uploaded']),
+          rejectedTasks: countByStatus(['failed']),
+          pendingRelease: countByStatus(['human_review']),
+          totalArchived: countByStatus(['done', 'completed']),
+          recentArchived: (() => {
+            const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+            return items.filter((task) => {
+              if (!['done', 'completed'].includes(String(task.status || '').toLowerCase())) return false
+              const ts = task.updated_at || task.created_at
+              return ts ? new Date(ts) >= cutoff : false
+            }).length
+          })(),
+        },
+      }
     }
-  })
+  )
 
 export const getMyAssignedTasks = (params = {}) =>
   legacyOcrApi.get('/tasks/my-assigned', {

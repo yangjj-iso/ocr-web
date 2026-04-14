@@ -207,10 +207,11 @@ const alerts = ref([])
 const lastRefreshedAt = ref(null)
 const refreshing = ref(false)
 const activeBatchItems = ref([])
+const activeBatchTotal = ref(null)
 const pendingReleaseTotal = ref(null)
 
 const AUTO_REFRESH_MS = 15000
-const BATCH_KPI_PAGE_SIZE = 500
+const BATCH_KPI_PAGE_SIZE = 20
 let dashboardAutoRefreshTimer = null
 
 const displayName = computed(() =>
@@ -236,7 +237,7 @@ const todayStr = computed(() =>
 const todoRoute = computed(() => (isSearcher.value ? '/rework/my' : '/tasks'))
 const resolvedProcessingTasks = computed(() => {
   const base = Number(stats.value?.processingTasks)
-  const derived = activeBatchItems.value.length
+  const derived = activeBatchTotal.value ?? activeBatchItems.value.length
   if (Number.isFinite(base)) {
     return Math.max(base, derived)
   }
@@ -462,6 +463,7 @@ async function loadKpiActivity(options = {}) {
     }
 
     const [processingRes, reviewRes, releaseRes] = await Promise.all(requests)
+    activeBatchTotal.value = extractTotal(processingRes.data) + extractTotal(reviewRes.data)
     const merged = new Map()
     for (const batch of [...extractItems(processingRes.data), ...extractItems(reviewRes.data)]) {
       const key = String(batch?.batch_id || batch?.id || '')
@@ -473,6 +475,7 @@ async function loadKpiActivity(options = {}) {
   } catch {
     if (!options.silent) {
       activeBatchItems.value = []
+      activeBatchTotal.value = null
       pendingReleaseTotal.value = null
     }
   }

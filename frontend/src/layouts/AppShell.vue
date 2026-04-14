@@ -237,7 +237,7 @@ onMounted(() => {
 })
 
 watch(
-  () => [auth.value?.authenticated, authProfile.value.role, route.fullPath],
+  () => [auth.value?.authenticated, authProfile.value.role],
   () => {
     refreshTodoCount()
     startTodoRefresh()
