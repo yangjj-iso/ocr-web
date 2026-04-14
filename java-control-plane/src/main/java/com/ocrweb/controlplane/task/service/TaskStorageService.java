@@ -466,6 +466,10 @@ public class TaskStorageService {
         }
     }
 
+    private static long elapsedMs(long startNanos) {
+        return Math.max(0, (System.nanoTime() - startNanos) / 1_000_000L);
+    }
+
     public record StoredFileHandle(
             String logicalPath,
             String storageProvider,
@@ -479,4 +483,5 @@ public class TaskStorageService {
 
     public record StoredFileResource(byte[] content, String contentType, String filename) {
     }
+
 }

@@ -10,8 +10,8 @@ export const getAuthStatus = () => authApi.get('/me')
 
 export const login = (username, password) => authApi.post('/login', { username, password })
 
-export const register = (username, password, realName, requestedRole) =>
-  authApi.post('/register', { username, password, real_name: realName, requested_role: requestedRole })
+export const register = (username, password, realName, requestedCapabilities, tenantId) =>
+  authApi.post('/register', { username, password, real_name: realName, requested_capabilities: requestedCapabilities, tenant_id: tenantId || 'default' })
 
 export const logout = () => authApi.post('/logout')
 

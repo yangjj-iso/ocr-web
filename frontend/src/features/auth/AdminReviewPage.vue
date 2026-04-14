@@ -32,7 +32,7 @@
               <tr>
                 <th class="px-3 py-2">真实姓名</th>
                 <th class="px-3 py-2">工号</th>
-                <th class="px-3 py-2">申请角色</th>
+                <th class="px-3 py-2">申请岗位</th>
                 <th class="px-3 py-2">申请时间</th>
                 <th class="px-3 py-2">状态</th>
                 <th class="px-3 py-2 text-right">操作</th>
@@ -43,8 +43,10 @@
                 <td class="px-3 py-2 font-medium text-[var(--gov-text)]">{{ item.display_name || item.username }}</td>
                 <td class="px-3 py-2 font-mono text-xs text-[var(--gov-text-muted)]">{{ item.username }}</td>
                 <td class="px-3 py-2">
-                  <span class="rounded px-1.5 py-0.5 text-xs font-medium" :class="item.role === 'searcher' ? 'bg-slate-100 text-slate-600' : 'bg-blue-50 text-blue-600'">
-                    {{ item.role === 'searcher' ? '检索者' : '签录员' }}
+                  <span class="inline-flex flex-wrap gap-1">
+                    <span v-if="(item.capabilities||'').includes('operator')" class="rounded px-1.5 py-0.5 text-xs font-medium bg-blue-50 text-blue-600">著录者</span>
+                    <span v-if="(item.capabilities||'').includes('searcher')" class="rounded px-1.5 py-0.5 text-xs font-medium bg-slate-100 text-slate-600">检索者</span>
+                    <span v-if="!(item.capabilities||'')" class="rounded px-1.5 py-0.5 text-xs font-medium bg-slate-50 text-slate-400">租户成员</span>
                   </span>
                 </td>
                 <td class="px-3 py-2 gov-muted">{{ item.created_at ? formatTime(item.created_at) : '-' }}</td>

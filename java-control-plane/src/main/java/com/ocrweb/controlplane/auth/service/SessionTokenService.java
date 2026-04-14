@@ -24,16 +24,28 @@ public class SessionTokenService {
         this.objectMapper = objectMapper.copy().configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
     }
 
-    public String createSessionToken(String username, Long userId, boolean isAdmin, String userStatus, String role) {
+    public String createSessionToken(String username, Long userId, boolean isAdmin, String userStatus, String role, String tenantId, String capabilities) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("sub", username);
         payload.put("exp", Instant.now().getEpochSecond() + authProperties.getSessionTtl());
         payload.put("uid", userId);
         payload.put("is_admin", isAdmin);
         payload.put("user_status", userStatus == null || userStatus.isBlank() ? "active" : userStatus);
-        payload.put("role", role == null || role.isBlank() ? (isAdmin ? "admin" : "operator") : role);
+        payload.put("role", role == null || role.isBlank() ? (isAdmin ? "admin" : "member") : role);
+        payload.put("tenant_id", tenantId == null || tenantId.isBlank() ? "default" : tenantId);
+        payload.put("capabilities", capabilities == null ? "" : capabilities);
         String encodedPayload = Base64.getUrlEncoder().withoutPadding().encodeToString(writeJson(payload));
         return encodedPayload + "." + sign(encodedPayload);
+    }
+
+    /** Backwards-compatible overload without capabilities. */
+    public String createSessionToken(String username, Long userId, boolean isAdmin, String userStatus, String role, String tenantId) {
+        return createSessionToken(username, userId, isAdmin, userStatus, role, tenantId, "");
+    }
+
+    /** Backwards-compatible overload without tenantId or capabilities. */
+    public String createSessionToken(String username, Long userId, boolean isAdmin, String userStatus, String role) {
+        return createSessionToken(username, userId, isAdmin, userStatus, role, "default", "");
     }
 
     public CurrentUser verifySessionToken(String token) {
@@ -65,7 +77,9 @@ public class SessionTokenService {
                     asBoolean(payload.get("is_admin")),
                     userStatus,
                     asNullableLong(payload.get("uid")),
-                    asString(payload.get("role"), "operator")
+                    asString(payload.get("role"), "member"),
+                    asString(payload.get("tenant_id"), "default"),
+                    asString(payload.get("capabilities"), "")
             );
         } catch (Exception error) {
             return null;

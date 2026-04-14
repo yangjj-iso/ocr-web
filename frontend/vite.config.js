@@ -25,6 +25,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api/admin': { target: aiApiTarget, changeOrigin: true },
+      '/api/archive': { target: aiApiTarget, changeOrigin: true },
       '/api/operator': { target: aiApiTarget, changeOrigin: true },
       '/api': { target: controlPlaneTarget, changeOrigin: true },
     },

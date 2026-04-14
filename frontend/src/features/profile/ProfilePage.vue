@@ -20,13 +20,13 @@
 
       <div
         v-if="!authState.isAuthEnabled.value"
-        class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700"
+        class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700"
       >
         当前运行在开发直通模式，资料页展示的是默认开发账号；界面可以预览角色布局，但无法完成真实退出登录。
       </div>
       <div
         v-else-if="!canViewOperatorSelfService"
-        class="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-[var(--gov-text-muted)]"
+        class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-[var(--gov-text-muted)]"
       >
         当前角色以检索和查看为主，不显示签录配额和处理批次。
       </div>
@@ -187,22 +187,22 @@ import { getMyAssignments, getMyQuota } from '@/api/admin.js'
 import { useAuthState } from '@/composables/useAuthState.js'
 
 const authState = useAuthState()
+const authProfile = authState.authProfile
 
-const effectiveRole = computed(() => authState.auth.value?.role || (authState.auth.value?.is_admin ? 'admin' : 'operator'))
+const effectiveRole = computed(() => authProfile.value.role)
 const avatarChar = computed(() => {
   const name = authState.auth.value?.display_name || authState.auth.value?.username || '?'
   return name.charAt(0).toUpperCase()
 })
 
-const ROLE_LABELS = { admin: '管理员', operator: '签录员', searcher: '检索员' }
-const ROLE_BADGE = {
-  admin: 'bg-indigo-100 text-indigo-700',
-  operator: 'bg-blue-50 text-blue-600',
-  searcher: 'bg-slate-100 text-slate-500',
-}
-
-const roleLabel = computed(() => ROLE_LABELS[effectiveRole.value] || effectiveRole.value || '未知角色')
-const roleBadgeClass = computed(() => ROLE_BADGE[effectiveRole.value] || 'bg-slate-100 text-slate-500')
+const roleLabel = computed(() => authProfile.value.roleLabel)
+const roleBadgeClass = computed(() => {
+  if (authProfile.value.isSysAdmin) return 'bg-indigo-100 text-indigo-700'
+  if (authProfile.value.isTenantAdmin) return 'bg-violet-100 text-violet-700'
+  if (authProfile.value.primaryWorkRole === 'operator') return 'bg-emerald-50 text-emerald-700'
+  if (authProfile.value.primaryWorkRole === 'searcher') return 'bg-amber-50 text-amber-700'
+  return 'bg-slate-100 text-slate-500'
+})
 const authModeLabel = computed(() => authState.isAuthEnabled.value ? '认证启用' : '开发直通')
 const authModeClass = computed(() => (
   authState.isAuthEnabled.value
@@ -227,7 +227,7 @@ const statusLabel = computed(() => ({
   rejected: '已拒绝',
 }[authState.auth.value?.user_status] || authState.auth.value?.user_status || '未知'))
 
-const canViewOperatorSelfService = computed(() => ['admin', 'operator'].includes(effectiveRole.value))
+const canViewOperatorSelfService = computed(() => authProfile.value.hasOperator)
 const workbenchRoute = computed(() => '/')
 const workbenchLabel = computed(() => '前往工作台')
 
@@ -274,6 +274,7 @@ function assignStatusClass(status) {
     pending: 'bg-yellow-50 text-yellow-700',
     processing: 'bg-blue-50 text-blue-700',
     done: 'bg-green-50 text-green-700',
+    failed: 'bg-red-50 text-red-600',
     cancelled: 'bg-slate-100 text-slate-500',
   }[status] || 'bg-slate-100 text-slate-500'
 }
@@ -283,6 +284,7 @@ function assignStatusLabel(status) {
     pending: '待处理',
     processing: '处理中',
     done: '已完成',
+    failed: '失败',
     cancelled: '已取消',
   }[status] || status
 }

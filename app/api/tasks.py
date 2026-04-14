@@ -162,15 +162,18 @@ async def search_tasks_api(
     q: str = Query("", min_length=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    current: dict = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    return await search_task_payloads(keyword=q, page=page, page_size=page_size, db=db)
+    tenant_id = current.get("tenant_id", "default")
+    return await search_task_payloads(keyword=q, page=page, page_size=page_size, db=db, tenant_id=tenant_id)
 
 
 @router.get("/tasks/folders")
-async def list_folders(db: AsyncSession = Depends(get_db)):
+async def list_folders(current: dict = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    tenant_id = current.get("tenant_id", "default")
     try:
-        return await list_folder_summaries(db=db)
+        return await list_folder_summaries(db=db, tenant_id=tenant_id)
     except Exception as error:  # noqa: BLE001
         raise_service_unavailable(error, "Folder service is temporarily unavailable. Please retry later.")
 
@@ -180,19 +183,23 @@ async def list_tasks(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=1000),
     folder: str = Query(""),
+    current: dict = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    return await list_task_payloads(page=page, page_size=page_size, folder=folder, db=db)
+    tenant_id = current.get("tenant_id", "default")
+    return await list_task_payloads(page=page, page_size=page_size, folder=folder, db=db, tenant_id=tenant_id)
 
 
 @router.post("/tasks/progress", response_model=TaskProgressResponse)
-async def get_tasks_progress(body: TaskProgressRequest, db: AsyncSession = Depends(get_db)):
-    return await build_task_progress_response(task_ids=body.task_ids, db=db)
+async def get_tasks_progress(body: TaskProgressRequest, current: dict = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    tenant_id = current.get("tenant_id", "default")
+    return await build_task_progress_response(task_ids=body.task_ids, db=db, tenant_id=tenant_id)
 
 
 @router.get("/tasks/{task_id}", response_model=OCRTaskDetail)
-async def get_task(task_id: int, db: AsyncSession = Depends(get_db)):
-    payload, state = await load_task_detail_payload(task_id=task_id, db=db)
+async def get_task(task_id: int, current: dict = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    tenant_id = current.get("tenant_id", "default")
+    payload, state = await load_task_detail_payload(task_id=task_id, db=db, tenant_id=tenant_id)
     if state == "not_found":
         raise HTTPException(status_code=404, detail="Task not found.")
     return payload
@@ -205,8 +212,9 @@ async def update_task(
     _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
+    tenant_id = _current.get("tenant_id", "default")
     try:
-        task, state = await update_task_result(task_id=task_id, body=body, db=db)
+        task, state = await update_task_result(task_id=task_id, body=body, db=db, tenant_id=tenant_id)
     except Exception as error:  # noqa: BLE001
         raise_for_error(error)
 
@@ -225,7 +233,8 @@ async def remove_task(
     _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
-    deleted, affected_batch_ids = await delete_task_with_cache_context(task_id=task_id, db=db)
+    tenant_id = _current.get("tenant_id", "default")
+    deleted, affected_batch_ids = await delete_task_with_cache_context(task_id=task_id, db=db, tenant_id=tenant_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found.")
     invalidate_task(task_id)
@@ -239,7 +248,8 @@ async def delete_tasks_for_folder(
     _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
-    deleted, affected_batch_ids = await delete_tasks_by_folder_with_cache_context(folder=folder, db=db)
+    tenant_id = _current.get("tenant_id", "default")
+    deleted, affected_batch_ids = await delete_tasks_by_folder_with_cache_context(folder=folder, db=db, tenant_id=tenant_id)
     cache_delete_pattern("task:*")
     invalidate_lists()
     if deleted:
@@ -254,7 +264,8 @@ async def export_task(
     _current: dict = Depends(require_operator_access),
     db: AsyncSession = Depends(get_db),
 ):
-    payload, payload_type = await build_task_export_payload(task_id=task_id, fmt=fmt, db=db)
+    tenant_id = _current.get("tenant_id", "default")
+    payload, payload_type = await build_task_export_payload(task_id=task_id, fmt=fmt, db=db, tenant_id=tenant_id)
     if payload_type == "not_found":
         raise HTTPException(status_code=404, detail="Task not found.")
 
@@ -271,8 +282,9 @@ async def export_task(
 
 
 @router.get("/tasks/{task_id}/extract-fields")
-async def get_task_extracted_fields(task_id: int, db: AsyncSession = Depends(get_db)):
-    payload, state = await extract_fields_from_task(task_id=task_id, db=db)
+async def get_task_extracted_fields(task_id: int, current: dict = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    tenant_id = current.get("tenant_id", "default")
+    payload, state = await extract_fields_from_task(task_id=task_id, db=db, tenant_id=tenant_id)
     if state == "not_found":
         raise HTTPException(status_code=404, detail="Task not found.")
     if state == "not_done":

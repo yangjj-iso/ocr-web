@@ -47,6 +47,7 @@ public class AiProxyService {
         this.objectMapper = objectMapper;
         this.circuitBreaker = circuitBreaker;
         this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(Math.max(1, aiServiceProperties.getConnectTimeoutSeconds())))
                 .build();
     }
@@ -99,8 +100,12 @@ public class AiProxyService {
     }
 
     private ResponseEntity<JsonNode> jsonResponse(HttpResponse<byte[]> response) {
+        HttpHeaders headers = extractHeaders(response);
+        // Upstream AI routes occasionally return JSON with a text/plain content type.
+        // Normalize to application/json so Spring can serialize the JsonNode response.
+        headers.setContentType(MediaType.APPLICATION_JSON);
         return ResponseEntity.status(response.statusCode())
-                .headers(extractHeaders(response))
+                .headers(headers)
                 .body(parseJson(response.body()));
     }
 

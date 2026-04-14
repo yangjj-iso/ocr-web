@@ -23,11 +23,29 @@ public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEnti
 
     @Query("""
             select r from ArchiveRecordEntity r
+            where r.tenantId = :tenantId
+              and (:folder = '' or r.batchFolder = :folder)
+              and (:batchId = '' or r.batchId = :batchId)
+            order by r.createdAt asc
+            """)
+    Page<ArchiveRecordEntity> findByTenantIdAndFilters(@Param("tenantId") String tenantId, @Param("folder") String folder, @Param("batchId") String batchId, Pageable pageable);
+
+    @Query("""
+            select r from ArchiveRecordEntity r
             where (:folder = '' or r.batchFolder = :folder)
               and (:batchId = '' or r.batchId = :batchId)
             order by r.createdAt asc
             """)
     List<ArchiveRecordEntity> findAllByFilters(@Param("folder") String folder, @Param("batchId") String batchId);
+
+    @Query("""
+            select r from ArchiveRecordEntity r
+            where r.tenantId = :tenantId
+              and (:folder = '' or r.batchFolder = :folder)
+              and (:batchId = '' or r.batchId = :batchId)
+            order by r.createdAt asc
+            """)
+    List<ArchiveRecordEntity> findAllByTenantIdAndFilters(@Param("tenantId") String tenantId, @Param("folder") String folder, @Param("batchId") String batchId);
 
     List<ArchiveRecordEntity> findByBatchFolderAndBatchIdIsNull(String batchFolder);
 
@@ -39,10 +57,23 @@ public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEnti
     List<ArchiveRecordEntity> findUnassignedByFolder(@Param("folder") String folder);
 
     @Query("""
+            select r from ArchiveRecordEntity r
+            where r.tenantId = :tenantId and r.batchFolder = :folder and (r.batchId is null or r.batchId = '')
+            order by r.createdAt asc
+            """)
+    List<ArchiveRecordEntity> findUnassignedByTenantIdAndFolder(@Param("tenantId") String tenantId, @Param("folder") String folder);
+
+    @Query("""
             select distinct r.batchId from ArchiveRecordEntity r
             where r.batchFolder = :folder and r.batchId is not null and r.batchId <> ''
             """)
     List<String> findDistinctAssignedBatchIdsByFolder(@Param("folder") String folder);
+
+    @Query("""
+            select distinct r.batchId from ArchiveRecordEntity r
+            where r.tenantId = :tenantId and r.batchFolder = :folder and r.batchId is not null and r.batchId <> ''
+            """)
+    List<String> findDistinctAssignedBatchIdsByTenantIdAndFolder(@Param("tenantId") String tenantId, @Param("folder") String folder);
 
     @Query("select r from ArchiveRecordEntity r where r.taskId in :taskIds")
     List<ArchiveRecordEntity> findByTaskIdIn(@Param("taskIds") List<Long> taskIds);
@@ -52,6 +83,9 @@ public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEnti
     long deleteByBatchId(String batchId);
 
     long deleteByTaskId(Long taskId);
+
+    @Query("select distinct r.storagePath from ArchiveRecordEntity r where r.tenantId = :tenantId and r.storagePath is not null and r.storagePath <> ''")
+    List<String> findDistinctStoragePathsByTenantId(@Param("tenantId") String tenantId);
 
     @Query("select distinct r.storagePath from ArchiveRecordEntity r where r.storagePath is not null and r.storagePath <> ''")
     List<String> findDistinctStoragePaths();
@@ -65,8 +99,19 @@ public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEnti
 
     @Query("""
             select r from ArchiveRecordEntity r
+            where r.tenantId = :tenantId and r.storagePath = :storagePath
+            order by r.createdAt asc
+            """)
+    List<ArchiveRecordEntity> findByTenantIdAndStoragePath(@Param("tenantId") String tenantId, @Param("storagePath") String storagePath);
+
+    @Query("""
+            select r from ArchiveRecordEntity r
             where r.storagePath like concat(:prefix, '%')
             order by r.storagePath asc, r.createdAt asc
             """)
     List<ArchiveRecordEntity> findByStoragePathStartingWith(@Param("prefix") String prefix);
+
+    List<ArchiveRecordEntity> findByTenantId(String tenantId);
+
+    long countByTenantId(String tenantId);
 }

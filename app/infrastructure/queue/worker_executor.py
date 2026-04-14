@@ -29,7 +29,6 @@ from app.infrastructure.metrics import (
 )
 from app.core.result_validation import normalize_result_pages, serialize_pages_text
 from app.domains.extraction import field_service
-from app.services.agent_ocr_workflow import run_hierarchical_ocr_detached
 from app.services.ocr_service import _run_ocr_document
 from config import CALLBACK_INLINE_RESULT_MAX_BYTES, WORKER_TEMP_DIR
 import app.config as _app_config
@@ -66,15 +65,52 @@ except ImportError:  # pragma: no cover - script-mode fallback
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Idempotency guard — prevent duplicate processing of same command_id
+# ---------------------------------------------------------------------------
+_processing_commands: set[str] = set()
+_completed_commands: dict[str, float] = {}  # command_id -> completion timestamp
+_COMPLETED_COMMANDS_TTL = 3600  # keep completed command IDs for 1 hour
+
+
+def _is_duplicate_command(command_id: str) -> bool:
+    """Check if a command is already being processed or was recently completed."""
+    if command_id in _processing_commands:
+        return True
+    if command_id in _completed_commands:
+        if time.time() - _completed_commands[command_id] < _COMPLETED_COMMANDS_TTL:
+            return True
+        del _completed_commands[command_id]
+    return False
+
+
+def _mark_processing(command_id: str) -> None:
+    _processing_commands.add(command_id)
+
+
+def _mark_completed(command_id: str) -> None:
+    _processing_commands.discard(command_id)
+    _completed_commands[command_id] = time.time()
+    # Evict old entries
+    cutoff = time.time() - _COMPLETED_COMMANDS_TTL
+    stale = [k for k, v in _completed_commands.items() if v < cutoff]
+    for k in stale:
+        del _completed_commands[k]
+
+
+def _mark_failed(command_id: str) -> None:
+    _processing_commands.discard(command_id)
+
 
 def _control_plane_internal_token() -> str:
     return (os.getenv("CONTROL_PLANE_INTERNAL_TOKEN") or getattr(_app_config, "CONTROL_PLANE_INTERNAL_TOKEN", "") or "").strip()
 
 
 def _normalize_mode(command: OcrTaskCommand) -> str:
-    if command.execution.mode == "hierarchical_agent":
-        return "layout"
-    return command.execution.mode or "layout"
+    normalized = (command.execution.mode or "").strip().lower()
+    if normalized in {"layout", "ocr", "vl", "baidu_vl"}:
+        return normalized
+    return "layout"
 
 
 def _map_archive_fields(fields: dict[str, Any]) -> ArchiveFieldsPayload:
@@ -235,6 +271,16 @@ async def _execute_non_hierarchical(command: OcrTaskCommand, file_path: str) -> 
 
 
 async def process_task_command(command: OcrTaskCommand, *, retry_count: int = 0) -> dict[str, Any]:
+    # Idempotency check
+    if _is_duplicate_command(command.command_id):
+        logger.warning(
+            "Duplicate command_id=%s detected for task_id=%s, skipping.",
+            command.command_id,
+            command.task_id,
+        )
+        return {"status": "SKIPPED", "reason": "duplicate_command"}
+    _mark_processing(command.command_id)
+
     started_at = time.perf_counter()
     client = ControlPlaneCallbackClient.from_command(command)
     staged_file_path = ""
@@ -296,32 +342,20 @@ async def process_task_command(command: OcrTaskCommand, *, retry_count: int = 0)
             retry_count=retry_count,
         )
 
-        if command.execution.enable_hierarchical_agent or command.execution.mode == "hierarchical_agent":
-            workflow_result = await run_hierarchical_ocr_detached(
-                task_id=command.task_id,
-                batch_id=command.batch_id,
-                filename=command.file.filename if command.file is not None else "",
-                file_path=staged_file_path,
-                mode=_normalize_mode(command),
-                event_callback=graph_event_callback,
-                workflow_thread_id=command.workflow_thread_id,
-                resume_payload=command.resume_payload or None,
-            )
-        else:
-            workflow_result = await _execute_non_hierarchical(command, staged_file_path)
-            progress = build_progress(
-                int(workflow_result.get("page_count") or 0),
-                int(workflow_result.get("page_count") or 0),
-            )
-            observe_page_processing_seconds(command_mode, time.perf_counter() - page_started_at)
-            await _send_event(
-                client,
-                command,
-                event_type="PROGRESS_UPDATED",
-                payload={"note": "Non-hierarchical OCR completed"},
-                progress=progress,
-                retry_count=retry_count,
-            )
+        workflow_result = await _execute_non_hierarchical(command, staged_file_path)
+        progress = build_progress(
+            int(workflow_result.get("page_count") or 0),
+            int(workflow_result.get("page_count") or 0),
+        )
+        observe_page_processing_seconds(command_mode, time.perf_counter() - page_started_at)
+        await _send_event(
+            client,
+            command,
+            event_type="PROGRESS_UPDATED",
+            payload={"note": "OCR completed"},
+            progress=progress,
+            retry_count=retry_count,
+        )
 
         if str(workflow_result.get("status") or "").upper() == "INTERRUPTED":
             pages = normalize_result_pages(workflow_result.get("pages") or [])
@@ -376,15 +410,14 @@ async def process_task_command(command: OcrTaskCommand, *, retry_count: int = 0)
             await client.send_pause(pause_payload)
             increment_paused_tasks(command_mode)
             logger.info("Compute task paused for human review and was persisted by control plane: task_id=%s", command.task_id)
+            _mark_completed(command.command_id)
             return workflow_result
 
         pages = normalize_result_pages(workflow_result.get("pages") or [])
         archive_fields = _map_archive_fields(workflow_result.get("final_fields") or {})
         quality_metrics = dict(workflow_result.get("quality_metrics") or {})
         agent_meta = {
-            "workflow": command.execution.langgraph_graph
-            if command.execution.enable_hierarchical_agent
-            else "single_route_ocr",
+            "workflow": "single_route_ocr",
             "ocr_backend": command.execution.ocr_backend,
             "llm_backend": command.execution.llm_backend,
             "llm_model": command.execution.llm_model,
@@ -422,8 +455,10 @@ async def process_task_command(command: OcrTaskCommand, *, retry_count: int = 0)
         )
         await client.send_completion(completion)
         logger.info("Compute task completed and acknowledged by control plane: task_id=%s", command.task_id)
+        _mark_completed(command.command_id)
         return workflow_result
     except Exception as exc:  # noqa: BLE001
+        _mark_failed(command.command_id)
         error_payload = TaskFailurePayload(
             trace_id=command.trace_id,
             task_id=command.task_id,
