@@ -220,7 +220,6 @@ const displayName = computed(() =>
 const isSysAdmin = computed(() => authProfile.value.isSysAdmin)
 const isTenantAdmin = computed(() => authProfile.value.isTenantAdmin)
 const canImport = computed(() => authProfile.value.hasOperator)
-const isOperator = computed(() => !isSysAdmin.value && !isTenantAdmin.value && authProfile.value.hasOperator)
 const isSearcher = computed(() => !isSysAdmin.value && !isTenantAdmin.value && !authProfile.value.hasOperator && authProfile.value.hasSearcher)
 
 const greeting = computed(() => {
@@ -301,6 +300,7 @@ const kpiCards = computed(() => {
 function formatTime(ts) {
   if (!ts) return '—'
   const d = new Date(ts)
+  if (isNaN(d.getTime())) return '—'
   const now = new Date()
   const diffMs = now - d
   if (diffMs < 60000) return '刚刚'
@@ -384,9 +384,13 @@ function goTask(task) {
 
 function goItem(item) {
   if (isSearcher.value) {
-    router.push(`/archives/${item.id}`)
+    const id = item.id ?? item.record_id
+    if (!id) return
+    router.push(`/archives/${id}`)
   } else {
-    router.push(`/batches/${item.batch_id || item.id}`)
+    const id = item.batch_id || item.id
+    if (!id) return
+    router.push(`/batches/${id}`)
   }
 }
 
@@ -397,6 +401,7 @@ async function loadStats(options = {}) {
   try {
     const { data } = await getArchiveDashboardStats()
     stats.value = data || {}
+    loadError.value = ''
   } catch (err) {
     loadError.value = err?.response?.status === 401
       ? '数据服务认证失败，请尝试重新登录。'
@@ -487,7 +492,7 @@ async function loadRecentActivity(options = {}) {
 
 function startAutoRefresh() {
   stopAutoRefresh()
-  if (!hasActiveRecentBatches.value) return
+  if (!hasActiveDashboardBatches.value) return
   dashboardAutoRefreshTimer = window.setInterval(() => {
     if (!document.hidden) {
       refreshAll({ silent: true })
