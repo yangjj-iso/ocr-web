@@ -3,6 +3,7 @@ package com.ocrweb.controlplane.task.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ocrweb.controlplane.archive.service.ArchiveRecordService;
+import com.ocrweb.controlplane.archive.service.ReworkTaskService;
 import com.ocrweb.controlplane.auth.service.UserQuotaService;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.task.domain.TaskCallbackEventEntity;
@@ -29,6 +30,7 @@ class OcrTaskServiceWorkflowEventsTest {
     private final TaskStorageService storageService = mock(TaskStorageService.class);
     private final TaskCommandProducer taskCommandProducer = mock(TaskCommandProducer.class);
     private final ArchiveRecordService archiveRecordService = mock(ArchiveRecordService.class);
+        private final ReworkTaskService reworkTaskService = mock(ReworkTaskService.class);
     private final UserQuotaService userQuotaService = mock(UserQuotaService.class);
 
     private final OcrTaskService service = new OcrTaskService(
@@ -37,6 +39,7 @@ class OcrTaskServiceWorkflowEventsTest {
             storageService,
             taskCommandProducer,
             archiveRecordService,
+            reworkTaskService,
             userQuotaService,
             objectMapper
     );
@@ -83,7 +86,7 @@ class OcrTaskServiceWorkflowEventsTest {
 
         ObjectNode innerPayload = objectMapper.createObjectNode();
         innerPayload.put("workflow_thread_id", "thread-123");
-        innerPayload.put("graph_id", "batch_supervisor");
+        innerPayload.put("graph_id", "archive_main");
         innerPayload.put("node_id", "node_prepare_batch");
         ObjectNode progress = objectMapper.createObjectNode();
         progress.put("currentPage", 1);
@@ -110,7 +113,7 @@ class OcrTaskServiceWorkflowEventsTest {
         assertThat(response.taskStatus()).isEqualTo("processing");
         assertThat(response.events()).hasSize(1);
         assertThat(response.events().get(0).eventType()).isEqualTo("NODE_EXIT");
-        assertThat(response.events().get(0).payload().path("graph_id").asText()).isEqualTo("batch_supervisor");
+        assertThat(response.events().get(0).payload().path("graph_id").asText()).isEqualTo("archive_main");
         assertThat(response.events().get(0).progress().path("currentPage").asInt()).isEqualTo(1);
     }
 

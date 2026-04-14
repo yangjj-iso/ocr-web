@@ -66,7 +66,9 @@ def create_session_token(
     user_id: int | None = None,
     is_admin: bool = False,
     user_status: str = "active",
-    role: str = "operator",
+    role: str = "member",
+    capabilities: str = "",
+    tenant_id: str = "default",
 ) -> str:
     payload = {
         "sub": username,
@@ -74,7 +76,9 @@ def create_session_token(
         "uid": user_id,
         "is_admin": bool(is_admin),
         "user_status": user_status or "active",
-        "role": role or "operator",
+        "role": role or "member",
+        "capabilities": capabilities or "",
+        "tenant_id": tenant_id or "default",
     }
     payload_raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     payload_encoded = _b64encode(payload_raw)
@@ -126,7 +130,7 @@ def _extract_basic_credentials(request: Request) -> tuple[str, str] | None:
 
 def get_authenticated_user(request: Request) -> dict[str, Any] | None:
     if not AUTH_ENABLED:
-        return {"username": AUTH_USERNAME, "is_admin": True, "user_status": "active", "user_id": None, "role": "admin"}
+        return {"username": AUTH_USERNAME, "is_admin": True, "user_status": "active", "user_id": None, "role": "admin", "capabilities": "", "tenant_id": "default"}
 
     payload = verify_session_token(request.cookies.get(AUTH_COOKIE_NAME))
     if payload:
@@ -138,12 +142,14 @@ def get_authenticated_user(request: Request) -> dict[str, Any] | None:
             "is_admin": bool(payload.get("is_admin")),
             "user_status": user_status,
             "user_id": payload.get("uid"),
-            "role": str(payload.get("role") or "operator"),
+            "role": str(payload.get("role") or "member"),
+            "capabilities": str(payload.get("capabilities") or ""),
+            "tenant_id": str(payload.get("tenant_id") or "default"),
         }
 
     basic = _extract_basic_credentials(request)
     if basic and validate_credentials(*basic):
-        return {"username": basic[0], "is_admin": True, "user_status": "active", "user_id": None, "role": "admin"}
+        return {"username": basic[0], "is_admin": True, "user_status": "active", "user_id": None, "role": "admin", "capabilities": "", "tenant_id": "default"}
     return None
 
 
@@ -158,10 +164,19 @@ def require_auth(request: Request) -> dict[str, Any]:
 
 
 def require_admin(request: Request) -> dict[str, Any]:
+    """Allow company admin (is_admin=True) or tenant_admin."""
+    user = require_auth(request)
+    if user.get("is_admin") or effective_role(user) == "tenant_admin":
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin permission required.")
+
+
+def require_platform_admin(request: Request) -> dict[str, Any]:
+    """Allow only true company admin (is_admin=True). Tenant admins are NOT allowed."""
     user = require_auth(request)
     if user.get("is_admin"):
         return user
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin permission required.")
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Platform admin permission required.")
 
 
 def effective_role(user: dict[str, Any] | None) -> str:
@@ -169,14 +184,40 @@ def effective_role(user: dict[str, Any] | None) -> str:
         return ""
     if user.get("is_admin"):
         return "admin"
-    return str(user.get("role") or "operator").strip().lower()
+    return str(user.get("role") or "member").strip().lower()
+
+
+def _has_capability(user: dict[str, Any], cap: str) -> bool:
+    """Return True if user has the given capability tag, or is admin/tenant_admin."""
+    role = effective_role(user)
+    if role in {"admin", "tenant_admin"}:
+        return True
+    caps = str(user.get("capabilities") or "")
+    return cap in caps.split(",")
 
 
 def require_operator_access(request: Request) -> dict[str, Any]:
+    """Allow admin, tenant_admin, or member with 'operator' capability."""
     user = require_auth(request)
-    if effective_role(user) in {"admin", "operator"}:
+    if _has_capability(user, "operator"):
         return user
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operator permission required.")
+
+
+def require_searcher_access(request: Request) -> dict[str, Any]:
+    """Allow admin, tenant_admin, or member with 'searcher' capability."""
+    user = require_auth(request)
+    if _has_capability(user, "searcher"):
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Searcher permission required.")
+
+
+def require_tenant_admin_access(request: Request) -> dict[str, Any]:
+    """Allow company admin or tenant_admin; block plain member roles."""
+    user = require_auth(request)
+    if effective_role(user) in {"admin", "tenant_admin"}:
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant admin permission required.")
 
 
 def set_auth_cookie(
@@ -187,6 +228,8 @@ def set_auth_cookie(
     is_admin: bool = False,
     user_status: str = "active",
     role: str = "operator",
+    capabilities: str = "",
+    tenant_id: str = "default",
 ) -> None:
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -196,6 +239,8 @@ def set_auth_cookie(
             is_admin=is_admin,
             user_status=user_status,
             role=role,
+            capabilities=capabilities,
+            tenant_id=tenant_id,
         ),
         max_age=AUTH_SESSION_TTL,
         httponly=True,

@@ -116,6 +116,10 @@ CONTROL_PLANE_INTERNAL_TOKEN = os.getenv(
     "CONTROL_PLANE_INTERNAL_TOKEN",
     os.getenv("OCR_INTERNAL_API_TOKEN", "change-this-internal-token"),
 ).strip()
+CONTROL_PLANE_WORKFLOW_EVENTS_PATH = os.getenv(
+    "CONTROL_PLANE_WORKFLOW_EVENTS_PATH",
+    "",
+).strip()
 CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS = float(os.getenv("CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS", "15"))
 CONTROL_PLANE_VERIFY_TLS = _env_flag("CONTROL_PLANE_VERIFY_TLS", True)
 COMPUTE_WORKER_ID = os.getenv("COMPUTE_WORKER_ID", "py-compute-worker").strip() or "py-compute-worker"
@@ -175,7 +179,6 @@ OCR_LAYOUT_API_USE_DOC_ORIENTATION_CLASSIFY = _env_flag(
 )
 OCR_LAYOUT_API_USE_DOC_UNWARPING = _env_flag("OCR_LAYOUT_API_USE_DOC_UNWARPING", False)
 OCR_LAYOUT_API_USE_CHART_RECOGNITION = _env_flag("OCR_LAYOUT_API_USE_CHART_RECOGNITION", False)
-ENABLE_HIERARCHICAL_AGENT = _env_flag("ENABLE_HIERARCHICAL_AGENT", False)
 MAX_RETRIES = max(0, int(os.getenv("MAX_RETRIES", "2")))
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.85"))
 HUMAN_REVIEW_MIN_CONFIDENCE = float(os.getenv("HUMAN_REVIEW_MIN_CONFIDENCE", "0.60"))
@@ -222,3 +225,44 @@ LOCAL_PATH_ROOTS = _build_path_roots(
     os.getenv("LOCAL_PATH_ROOTS", ""),
     defaults=[UPLOAD_DIR, BASE_DIR],
 )
+
+
+# ---------------------------------------------------------------------------
+# Startup config validation
+# ---------------------------------------------------------------------------
+
+_CONFIG_WARNINGS: list[str] = []
+
+
+def _validate_config() -> list[str]:
+    """Validate critical config at import time. Returns list of warning messages."""
+    warnings: list[str] = []
+
+    if AUTH_SECRET == "change-this-secret":
+        warnings.append("AUTH_SECRET is using the default value — change it in production!")
+    if CONTROL_PLANE_INTERNAL_TOKEN == "change-this-internal-token":
+        warnings.append("CONTROL_PLANE_INTERNAL_TOKEN is using the default — change it in production!")
+    if "123456" in DATABASE_URL:
+        warnings.append("DATABASE_URL appears to use default password — change it in production!")
+    if LANGGRAPH_CHECKPOINTER_BACKEND == "memory" and APP_ENV == "production":
+        warnings.append(
+            "LANGGRAPH_CHECKPOINTER_BACKEND=memory will lose workflow state on restart. "
+            "Use 'postgres' or 'redis' in production."
+        )
+    if CONFIDENCE_THRESHOLD < 0.0 or CONFIDENCE_THRESHOLD > 1.0:
+        warnings.append(f"CONFIDENCE_THRESHOLD={CONFIDENCE_THRESHOLD} is out of range [0.0, 1.0]")
+    if HUMAN_REVIEW_MIN_CONFIDENCE >= HUMAN_REVIEW_MAX_CONFIDENCE:
+        warnings.append(
+            f"HUMAN_REVIEW_MIN_CONFIDENCE ({HUMAN_REVIEW_MIN_CONFIDENCE}) >= "
+            f"HUMAN_REVIEW_MAX_CONFIDENCE ({HUMAN_REVIEW_MAX_CONFIDENCE})"
+        )
+
+    return warnings
+
+
+_CONFIG_WARNINGS = _validate_config()
+if _CONFIG_WARNINGS:
+    import logging as _logging
+    _config_logger = _logging.getLogger("app.config")
+    for w in _CONFIG_WARNINGS:
+        _config_logger.warning("[config-validation] %s", w)

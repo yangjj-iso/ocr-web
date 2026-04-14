@@ -106,6 +106,9 @@ public class OcrTaskEntity {
     @Column(name = "assignee_username", length = 120)
     private String assigneeUsername;
 
+    @Column(name = "tenant_id", nullable = false, length = 64)
+    private String tenantId = "default";
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;
@@ -332,6 +335,14 @@ public class OcrTaskEntity {
 
     public void setAssigneeUsername(String assigneeUsername) {
         this.assigneeUsername = assigneeUsername;
+    }
+
+    public String getTenantId() {
+        return tenantId == null || tenantId.isBlank() ? "default" : tenantId;
+    }
+
+    public void setTenantId(String tenantId) {
+        this.tenantId = tenantId == null || tenantId.isBlank() ? "default" : tenantId;
     }
 
     public OffsetDateTime getCreatedAt() {

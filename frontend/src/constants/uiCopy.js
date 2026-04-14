@@ -36,12 +36,20 @@ const MODE_META = {
 }
 
 const STATUS_META = {
+  submitting: {
+    label: '提交中',
+    className: 'bg-blue-100 text-blue-700',
+  },
+  uploaded: {
+    label: '提交中',
+    className: 'bg-blue-100 text-blue-700',
+  },
   done: {
-    label: '已完成',
+    label: '完成',
     className: 'bg-green-100 text-green-700',
   },
   failed: {
-    label: '处理异常',
+    label: '错误',
     className: 'bg-red-100 text-red-700',
   },
   human_review: {
@@ -53,6 +61,10 @@ const STATUS_META = {
     className: 'bg-amber-100 text-amber-700',
   },
   pending: {
+    label: '排队中',
+    className: 'bg-slate-100 text-slate-600',
+  },
+  queued: {
     label: '排队中',
     className: 'bg-slate-100 text-slate-600',
   },

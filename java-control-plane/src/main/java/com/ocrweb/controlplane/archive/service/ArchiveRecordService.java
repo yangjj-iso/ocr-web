@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.ocrweb.controlplane.archive.domain.ArchiveRecordEntity;
 import com.ocrweb.controlplane.archive.dto.ArchiveDtos;
 import com.ocrweb.controlplane.archive.repository.ArchiveRecordRepository;
+import com.ocrweb.controlplane.auth.service.CurrentUser;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
 import com.ocrweb.controlplane.task.repository.OcrTaskRepository;
+import com.ocrweb.controlplane.task.service.TaskStorageService;
 import jakarta.transaction.Transactional;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.Row;
@@ -15,7 +17,6 @@ import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -26,8 +27,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -54,31 +57,103 @@ public class ArchiveRecordService {
     private final ArchiveRecordRepository archiveRecordRepository;
     private final OcrTaskRepository ocrTaskRepository;
     private final PathAccessService pathAccessService;
+    private final ReworkTaskService reworkTaskService;
+    private final TaskStorageService taskStorageService;
 
     public ArchiveRecordService(
             ArchiveRecordRepository archiveRecordRepository,
             OcrTaskRepository ocrTaskRepository,
-            PathAccessService pathAccessService
+            PathAccessService pathAccessService,
+            ReworkTaskService reworkTaskService,
+            TaskStorageService taskStorageService
     ) {
         this.archiveRecordRepository = archiveRecordRepository;
         this.ocrTaskRepository = ocrTaskRepository;
         this.pathAccessService = pathAccessService;
+        this.reworkTaskService = reworkTaskService;
+        this.taskStorageService = taskStorageService;
     }
 
-    public ArchiveDtos.ArchiveRecordListResponse listRecords(String folder, String batchId, int page, int pageSize) {
-        var pageResult = archiveRecordRepository.findByFilters(
-                safe(folder),
-                safe(batchId),
-                PageRequest.of(Math.max(0, page - 1), pageSize)
-        );
+    public ArchiveDtos.ArchiveRecordListResponse listRecords(
+            String folder,
+            String batchId,
+            String keyword,
+            String dateFrom,
+            String dateTo,
+            int page,
+            int pageSize,
+            String tenantId
+    ) {
+        List<ArchiveRecordEntity> filtered = archiveRecordRepository.findAllByTenantIdAndFilters(
+                        safe(tenantId, "default"),
+                        safe(folder),
+                        safe(batchId)
+                ).stream()
+                .filter(record -> matchesKeyword(record, keyword))
+                .filter(record -> matchesDateRange(record, dateFrom, dateTo))
+                .sorted(Comparator.comparing(ArchiveRecordEntity::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
+
+        int safePage = Math.max(1, page);
+        int safePageSize = Math.max(1, pageSize);
+        int fromIndex = Math.min(filtered.size(), (safePage - 1) * safePageSize);
+        int toIndex = Math.min(filtered.size(), fromIndex + safePageSize);
         return new ArchiveDtos.ArchiveRecordListResponse(
-                pageResult.getTotalElements(),
-                pageResult.getContent().stream().map(this::toResponse).toList()
+                filtered.size(),
+                filtered.subList(fromIndex, toIndex).stream().map(this::toResponse).toList()
         );
     }
 
-    public Path exportRecords(String folder, String batchId) {
-        List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByFilters(safe(folder), safe(batchId));
+    /** Backwards-compatible overload without tenant isolation. */
+    public ArchiveDtos.ArchiveRecordListResponse listRecords(String folder, String batchId, int page, int pageSize) {
+        return listRecords(folder, batchId, "", "", "", page, pageSize, "default");
+    }
+
+    public ArchiveDtos.ArchiveRecordDetailResponse getRecordDetail(String recordKey, CurrentUser currentUser) {
+        ArchiveRecordEntity record = findRecord(recordKey, currentUser.effectiveTenantId());
+        OcrTaskEntity task = findTask(record, currentUser.effectiveTenantId());
+        String pdfUrl = task == null ? "" : "/api/archive-control/archive-records/" + record.getId() + "/pdf";
+        String fileUrl = task == null ? "" : "/api/ocr/tasks/" + task.getId() + "/file";
+        int pageCount = resolvePageCount(record, task);
+        String title = firstText(record.getTitle(), task == null ? "" : stripExtension(task.getFilename()));
+        String lastReworkStatus = reworkTaskService.findLatestRecordStatus(currentUser, String.valueOf(record.getId()));
+        return new ArchiveDtos.ArchiveRecordDetailResponse(
+                record.getId(),
+                String.valueOf(record.getId()),
+                record.getTaskId(),
+                record.getBatchId(),
+                record.getBatchFolder(),
+                record.getArchiveNo(),
+                record.getDocNo(),
+                record.getResponsible(),
+                title,
+                record.getDate(),
+                "",
+                record.getClassification(),
+                record.getRemarks(),
+                record.getStoragePath(),
+                pageCount,
+                "archived",
+                pdfUrl,
+                fileUrl,
+                safe(lastReworkStatus),
+                buildDocUnits(record, title, pageCount, pdfUrl),
+                List.of(),
+                record.getCreatedAt()
+        );
+    }
+
+    public TaskStorageService.StoredFileResource getArchiveRecordPdfResource(String recordKey, CurrentUser currentUser) throws IOException {
+        ArchiveRecordEntity record = findRecord(recordKey, currentUser.effectiveTenantId());
+        OcrTaskEntity task = findTask(record, currentUser.effectiveTenantId());
+        if (task == null || !isPdfTask(task)) {
+            return null;
+        }
+        return taskStorageService.loadTaskResource(task);
+    }
+
+    public Path exportRecords(String folder, String batchId, String tenantId) {
+        List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByTenantIdAndFilters(safe(tenantId, "default"), safe(folder), safe(batchId));
         if (records.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No archive records found.");
         }
@@ -112,17 +187,19 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public int importRecords(String filePath, String batchId) {
+    public int importRecords(String filePath, String batchId, String tenantId) {
         Path safePath = pathAccessService.ensureAllowedPath(filePath, true, false);
         List<Map<String, String>> rows = readArchiveRows(safePath);
         String resolvedBatchId = StringUtils.hasText(batchId) ? batchId.trim() : "import_" + stripExtension(safePath.getFileName().toString());
         String folder = safePath.getParent() == null ? "" : safePath.getParent().toString();
+        String effectiveTenant = safe(tenantId, "default");
 
         for (Map<String, String> row : rows) {
             ArchiveRecordEntity entity = new ArchiveRecordEntity();
             entity.setTaskId(null);
             entity.setBatchId(resolvedBatchId);
             entity.setBatchFolder(folder);
+            entity.setTenantId(effectiveTenant);
             entity.setArchiveNo(row.getOrDefault("档号", ""));
             entity.setDocNo(row.getOrDefault("文号", ""));
             entity.setResponsible(row.getOrDefault("责任者", ""));
@@ -139,22 +216,29 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public long deleteRecords(String folder, String batchId) {
+    public long deleteRecords(String folder, String batchId, String tenantId) {
         String safeFolder = safe(folder);
         String safeBatchId = safe(batchId);
+        String effectiveTenant = safe(tenantId, "default");
         if (StringUtils.hasText(safeBatchId)) {
-            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByFilters("", safeBatchId);
+            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByTenantIdAndFilters(effectiveTenant, "", safeBatchId);
             archiveRecordRepository.deleteAll(records);
             return records.size();
         }
         if (StringUtils.hasText(safeFolder)) {
-            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByFilters(safeFolder, "");
+            List<ArchiveRecordEntity> records = archiveRecordRepository.findAllByTenantIdAndFilters(effectiveTenant, safeFolder, "");
             archiveRecordRepository.deleteAll(records);
             return records.size();
         }
-        long total = archiveRecordRepository.count();
-        archiveRecordRepository.deleteAllInBatch();
-        return total;
+        List<ArchiveRecordEntity> records = archiveRecordRepository.findByTenantId(effectiveTenant);
+        archiveRecordRepository.deleteAll(records);
+        return records.size();
+    }
+
+    /** Backwards-compatible overload without tenant isolation. */
+    @Transactional
+    public long deleteRecords(String folder, String batchId) {
+        return deleteRecords(folder, batchId, "default");
     }
 
     @Transactional
@@ -166,13 +250,17 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public int batchUpdateRecords(ArchiveDtos.BatchUpdateRequest request) {
+    public int batchUpdateRecords(ArchiveDtos.BatchUpdateRequest request, String tenantId) {
         if (request.ids() == null || request.ids().isEmpty()) {
             return 0;
         }
+        String effectiveTenant = safe(tenantId, "default");
         List<ArchiveRecordEntity> records = archiveRecordRepository.findAllById(request.ids());
         int updated = 0;
         for (ArchiveRecordEntity record : records) {
+            if (!effectiveTenant.equals(record.getTenantId())) {
+                continue;
+            }
             boolean dirty = false;
             if (request.responsible() != null) {
                 record.setResponsible(request.responsible());
@@ -203,16 +291,17 @@ public class ArchiveRecordService {
         return updated;
     }
 
-    public ArchiveDtos.StorageTreeResponse getStorageTree() {
+    public ArchiveDtos.StorageTreeResponse getStorageTree(String tenantId) {
+        String effectiveTenant = safe(tenantId, "default");
         // 1. Paths from archive records
-        List<String> archivePaths = archiveRecordRepository.findDistinctStoragePaths();
+        List<String> archivePaths = archiveRecordRepository.findDistinctStoragePathsByTenantId(effectiveTenant);
         Map<String, List<String>> parentToChildren = new java.util.LinkedHashMap<>();
         Map<String, Integer> pathRecordCounts = new java.util.HashMap<>();
         java.util.Set<String> allLeafPaths = new java.util.LinkedHashSet<>(archivePaths);
         int totalRecords = 0;
 
         for (String path : archivePaths) {
-            int count = archiveRecordRepository.findByStoragePath(path).size();
+            int count = archiveRecordRepository.findByTenantIdAndStoragePath(effectiveTenant, path).size();
             pathRecordCounts.put(path, count);
             totalRecords += count;
         }
@@ -221,7 +310,7 @@ public class ArchiveRecordService {
         // Use lightweight projection to avoid loading full entities with large JSON
         List<Object[]> taskIdFilenames = ocrTaskRepository.findAllIdAndFilename();
         java.util.Set<Long> tasksWithStoragePath = new java.util.HashSet<>();
-        for (ArchiveRecordEntity ar : archiveRecordRepository.findAll()) {
+        for (ArchiveRecordEntity ar : archiveRecordRepository.findByTenantId(effectiveTenant)) {
             if (StringUtils.hasText(ar.getStoragePath()) && ar.getTaskId() != null) {
                 tasksWithStoragePath.add(ar.getTaskId());
             }
@@ -311,9 +400,10 @@ public class ArchiveRecordService {
         return nodes;
     }
 
-    public ArchiveDtos.StoragePathRecordsResponse getRecordsByStoragePath(String storagePath) {
+    public ArchiveDtos.StoragePathRecordsResponse getRecordsByStoragePath(String storagePath, String tenantId) {
+        String effectiveTenant = safe(tenantId, "default");
         // Try exact match first, then prefix match for folder nodes
-        List<ArchiveRecordEntity> records = archiveRecordRepository.findByStoragePath(storagePath);
+        List<ArchiveRecordEntity> records = archiveRecordRepository.findByTenantIdAndStoragePath(effectiveTenant, storagePath);
         if (records.isEmpty()) {
             records = archiveRecordRepository.findByStoragePathStartingWith(storagePath);
         }
@@ -432,6 +522,121 @@ public class ArchiveRecordService {
         return a.trim().compareTo(b.trim()) >= 0 ? a : b;
     }
 
+    private ArchiveRecordEntity findRecord(String recordKey, String tenantId) {
+        String normalizedRecordKey = safe(recordKey);
+        if (!StringUtils.hasText(normalizedRecordKey)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Archive record not found.");
+        }
+        try {
+            Long recordId = Long.valueOf(normalizedRecordKey);
+            var byId = archiveRecordRepository.findByIdAndTenantId(recordId, safe(tenantId, "default"));
+            if (byId.isPresent()) {
+                return byId.get();
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        return archiveRecordRepository.findByArchiveNoAndTenantId(normalizedRecordKey, safe(tenantId, "default"))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Archive record not found."));
+    }
+
+    private OcrTaskEntity findTask(ArchiveRecordEntity record, String tenantId) {
+        if (record.getTaskId() == null) {
+            return null;
+        }
+        return ocrTaskRepository.findByIdAndTenantId(record.getTaskId(), safe(tenantId, "default")).orElse(null);
+    }
+
+    private boolean matchesKeyword(ArchiveRecordEntity record, String keyword) {
+        String normalizedKeyword = safe(keyword).toLowerCase(Locale.ROOT);
+        if (normalizedKeyword.isEmpty()) {
+            return true;
+        }
+        String haystack = String.join(
+                " ",
+                safe(record.getArchiveNo()),
+                safe(record.getDocNo()),
+                safe(record.getResponsible()),
+                safe(record.getTitle()),
+                safe(record.getRemarks()),
+                safe(record.getStoragePath())
+        ).toLowerCase(Locale.ROOT);
+        return haystack.contains(normalizedKeyword);
+    }
+
+    private boolean matchesDateRange(ArchiveRecordEntity record, String dateFrom, String dateTo) {
+        LocalDate candidateDate = resolveRecordDate(record);
+        LocalDate lowerBound = parseDate(dateFrom);
+        LocalDate upperBound = parseDate(dateTo);
+        if (lowerBound == null && upperBound == null) {
+            return true;
+        }
+        if (candidateDate == null) {
+            return false;
+        }
+        if (lowerBound != null && candidateDate.isBefore(lowerBound)) {
+            return false;
+        }
+        return upperBound == null || !candidateDate.isAfter(upperBound);
+    }
+
+    private LocalDate resolveRecordDate(ArchiveRecordEntity record) {
+        LocalDate explicitDate = parseDate(record.getDate());
+        if (explicitDate != null) {
+            return explicitDate;
+        }
+        return record.getCreatedAt() == null ? null : record.getCreatedAt().toLocalDate();
+    }
+
+    private static LocalDate parseDate(String value) {
+        String normalized = safe(value);
+        if (!StringUtils.hasText(normalized)) {
+            return null;
+        }
+        String candidate = normalized.length() >= 10 ? normalized.substring(0, 10) : normalized;
+        try {
+            return LocalDate.parse(candidate);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private int resolvePageCount(ArchiveRecordEntity record, OcrTaskEntity task) {
+        int pages = parsePages(record.getPages());
+        if (pages > 0) {
+            return pages;
+        }
+        return task == null || task.getPageCount() == null ? 0 : Math.max(task.getPageCount(), 0);
+    }
+
+    private List<ArchiveDtos.ArchiveDocUnitResponse> buildDocUnits(
+            ArchiveRecordEntity record,
+            String title,
+            int pageCount,
+            String pdfUrl
+    ) {
+        String docId = String.valueOf(record.getId());
+        return List.of(new ArchiveDtos.ArchiveDocUnitResponse(
+                docId,
+                docId,
+                title,
+                1,
+                pageCount > 0 ? 1 : null,
+                pageCount > 0 ? pageCount : null,
+                pageCount > 0 ? pageCount : null,
+                "archived",
+                pdfUrl,
+                pdfUrl
+        ));
+    }
+
+    private static boolean isPdfTask(OcrTaskEntity task) {
+        return "pdf".equalsIgnoreCase(safe(task.getFileType())) || ".pdf".equals(extension(task.getFilename()));
+    }
+
+    private static String firstText(String preferred, String fallback) {
+        return StringUtils.hasText(preferred) ? preferred.trim() : safe(fallback);
+    }
+
     private String longerOf(String a, String b) {
         int lenA = StringUtils.hasText(a) ? a.trim().length() : 0;
         int lenB = StringUtils.hasText(b) ? b.trim().length() : 0;
@@ -482,18 +687,19 @@ public class ArchiveRecordService {
     }
 
     @Transactional
-    public java.util.Map<String, Object> ensureBatchForFolder(String folder) {
+    public java.util.Map<String, Object> ensureBatchForFolder(String folder, String tenantId) {
         Path safeFolder = pathAccessService.ensureAllowedPath(folder, false, true);
         String normalizedFolder = safeFolder.toString();
+        String effectiveTenant = safe(tenantId, "default");
 
-        List<String> existingBatchIds = archiveRecordRepository.findDistinctAssignedBatchIdsByFolder(normalizedFolder);
+        List<String> existingBatchIds = archiveRecordRepository.findDistinctAssignedBatchIdsByTenantIdAndFolder(effectiveTenant, normalizedFolder);
         String batchId = existingBatchIds.isEmpty()
                 ? "batch_" + OffsetDateTime.now().toEpochSecond() + "_" + UUID.randomUUID().toString().substring(0, 6)
                 : existingBatchIds.get(0);
         boolean created = existingBatchIds.isEmpty();
         int linkedTasks = 0;
 
-        List<ArchiveRecordEntity> unassignedRecords = archiveRecordRepository.findUnassignedByFolder(normalizedFolder);
+        List<ArchiveRecordEntity> unassignedRecords = archiveRecordRepository.findUnassignedByTenantIdAndFolder(effectiveTenant, normalizedFolder);
         if (!unassignedRecords.isEmpty()) {
             for (ArchiveRecordEntity record : unassignedRecords) {
                 record.setBatchId(batchId);
@@ -515,6 +721,10 @@ public class ArchiveRecordService {
             ArchiveRecordEntity record = archiveRecordRepository.findByTaskId(task.getId()).orElseGet(ArchiveRecordEntity::new);
             boolean dirty = false;
 
+            if (!effectiveTenant.equals(record.getTenantId())) {
+                record.setTenantId(effectiveTenant);
+                dirty = true;
+            }
             if (!Objects.equals(record.getTaskId(), task.getId())) {
                 record.setTaskId(task.getId());
                 dirty = true;
@@ -781,6 +991,11 @@ public class ArchiveRecordService {
 
     private static String safe(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static String safe(String value, String defaultValue) {
+        String trimmed = value == null ? "" : value.trim();
+        return trimmed.isEmpty() ? defaultValue : trimmed;
     }
 
     private static String extension(String filename) {

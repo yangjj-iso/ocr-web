@@ -9,6 +9,25 @@ import {
   register as registerApi,
   rejectUser,
 } from '../api/auth.js'
+import { buildAuthProfile } from '../utils/authz.js'
+
+// ── Session storage cache ─────────────────────────────────────────────────
+const _AUTH_CACHE_KEY = '_ocr_auth_v1'
+
+function _readAuthCache() {
+  try {
+    const raw = sessionStorage.getItem(_AUTH_CACHE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function _writeAuthCache(value) {
+  try { sessionStorage.setItem(_AUTH_CACHE_KEY, JSON.stringify(value)) } catch {}
+}
+
+function _clearAuthCache() {
+  try { sessionStorage.removeItem(_AUTH_CACHE_KEY) } catch {}
+}
 
 const authLoading = ref(false)
 const authLoaded = ref(false)
@@ -18,20 +37,37 @@ const auth = ref({
   authenticated: false,
   username: null,
   is_admin: false,
-  role: 'operator',
+  role: 'member',
+  capabilities: '',
   user_status: null,
   default_username: null,
   display_name: null,
 })
+
+// Seed from sessionStorage so the router guard never blocks on cold page load
+const _cachedAuth = _readAuthCache()
+if (_cachedAuth) {
+  auth.value = _cachedAuth
+  authLoaded.value = true
+}
 
 const pendingUsers = ref([])
 const pendingLoading = ref(false)
 const pendingError = ref('')
 
 let inflightRefresh = null
+let _bgRevalidated = false
 
 async function refreshAuthStatus(force = false) {
   if (inflightRefresh && !force) return inflightRefresh
+  if (authLoaded.value && !force) {
+    // One-time background re-validation per page session to catch stale caches
+    if (!_bgRevalidated) {
+      _bgRevalidated = true
+      setTimeout(() => refreshAuthStatus(true).catch(() => {}), 0)
+    }
+    return auth.value
+  }
   inflightRefresh = (async () => {
     authLoading.value = true
     authError.value = ''
@@ -41,12 +77,14 @@ async function refreshAuthStatus(force = false) {
         enabled: Boolean(data?.enabled),
         authenticated: Boolean(data?.authenticated),
         username: data?.username || null,
-        is_admin: Boolean(data?.is_admin),
-        role: data?.role || 'operator',
-        user_status: data?.user_status || null,
-        default_username: data?.default_username || null,
-        display_name: data?.display_name || null,
+        is_admin: Boolean(data?.is_admin ?? data?.isAdmin ?? data?.admin),
+        role: data?.role || 'member',
+        capabilities: data?.capabilities || '',
+        user_status: data?.user_status ?? data?.userStatus ?? null,
+        default_username: data?.default_username ?? data?.defaultUsername ?? null,
+        display_name: data?.display_name ?? data?.displayName ?? null,
       }
+      _writeAuthCache(auth.value)
       authLoaded.value = true
       return auth.value
     } catch (error) {
@@ -56,11 +94,13 @@ async function refreshAuthStatus(force = false) {
         authenticated: false,
         username: null,
         is_admin: false,
-        role: 'operator',
+        role: 'member',
+        capabilities: '',
         user_status: null,
         default_username: null,
         display_name: null,
       }
+      _clearAuthCache()
       authLoaded.value = true
       return auth.value
     } finally {
@@ -78,17 +118,18 @@ async function login(username, password) {
     enabled: true,
     authenticated: true,
     username: data?.username || username,
-    is_admin: Boolean(data?.is_admin),
-    role: data?.role || 'operator',
-    user_status: data?.user_status || 'active',
-    display_name: null,
+    is_admin: Boolean(data?.is_admin ?? data?.isAdmin ?? data?.admin),
+    role: data?.role || 'member',
+    capabilities: data?.capabilities || '',
+    user_status: data?.user_status ?? data?.userStatus ?? 'active',
+    display_name: data?.display_name ?? data?.displayName ?? null,
   }
   authLoaded.value = true
   return auth.value
 }
 
-async function register(username, password, realName, requestedRole) {
-  const { data } = await registerApi(username, password, realName, requestedRole)
+async function register(username, password, realName, requestedRole, tenantId) {
+  const { data } = await registerApi(username, password, realName, requestedRole, tenantId)
   return data
 }
 
@@ -96,12 +137,14 @@ async function logout() {
   try {
     await logoutApi()
   } finally {
+    _clearAuthCache()
     auth.value = {
       ...auth.value,
       authenticated: false,
       username: null,
       is_admin: false,
-      role: 'operator',
+      role: 'member',
+      capabilities: '',
       user_status: null,
       display_name: null,
     }
@@ -135,8 +178,11 @@ async function rejectPendingUser(userId) {
 }
 
 export function useAuthState() {
+  const authProfile = computed(() => buildAuthProfile(auth.value))
+
   return {
     auth,
+    authProfile,
     authLoading,
     authLoaded,
     authError,
@@ -146,10 +192,11 @@ export function useAuthState() {
     isAuthEnabled: computed(() => Boolean(auth.value.enabled)),
     isAuthenticated: computed(() => Boolean(auth.value.authenticated)),
     isAdmin: computed(() => Boolean(auth.value.is_admin)),
-    isOperator: computed(() => auth.value.role === 'operator'),
+    isOperator: computed(() => authProfile.value.hasOperator),
     isReviewer: computed(() => false), // role removed
-    isSearcher: computed(() => auth.value.role === 'searcher'),
-    userRole: computed(() => auth.value.role || 'operator'),
+    isSearcher: computed(() => authProfile.value.hasSearcher),
+    userRole: computed(() => authProfile.value.role || 'member'),
+    userCapabilities: computed(() => auth.value.capabilities || ''),
     refreshAuthStatus,
     login,
     register,

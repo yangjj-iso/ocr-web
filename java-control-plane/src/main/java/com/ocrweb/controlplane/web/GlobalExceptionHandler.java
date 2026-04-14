@@ -7,12 +7,14 @@ import com.ocrweb.controlplane.task.service.AiProxyException;
 import com.ocrweb.controlplane.task.service.AiProxyTimeoutException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.file.NoSuchFileException;
 import java.util.NoSuchElementException;
+import java.util.stream.Collectors;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -30,6 +32,19 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoSuchFileException.class)
     public ResponseEntity<ObjectNode> handleMissingFile(NoSuchFileException error) {
         return build(HttpStatus.NOT_FOUND, "Task file not found.");
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ObjectNode> handleValidationErrors(MethodArgumentNotValidException error) {
+        String details = error.getBindingResult().getFieldErrors().stream()
+                .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+                .collect(Collectors.joining("; "));
+        return build(HttpStatus.BAD_REQUEST, "Validation failed: " + details);
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ObjectNode> handleIllegalArgument(IllegalArgumentException error) {
+        return build(HttpStatus.BAD_REQUEST, error.getMessage());
     }
 
     @ExceptionHandler(AiProxyCircuitOpenException.class)

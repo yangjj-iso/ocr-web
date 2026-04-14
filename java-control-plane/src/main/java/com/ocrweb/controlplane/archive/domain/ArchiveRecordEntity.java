@@ -54,9 +54,20 @@ public class ArchiveRecordEntity {
     @Column(name = "storage_path", length = 1000)
     private String storagePath;
 
+    @Column(name = "tenant_id", nullable = false, length = 64)
+    private String tenantId = "default";
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;
+
+    public String getTenantId() {
+        return tenantId == null || tenantId.isBlank() ? "default" : tenantId;
+    }
+
+    public void setTenantId(String tenantId) {
+        this.tenantId = tenantId == null || tenantId.isBlank() ? "default" : tenantId;
+    }
 
     public Long getId() {
         return id;

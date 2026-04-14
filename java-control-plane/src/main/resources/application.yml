@@ -25,11 +25,7 @@ ocr:
   security:
     require-user-auth: ${OCR_REQUIRE_USER_AUTH:true}
     public-paths:
-      - /api/auth/me
-      - /api/auth/login
-      - /api/auth/register
-      - /api/auth/logout
-      - /api/dev/dashboard
+      - /api
     cors-allowed-origins:
       - ${OCR_CORS_ALLOWED_ORIGIN_1:http://localhost:3000}
       - ${OCR_CORS_ALLOWED_ORIGIN_2:http://127.0.0.1:3000}
@@ -50,10 +46,13 @@ ocr:
     enabled: ${DEV_DASHBOARD_ENABLED:true}
     username: ${DEV_DASHBOARD_USERNAME:devadmin}
     password: ${DEV_DASHBOARD_PASSWORD:change-me-dev-dashboard}
+    two-factor-secret: ${DEV_DASHBOARD_2FA_SECRET:JBSWY3DPEHPK3PXP}
+    session-secret: ${DEV_DASHBOARD_SESSION_SECRET:change-this-dev-dashboard-session-secret}
     cookie-name: ${DEV_DASHBOARD_COOKIE_NAME:ocr_dev_dashboard_session}
+    cookie-secure: ${DEV_DASHBOARD_COOKIE_SECURE:false}
+    cookie-same-site: ${DEV_DASHBOARD_COOKIE_SAMESITE:lax}
     session-ttl: ${DEV_DASHBOARD_SESSION_TTL:28800}
-    celery-queue: ${CELERY_TASK_QUEUE:ocr.compute.internal.queue}
-    python-metrics-path: ${DEV_DASHBOARD_PYTHON_METRICS_PATH:/internal/api/v1/worker/metrics}
+    two-factor-window-steps: ${DEV_DASHBOARD_2FA_WINDOW_STEPS:1}
   storage:
     backend: ${OCR_STORAGE_BACKEND:s3}
     upload-dir: ${OCR_STORAGE_UPLOAD_DIR:./uploads-java}
@@ -76,7 +75,6 @@ ocr:
   processing:
     layout-backend: ${OCR_LAYOUT_BACKEND:local}
     vl-backend: ${OCR_VL_BACKEND:auto}
-    enable-hierarchical-agent: ${ENABLE_HIERARCHICAL_AGENT:false}
     llm-backend: ${OCR_PROCESSING_LLM_BACKEND:local}
     llm-model: ${OCR_PROCESSING_LLM_MODEL:}
     processing-strategy: ${OCR_PROCESSING_STRATEGY:auto}
@@ -86,7 +84,7 @@ ocr:
     human-review-threshold-high: ${HUMAN_REVIEW_MAX_CONFIDENCE:0.85}
     timeout-seconds: ${OCR_PROCESSING_TIMEOUT_SECONDS:1800}
     gpu-profile: ${OCR_GPU_PROFILE:single_gpu}
-    langgraph-graph: ${OCR_LANGGRAPH_GRAPH:batch_supervisor_v1}
+    langgraph-graph: ${OCR_LANGGRAPH_GRAPH:archive_main}
   rate-limit:
     enabled: ${OCR_RATE_LIMIT_ENABLED:true}
     window-seconds: ${OCR_RATE_LIMIT_WINDOW_SECONDS:60}

@@ -5,7 +5,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import router
+from app.core.auth import require_auth, require_operator_access
 from app.db.database import get_db
+
+_MOCK_USER = {
+    "username": "tester",
+    "is_admin": True,
+    "user_status": "active",
+    "user_id": 1,
+    "role": "admin",
+    "capabilities": "operator",
+    "tenant_id": "default",
+}
 
 
 class _ScalarResult:
@@ -48,6 +59,8 @@ class TaskProgressRouteTests(unittest.TestCase):
             yield self.db
 
         self.app.dependency_overrides[get_db] = override_get_db
+        self.app.dependency_overrides[require_auth] = lambda: _MOCK_USER
+        self.app.dependency_overrides[require_operator_access] = lambda: _MOCK_USER
         self.client = TestClient(self.app)
 
     def tearDown(self):

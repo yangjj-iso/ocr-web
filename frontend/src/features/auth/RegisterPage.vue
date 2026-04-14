@@ -26,7 +26,7 @@
       </div>
 
       <div class="space-y-4">
-        <div class="rounded-xl bg-white/10 px-5 py-4 backdrop-blur-sm">
+        <div class="rounded-lg bg-white/10 px-5 py-4 backdrop-blur-sm">
           <h3 class="text-xs font-semibold text-white/90">注册流程</h3>
           <div class="mt-3 flex items-start gap-3">
             <div class="flex flex-col items-center">
@@ -117,24 +117,25 @@
           </div>
 
           <div>
-            <label class="mb-1.5 block text-xs font-medium text-[var(--gov-text-muted)]">申请角色 <span class="text-red-400">*</span></label>
-            <div class="mt-1.5 flex gap-3">
+            <label class="mb-1.5 block text-xs font-medium text-[var(--gov-text-muted)]">工作岗位 <span class="text-red-400">*</span></label>
+            <p class="mb-2 text-[11px] text-[var(--gov-text-muted)]">选择您的岗位类型（可多选）：</p>
+            <div class="flex gap-3">
               <label
                 class="flex flex-1 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition"
-                :class="requestedRole === 'operator' ? 'border-[var(--gov-primary)] bg-[var(--gov-primary-soft)] text-[var(--gov-primary)] font-medium' : 'border-[var(--gov-border)] bg-white text-[var(--gov-text-muted)] hover:border-slate-300'"
+                :class="wantOperator ? 'border-[var(--gov-primary)] bg-[var(--gov-primary-soft)] text-[var(--gov-primary)] font-medium' : 'border-[var(--gov-border)] bg-white text-[var(--gov-text-muted)] hover:border-slate-300'"
               >
-                <input v-model="requestedRole" type="radio" value="operator" class="hidden" />
+                <input v-model="wantOperator" type="checkbox" class="h-3.5 w-3.5 accent-[var(--gov-primary)]" />
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z M19.5 7.125l-2.652-2.652"/></svg>
                 <div>
-                  <span class="text-xs font-medium">签录员</span>
+                  <span class="text-xs font-medium">著录者</span>
                   <p class="text-[10px] leading-tight opacity-60">档案录入、OCR识别、归档操作</p>
                 </div>
               </label>
               <label
                 class="flex flex-1 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition"
-                :class="requestedRole === 'searcher' ? 'border-[var(--gov-primary)] bg-[var(--gov-primary-soft)] text-[var(--gov-primary)] font-medium' : 'border-[var(--gov-border)] bg-white text-[var(--gov-text-muted)] hover:border-slate-300'"
+                :class="wantSearcher ? 'border-[var(--gov-primary)] bg-[var(--gov-primary-soft)] text-[var(--gov-primary)] font-medium' : 'border-[var(--gov-border)] bg-white text-[var(--gov-text-muted)] hover:border-slate-300'"
               >
-                <input v-model="requestedRole" type="radio" value="searcher" class="hidden" />
+                <input v-model="wantSearcher" type="checkbox" class="h-3.5 w-3.5 accent-[var(--gov-primary)]" />
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
                 <div>
                   <span class="text-xs font-medium">检索者</span>
@@ -142,6 +143,17 @@
                 </div>
               </label>
             </div>
+            <p v-if="!wantOperator && !wantSearcher" class="mt-1 text-[11px] text-red-500">请至少选择一个岗位。</p>
+          </div>
+
+          <div v-if="availableTenants.length > 1">
+            <label class="mb-1.5 block text-xs font-medium text-[var(--gov-text-muted)]">所属机构 <span class="text-red-400">*</span></label>
+            <select
+              v-model="selectedTenantId"
+              class="w-full rounded-lg border border-[var(--gov-border)] bg-white px-3.5 py-2.5 text-sm shadow-sm focus:border-[var(--gov-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--gov-primary)]/20"
+            >
+              <option v-for="t in availableTenants" :key="t.id" :value="t.id">{{ t.name }}</option>
+            </select>
           </div>
 
           <div>
@@ -194,20 +206,45 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 
 import { useAuthState } from '@/composables/useAuthState.js'
+import { listPublicTenants } from '@/api/tenants.js'
 
 const authState = useAuthState()
 
 const realName = ref('')
 const username = ref('')
-const requestedRole = ref('operator')
+const wantOperator = ref(true)
+const wantSearcher = ref(false)
 const password = ref('')
 const confirmPassword = ref('')
 const submitting = ref(false)
 const error = ref('')
 const success = ref('')
+
+// Tenant selection
+const selectedTenantId = ref('default')
+const availableTenants = ref([{ id: 'default', name: '默认机构' }])
+
+onMounted(async () => {
+  try {
+    const { data } = await listPublicTenants()
+    if (data?.items?.length) {
+      availableTenants.value = data.items
+      selectedTenantId.value = data.items[0].id
+    }
+  } catch {
+    // silently fall back to default
+  }
+})
+
+const requestedCapabilities = computed(() => {
+  const parts = []
+  if (wantOperator.value) parts.push('operator')
+  if (wantSearcher.value) parts.push('searcher')
+  return parts.join(',')
+})
 
 async function submitRegister() {
   const trimName = realName.value.trim()
@@ -217,17 +254,19 @@ async function submitRegister() {
 
   if (!trimName) { error.value = '请填写真实姓名。'; return }
   if (!trimUser) { error.value = '请填写工号。'; return }
+  if (!wantOperator.value && !wantSearcher.value) { error.value = '请至少选择一个岗位。'; return }
   if (!password.value) { error.value = '请填写密码。'; return }
   if (password.value.length < 6) { error.value = '密码至少 6 位。'; return }
   if (password.value !== confirmPassword.value) { error.value = '两次输入的密码不一致。'; return }
 
   submitting.value = true
   try {
-    const data = await authState.register(trimUser, password.value, trimName, requestedRole.value)
+    const data = await authState.register(trimUser, password.value, trimName, requestedCapabilities.value, selectedTenantId.value)
     success.value = data?.message || '注册申请已提交，请等待管理员审核通过后登录。'
     realName.value = ''
     username.value = ''
-    requestedRole.value = 'operator'
+    wantOperator.value = true
+    wantSearcher.value = false
     password.value = ''
     confirmPassword.value = ''
   } catch (requestError) {

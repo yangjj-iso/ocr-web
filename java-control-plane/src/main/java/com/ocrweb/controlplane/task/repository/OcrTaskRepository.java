@@ -88,7 +88,53 @@ public interface OcrTaskRepository extends JpaRepository<OcrTaskEntity, Long> {
     @Query("select t.id, t.filename, t.status, t.fileType from OcrTaskEntity t where t.id in :ids")
     List<Object[]> findLightweightByIds(@Param("ids") List<Long> ids);
 
+    @Query("""
+            select count(distinct t.storageObjectKey)
+            from OcrTaskEntity t
+            where t.storageObjectKey is not null
+              and t.storageObjectKey <> ''
+            """)
+    long countStoredObjectKeys();
+
     long deleteByBatchId(String batchId);
 
     long deleteByFilePathStartingWith(String filePathPrefix);
+
+    // --- 租户隔离查询 ---
+
+    Optional<OcrTaskEntity> findByIdAndTenantId(Long id, String tenantId);
+
+    @Query("""
+            select t
+            from OcrTaskEntity t
+            where t.tenantId = :tenantId
+              and (:folder = '' or t.filePath like concat(:folder, '%'))
+              and (:batchId = '' or t.batchId = :batchId)
+            order by t.createdAt desc
+            """)
+    Page<OcrTaskEntity> findByTenantIdAndFolderAndBatchId(
+            @Param("tenantId") String tenantId,
+            @Param("folder") String folder,
+            @Param("batchId") String batchId,
+            Pageable pageable
+    );
+
+    @Query("""
+            select t
+            from OcrTaskEntity t
+            where t.tenantId = :tenantId
+              and (:folder = '' or t.filePath like concat(:folder, '%'))
+              and (:batchId = '' or t.batchId = :batchId)
+              and lower(t.status) = lower(:status)
+            order by t.createdAt desc
+            """)
+    Page<OcrTaskEntity> findByTenantIdAndFolderAndBatchIdAndStatus(
+            @Param("tenantId") String tenantId,
+            @Param("folder") String folder,
+            @Param("batchId") String batchId,
+            @Param("status") String status,
+            Pageable pageable
+    );
+
+    long countByTenantId(String tenantId);
 }

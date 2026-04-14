@@ -10,4 +10,10 @@ public interface AppUserRepository extends JpaRepository<AppUserEntity, Long> {
     Optional<AppUserEntity> findByUsername(String username);
 
     List<AppUserEntity> findByStatusOrderByCreatedAtDesc(String status);
+
+    List<AppUserEntity> findByStatusAndTenantIdOrderByCreatedAtDesc(String status, String tenantId);
+
+    List<AppUserEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId);
+
+    long countByTenantId(String tenantId);
 }

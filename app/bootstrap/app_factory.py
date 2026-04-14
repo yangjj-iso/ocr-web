@@ -13,16 +13,65 @@ from fastapi.responses import JSONResponse
 from app.db.database import init_db
 from config import (
     CORS_ALLOW_ORIGINS,
+    DATABASE_URL,
     MINIMAX_API_KEY,
     MINIMAX_BASE_URL,
     MINIMAX_ENABLED,
     MINIMAX_MODEL,
+    MQ_BROKER_URL,
     OCR_VL_BACKEND,
+    REDIS_URL,
     _mask_secret,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _check_dependencies() -> dict:
+    """Check connectivity to database, RabbitMQ, and Redis."""
+    checks: dict = {}
+
+    # Database
+    try:
+        from sqlalchemy import text
+        from app.db.database import async_session
+        async with async_session() as session:
+            await session.execute(text("SELECT 1"))
+        checks["database"] = {"status": "up"}
+    except Exception as exc:
+        checks["database"] = {"status": "down", "error": str(exc)[:200]}
+
+    # RabbitMQ
+    try:
+        import socket as _socket
+        from urllib.parse import urlparse
+        parsed = urlparse(MQ_BROKER_URL.replace("amqp://", "http://"))
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 5672
+        sock = _socket.create_connection((host, port), timeout=3)
+        sock.close()
+        checks["rabbitmq"] = {"status": "up"}
+    except Exception as exc:
+        checks["rabbitmq"] = {"status": "down", "error": str(exc)[:200]}
+
+    # Redis
+    try:
+        import aiohttp
+        from urllib.parse import urlparse
+        parsed = urlparse(REDIS_URL)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 6379
+        import socket as _socket
+        sock = _socket.create_connection((host, port), timeout=3)
+        sock.close()
+        checks["redis"] = {"status": "up"}
+    except ImportError:
+        checks["redis"] = {"status": "unknown", "error": "aiohttp not installed"}
+    except Exception as exc:
+        checks["redis"] = {"status": "down", "error": str(exc)[:200]}
+
+    return checks
 
 
 def create_service_app(
@@ -79,6 +128,14 @@ def create_service_app(
         try:
             yield
         finally:
+            logger.info("Initiating graceful shutdown for %s ...", service_name)
+            try:
+                from app.db.database import engine
+                if engine is not None:
+                    await engine.dispose()
+                    logger.info("Database connection pool disposed.")
+            except Exception:
+                logger.debug("Database cleanup skipped.", exc_info=True)
             logger.info("Service shutdown complete: %s", service_name)
 
     app = FastAPI(
@@ -107,7 +164,9 @@ def create_service_app(
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "service": service_name}
+        checks = await _check_dependencies()
+        overall = "ok" if all(c["status"] == "up" for c in checks.values()) else "degraded"
+        return {"status": overall, "service": service_name, "components": checks}
 
     @app.get("/health/live")
     async def health_live():
@@ -115,7 +174,14 @@ def create_service_app(
 
     @app.get("/health/ready")
     async def health_ready():
-        return {"status": "up", "service": service_name}
+        checks = await _check_dependencies()
+        if all(c["status"] == "up" for c in checks.values()):
+            return {"status": "up", "service": service_name, "components": checks}
+        from fastapi.responses import JSONResponse as _JSONResponse
+        return _JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "service": service_name, "components": checks},
+        )
 
     @app.get("/")
     async def api_root():

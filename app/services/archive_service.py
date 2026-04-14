@@ -18,6 +18,8 @@ async def save_archive_record(
     batch_id: str,
     batch_folder: str,
     fields: dict,
+    *,
+    tenant_id: str = "default",
 ) -> ArchiveRecord:
     record: ArchiveRecord | None = None
     if task_id is not None:
@@ -25,8 +27,10 @@ async def save_archive_record(
         record = result.scalar_one_or_none()
 
     if record is None:
-        record = ArchiveRecord(task_id=task_id)
+        record = ArchiveRecord(task_id=task_id, tenant_id=tenant_id)
         db.add(record)
+    elif tenant_id:
+        record.tenant_id = tenant_id
 
     record.batch_id = batch_id
     record.batch_folder = batch_folder

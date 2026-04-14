@@ -4,6 +4,7 @@ import com.ocrweb.controlplane.auth.domain.AppUserEntity;
 import com.ocrweb.controlplane.auth.dto.AuthDtos;
 import com.ocrweb.controlplane.auth.repository.AppUserRepository;
 import com.ocrweb.controlplane.config.AuthProperties;
+import com.ocrweb.controlplane.tenant.service.TenantService;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
@@ -23,22 +24,25 @@ import java.util.Set;
 
 @Service
 public class AuthService {
-    private static final Set<String> OPERATOR_ROLES = Set.of("admin", "operator");
+    private static final Set<String> OPERATOR_ROLES = Set.of("admin", "tenant_admin", "member");
     private final AppUserRepository appUserRepository;
     private final PasswordHashService passwordHashService;
     private final SessionTokenService sessionTokenService;
     private final AuthProperties authProperties;
+    private final TenantService tenantService;
 
     public AuthService(
             AppUserRepository appUserRepository,
             PasswordHashService passwordHashService,
             SessionTokenService sessionTokenService,
-            AuthProperties authProperties
+            AuthProperties authProperties,
+            TenantService tenantService
     ) {
         this.appUserRepository = appUserRepository;
         this.passwordHashService = passwordHashService;
         this.sessionTokenService = sessionTokenService;
         this.authProperties = authProperties;
+        this.tenantService = tenantService;
     }
 
     public AuthDtos.AuthStatusResponse getAuthStatus(HttpServletRequest request) {
@@ -60,14 +64,15 @@ public class AuthService {
                 user == null ? null : user.userStatus(),
                 authProperties.isEnabled() ? authProperties.getUsername() : null,
                 user == null ? null : user.effectiveRole(),
-                displayName
+                displayName,
+                user == null ? null : user.effectiveCapabilities()
         );
     }
 
-    private static final java.util.Set<String> ALLOWED_REGISTER_ROLES = java.util.Set.of("operator", "searcher");
+    private static final java.util.Set<String> ALLOWED_REGISTER_ROLES = java.util.Set.of("operator", "searcher", "operator,searcher", "searcher,operator", "member");
 
     @Transactional
-    public AuthDtos.RegisterResponse register(String username, String password, String realName, String requestedRole) {
+    public AuthDtos.RegisterResponse register(String username, String password, String realName, String requestedRole, String requestedCapabilities, String tenantId) {
         ensureAuthEnabled();
         String normalizedUsername = normalizeUsername(username);
         if (normalizedUsername.isBlank()) {
@@ -93,22 +98,36 @@ public class AuthService {
             throw badRequest("真实姓名不能为空。");
         }
 
-        String role = (requestedRole != null && ALLOWED_REGISTER_ROLES.contains(requestedRole)) ? requestedRole : "operator";
+        // Determine capabilities from requestedRole (may be legacy or capability value)
+        String capabilities;
+        if (requestedCapabilities != null && !requestedCapabilities.isBlank()) {
+            capabilities = requestedCapabilities.strip();
+        } else if (requestedRole != null && !requestedRole.equals("member")) {
+            // legacy: requestedRole was 'operator' or 'searcher'
+            capabilities = requestedRole;
+        } else {
+            capabilities = "operator"; // default capability for new members
+        }
+
+        String resolvedTenantId = tenantService.resolveActiveTenantId(tenantId);
 
         AppUserEntity user = new AppUserEntity();
         user.setUsername(normalizedUsername);
         user.setPasswordHash(passwordHashService.hashPassword(password));
         user.setStatus("pending");
         user.setAdmin(false);
-        user.setRole(role);
+        user.setRole("member");
+        user.setCapabilities(capabilities);
         user.setDisplayName(trimmedRealName);
+        user.setTenantId(resolvedTenantId);
         appUserRepository.save(user);
 
-        String roleLabel = "operator".equals(role) ? "签录员" : "检索者";
+        String capLabel = capabilities.contains("operator") && capabilities.contains("searcher")
+                ? "著录者+检索者" : capabilities.contains("searcher") ? "检索者" : "著录者";
         return new AuthDtos.RegisterResponse(
                 true,
                 "pending",
-                "注册申请已提交（申请角色：" + roleLabel + "），请等待管理员审核。"
+                "注册申请已提交（申请岗位：" + capLabel + "），请等待管理员审核。"
         );
     }
 
@@ -123,17 +142,17 @@ public class AuthService {
         }
 
         if (authenticateEnvAdmin(normalizedUsername, normalizedPassword)) {
-            CurrentUser currentUser = new CurrentUser(normalizedUsername, true, "active", null, "admin");
+            CurrentUser currentUser = new CurrentUser(normalizedUsername, true, "active", null, "admin", "default", "");
             return AuthLoginResult.authenticated(
-                    new AuthDtos.LoginResponse(true, normalizedUsername, true, "active", "admin"),
+                    new AuthDtos.LoginResponse(true, normalizedUsername, true, "active", "admin", ""),
                     buildAuthCookie(currentUser)
             );
         }
 
         AppUserEntity user = authenticateApplicationUser(normalizedUsername, normalizedPassword);
-        CurrentUser currentUser = new CurrentUser(user.getUsername(), user.isAdmin(), user.getStatus(), user.getId(), user.getRole());
+        CurrentUser currentUser = new CurrentUser(user.getUsername(), user.isAdmin(), user.getStatus(), user.getId(), user.getRole(), user.getTenantId(), user.getCapabilities());
         return AuthLoginResult.authenticated(
-                new AuthDtos.LoginResponse(true, user.getUsername(), user.isAdmin(), user.getStatus(), user.getRole()),
+                new AuthDtos.LoginResponse(true, user.getUsername(), user.isAdmin(), user.getStatus(), user.getRole(), user.getCapabilities()),
                 buildAuthCookie(currentUser)
         );
     }
@@ -150,10 +169,19 @@ public class AuthService {
     }
 
     public AuthDtos.PendingUsersResponse listPendingUsers(HttpServletRequest request) {
-        requireAdmin(request);
-        List<AuthDtos.PendingUserItem> items = appUserRepository.findByStatusOrderByCreatedAtDesc("pending")
-                .stream()
-                .map(user -> new AuthDtos.PendingUserItem(user.getId(), user.getUsername(), user.getDisplayName(), user.getRole(), user.getStatus(), user.getCreatedAt()))
+        CurrentUser caller = requireAuthenticatedUser(request);
+        List<AppUserEntity> users;
+        if (caller.isAdmin() || "admin".equals(caller.effectiveRole())) {
+            // 平台管理员：看全部待审核用户
+            users = appUserRepository.findByStatusOrderByCreatedAtDesc("pending");
+        } else if ("tenant_admin".equals(caller.effectiveRole())) {
+            // 租户管理员：只看本租户待审核用户
+            users = appUserRepository.findByStatusAndTenantIdOrderByCreatedAtDesc("pending", caller.effectiveTenantId());
+        } else {
+            throw unauthorized("无权查看待审核用户列表。");
+        }
+        List<AuthDtos.PendingUserItem> items = users.stream()
+                .map(user -> new AuthDtos.PendingUserItem(user.getId(), user.getUsername(), user.getDisplayName(), user.getRole(), user.getCapabilities(), user.getStatus(), user.getCreatedAt()))
                 .toList();
         return new AuthDtos.PendingUsersResponse(items);
     }
@@ -191,19 +219,38 @@ public class AuthService {
 
     @Transactional
     public AuthDtos.UserStatusResponse approveUser(Long userId, HttpServletRequest request) {
-        requireAdmin(request);
+        CurrentUser caller = requireAuthenticatedUser(request);
+        enforceAdminOrTenantAdminForUser(caller, userId);
         return updateUserStatus(userId, "active");
     }
 
     @Transactional
     public AuthDtos.UserStatusResponse rejectUser(Long userId, HttpServletRequest request) {
-        requireAdmin(request);
+        CurrentUser caller = requireAuthenticatedUser(request);
+        enforceAdminOrTenantAdminForUser(caller, userId);
         return updateUserStatus(userId, "rejected");
+    }
+
+    /** Ensure caller can approve/reject this userId: platform admin can do all, tenant_admin only within their tenant. */
+    private void enforceAdminOrTenantAdminForUser(CurrentUser caller, Long userId) {
+        if (caller.isAdmin() || "admin".equals(caller.effectiveRole())) {
+            return; // platform admin: no restriction
+        }
+        if ("tenant_admin".equals(caller.effectiveRole())) {
+            AppUserEntity target = appUserRepository.findById(userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在。"));
+            if (!caller.effectiveTenantId().equals(target.getTenantId())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "无权操作其他租户的用户。");
+            }
+            return;
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "权限不足。");
     }
 
     @Transactional
     public Map<String, Object> resetUserPassword(Long userId, String newPassword, HttpServletRequest request) {
-        requireAdmin(request);
+        CurrentUser caller = requireAuthenticatedUser(request);
+        enforceAdminOrTenantAdminForUser(caller, userId);
         AppUserEntity user = appUserRepository.findById(userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在。"));
         user.setPasswordHash(passwordHashService.hashPassword(newPassword));
@@ -213,7 +260,8 @@ public class AuthService {
 
     @Transactional
     public Map<String, Object> deleteUser(Long userId, HttpServletRequest request) {
-        requireAdmin(request);
+        CurrentUser caller = requireAuthenticatedUser(request);
+        enforceAdminOrTenantAdminForUser(caller, userId);
         AppUserEntity user = appUserRepository.findById(userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在。"));
         String username = user.getUsername();
@@ -243,10 +291,18 @@ public class AuthService {
 
     public CurrentUser requireAdmin(HttpServletRequest request) {
         CurrentUser currentUser = requireAuthenticatedUser(request);
-        if (currentUser.isAdmin()) {
+        if (currentUser.isAdmin() || "tenant_admin".equals(currentUser.effectiveRole())) {
             return currentUser;
         }
         throw forbidden("Admin permission required.");
+    }
+
+    public CurrentUser requirePlatformAdmin(HttpServletRequest request) {
+        CurrentUser currentUser = requireAuthenticatedUser(request);
+        if (currentUser.isAdmin()) {
+            return currentUser;
+        }
+        throw forbidden("Platform admin permission required.");
     }
 
     public CurrentUser requireOperatorOrAdmin(HttpServletRequest request) {
@@ -313,7 +369,9 @@ public class AuthService {
                                 currentUser.userId(),
                                 currentUser.isAdmin(),
                                 currentUser.userStatus(),
-                                currentUser.effectiveRole()
+                                currentUser.effectiveRole(),
+                                currentUser.effectiveTenantId(),
+                                currentUser.effectiveCapabilities()
                         )
                 )
                 .path("/")
