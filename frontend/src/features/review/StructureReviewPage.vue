@@ -26,7 +26,7 @@
       </div>
     </template>
 
-    <div class="h-full flex bg-[var(--gov-bg)]">
+    <div class="box-border h-[calc(100vh-3rem)] min-w-0 overflow-hidden bg-[#f4f7fb] p-3">
       <!-- Loading / error -->
       <div v-if="loadError" class="w-full flex items-center justify-center p-8">
         <div class="max-w-sm rounded-lg border border-red-200 bg-red-50 px-5 py-4 text-center">
@@ -36,9 +36,15 @@
       </div>
 
       <!-- Left: doc list -->
-      <aside v-if="!loadError" class="w-[260px] border-r border-[var(--gov-border)] bg-white flex flex-col flex-shrink-0">
-        <div class="h-10 px-3 border-b border-[var(--gov-border)] flex items-center justify-between">
-          <span class="text-[11px] font-semibold text-[var(--gov-text-muted)]">文档单元 ({{ docs.length }})</span>
+      <div v-if="!loadError" class="h-full min-h-0 overflow-x-auto overflow-y-hidden">
+      <div class="flex h-full min-h-0 w-max items-stretch gap-3">
+      <aside class="w-[184px] xl:w-[208px] border border-slate-200 bg-white flex flex-col flex-shrink-0 overflow-hidden min-h-0">
+        <div class="px-3 py-3 border-b border-[var(--gov-border)]">
+          <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Material Queue</p>
+          <div class="mt-1 flex items-center justify-between">
+            <span class="text-sm font-semibold text-[var(--gov-text)]">材料分件</span>
+            <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">共 {{ docs.length }} 件</span>
+          </div>
           <div class="flex items-center gap-2">
             <span v-if="needAttentionCount > 0" class="text-[10px] font-semibold text-amber-600 bg-amber-50 rounded px-1.5 py-0.5">
               {{ needAttentionCount }} 需关注
@@ -136,55 +142,94 @@
       </aside>
 
       <!-- Center: page viewer -->
-      <section v-if="!loadError" class="flex-1 min-w-0 flex flex-col bg-white">
-        <div class="h-10 px-3 border-b border-[var(--gov-border)] flex items-center justify-between flex-shrink-0">
-          <p class="text-sm font-medium text-[var(--gov-text)] truncate">{{ selectedDocTitle }}</p>
-          <span class="text-[11px] text-[var(--gov-text-muted)] tabular-nums">{{ currentPage }}/{{ totalPages }}</span>
-        </div>
-
-        <div class="flex-1 min-h-0 flex">
-          <div class="flex-1 min-w-0 min-h-0">
-            <PdfViewer v-if="previewUrl && !pdfLoadFailed" :src="previewUrl" :page="currentPage" class="h-full"
-              @page-change="(p) => (currentPage = p)" @load-error="pdfLoadFailed = true" />
-            <div v-else-if="pageImageUrl" class="h-full flex items-center justify-center overflow-auto bg-slate-100 p-4">
-              <img :src="pageImageUrl"
-                :style="pageImageRotation ? { transform: `rotate(${pageImageRotation}deg)`, maxHeight: [90, 270].includes(pageImageRotation) ? '80vw' : undefined } : {}"
-                class="max-h-full max-w-full shadow-lg object-contain" alt="页面预览" />
+      <section class="w-[640px] min-w-[640px] max-w-[640px] xl:w-[700px] xl:min-w-[700px] xl:max-w-[700px] border border-slate-200 bg-white flex flex-col overflow-hidden min-h-0 flex-shrink-0">
+        <div class="h-[62px] border-b border-slate-100 bg-white px-5 flex items-center justify-between gap-3 flex-shrink-0">
+          <div class="min-w-0">
+            <span class="inline-flex h-7 items-center rounded-t bg-blue-50 px-4 text-xs font-semibold text-blue-600">{{ currentImageViewLabel }}</span>
+            <div class="mt-2 flex items-center gap-2 text-xs text-slate-500">
+              <svg class="h-4 w-4 text-blue-500" fill="currentColor" viewBox="0 0 20 20"><path d="M4 3.5A1.5 1.5 0 0 1 5.5 2h5.38a1.5 1.5 0 0 1 1.06.44l3.62 3.62A1.5 1.5 0 0 1 16 7.12v9.38a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 4 16.5v-13Z"/></svg>
+              <span class="truncate text-slate-700">{{ selectedDocTitle }}</span>
+              <span class="text-slate-300">·</span>
+              <span class="tabular-nums">{{ currentPage }}/{{ totalPages }}</span>
             </div>
-            <div v-else class="h-full flex items-center justify-center text-sm text-[var(--gov-text-muted)]">暂无预览</div>
+          </div>
+          <div class="inline-flex rounded border border-slate-200 bg-white">
+            <button type="button" class="h-8 px-3 text-xs font-medium transition-colors"
+              :class="imageViewMode === 'preview' ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'"
+              @click="switchImageViewMode('preview')">校正预览</button>
+            <button type="button" class="h-8 border-l border-slate-200 px-3 text-xs font-medium transition-colors"
+              :disabled="!sourceImageUrl"
+              :class="imageViewMode === 'source' ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50 disabled:opacity-40'"
+              @click="switchImageViewMode('source')">原始扫描</button>
           </div>
         </div>
 
-        <!-- Page thumbnails strip -->
-        <div class="h-[52px] border-t border-[var(--gov-border)] px-2 flex items-center gap-1 overflow-x-auto flex-shrink-0 bg-[var(--gov-surface-muted)]">
-          <template v-for="p in pageRange" :key="p">
-            <div v-if="isBoundaryPage(p) && p !== pageRange[0]" class="w-px h-8 bg-amber-400 mx-0.5 flex-shrink-0 rounded-full"></div>
-            <button @click="currentPage = p"
-              class="h-10 min-w-10 rounded-md border transition-all flex flex-col items-center justify-center gap-0.5 flex-shrink-0"
-              :class="currentPage === p
-                ? 'border-[var(--gov-primary)] bg-[var(--gov-primary-soft)] ring-1 ring-[var(--gov-primary)]/30'
-                : isBoundaryPage(p)
-                  ? 'border-amber-300 bg-amber-50 hover:border-amber-400'
-                  : 'border-[var(--gov-border)] bg-white hover:border-slate-300'">
-              <span class="text-[11px] font-medium" :class="currentPage === p ? 'text-[var(--gov-primary)]' : 'text-[var(--gov-text-muted)]'">{{ p }}</span>
-              <span v-if="isBoundaryPage(p)" class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-            </button>
-          </template>
+        <div class="relative flex-1 min-h-0 overflow-y-auto overflow-x-auto overscroll-contain bg-white">
+          <div class="flex min-h-max min-w-max items-start justify-center px-6 pb-24 pt-6">
+            <div v-if="pageImageUrl" class="relative inline-flex overflow-hidden border border-slate-200 bg-white">
+              <img ref="pageImageRef" :src="pageImageUrl" alt="页面预览" class="max-w-none select-none object-contain"
+                :style="pageImageStyle"
+                @load="handlePageImageLoad" />
+              <div class="pointer-events-none absolute inset-0">
+                <div v-for="block in pageOverlayItems" :key="block.id"
+                  class="absolute border transition-all duration-200"
+                  :class="overlayBoxClass(block)"
+                  :style="boxStyleFromBbox(block.bbox)">
+                  <span class="absolute -top-5 left-0 bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                    {{ officialBlockLabel(block) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <PdfViewer v-else-if="previewUrl && !pdfLoadFailed" :src="previewUrl" :page="currentPage" class="h-full w-full"
+              @page-change="(p) => (currentPage = p)" @load-error="pdfLoadFailed = true" />
+            <div v-else class="border border-dashed border-slate-300 bg-white px-8 py-10 text-sm text-[var(--gov-text-muted)]">暂无预览</div>
+          </div>
+          <div class="pointer-events-none absolute inset-x-0 bottom-5 flex justify-center">
+            <div class="pointer-events-auto inline-flex h-11 items-center gap-1 rounded-full border border-slate-200 bg-white/95 px-3 shadow-[0_10px_28px_rgba(15,23,42,0.14)] backdrop-blur">
+              <button type="button" class="h-8 w-8 rounded-full text-slate-400 transition hover:bg-slate-50 hover:text-slate-700 disabled:opacity-30" :disabled="currentPage <= pageRange[0]" @click="goToPage(currentPage - 1)" aria-label="上一页">‹</button>
+              <span class="mx-2 min-w-[64px] rounded border border-slate-200 bg-white px-3 py-1 text-center text-sm tabular-nums text-slate-700">{{ currentPage }}</span>
+              <span class="px-1 text-sm text-slate-400">/</span>
+              <span class="px-2 text-sm tabular-nums text-slate-600">{{ totalPages }}</span>
+              <button type="button" class="h-8 w-8 rounded-full text-slate-400 transition hover:bg-slate-50 hover:text-slate-700 disabled:opacity-30" :disabled="currentPage >= pageRange[pageRange.length - 1]" @click="goToPage(currentPage + 1)" aria-label="下一页">›</button>
+              <span class="mx-2 h-5 w-px bg-slate-200"></span>
+              <button type="button" class="h-8 w-8 rounded-full text-slate-500 transition hover:bg-slate-50 hover:text-slate-800" @click="changePreviewScale(-0.1)" aria-label="缩小">⌕</button>
+              <button type="button" class="h-8 w-8 rounded-full text-slate-500 transition hover:bg-slate-50 hover:text-slate-800" @click="changePreviewScale(0.1)" aria-label="放大">⊕</button>
+              <button type="button" class="h-8 w-8 rounded-full text-slate-500 transition hover:bg-slate-50 hover:text-slate-800" @click="resetPreviewScale" aria-label="重置缩放">↻</button>
+            </div>
+          </div>
         </div>
       </section>
 
       <!-- Right: evidence & actions -->
-      <aside v-if="!loadError" class="w-[300px] border-l border-[var(--gov-border)] bg-white flex flex-col flex-shrink-0">
+      <aside class="w-[620px] min-w-[620px] max-w-[620px] 2xl:w-[660px] 2xl:min-w-[660px] 2xl:max-w-[660px] border border-slate-200 bg-white flex flex-col flex-shrink-0 overflow-hidden min-h-0">
         <!-- Tab bar -->
-        <div class="h-10 px-3 border-b border-[var(--gov-border)] flex items-center gap-0.5 flex-shrink-0">
-          <button v-for="tab in evidenceTabs" :key="tab.key" @click="activeTab = tab.key"
-            class="h-7 px-2.5 text-[11px] font-medium rounded-md transition-colors"
-            :class="activeTab === tab.key
-              ? 'bg-[var(--gov-primary-soft)] text-[var(--gov-primary)]'
-              : 'text-[var(--gov-text-muted)] hover:text-[var(--gov-text)] hover:bg-slate-50'">{{ tab.label }}</button>
+        <div class="h-[42px] border-b border-slate-100 bg-[#f3f6ff] px-4 flex items-center justify-between gap-3 flex-shrink-0">
+          <div class="flex items-center gap-3 text-xs">
+            <span class="text-slate-500">解析模型</span>
+            <span class="font-medium text-blue-600">PaddleOCR-VL-1.5</span>
+            <span class="rounded bg-indigo-500 px-1.5 py-0.5 text-[10px] font-bold text-white">NEW</span>
+          </div>
+          <span class="text-slate-500">⌄</span>
         </div>
 
-        <div class="flex-1 overflow-y-auto">
+        <div class="h-[46px] border-b border-slate-100 bg-white px-4 flex items-center justify-between gap-2 flex-shrink-0">
+          <div class="inline-flex items-center gap-1">
+            <button v-for="tab in evidenceTabs" :key="tab.key" @click="activeTab = tab.key"
+              class="h-8 px-3 text-[13px] font-medium transition-colors"
+              :class="activeTab === tab.key
+                ? 'bg-blue-50 text-blue-600'
+                : 'text-slate-700 hover:bg-slate-50'">{{ tab.label }}</button>
+          </div>
+          <div class="flex items-center gap-4 text-slate-500">
+            <span class="text-[11px]">{{ currentPageStructureSummary.region_count }} 区域</span>
+            <button type="button" class="text-lg leading-none hover:text-slate-800" aria-label="解析设置">⌘</button>
+            <button type="button" class="text-lg leading-none hover:text-slate-800" aria-label="刷新">↻</button>
+            <button type="button" class="text-lg leading-none hover:text-slate-800" aria-label="下载">⇩</button>
+          </div>
+        </div>
+
+        <div ref="analysisPanelRef" class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-white">
           <!-- Tab: boundary evidence -->
           <div v-show="activeTab === 'boundary'">
             <div class="px-3 py-3 border-b border-[var(--gov-border)]">
@@ -225,9 +270,113 @@
             </div>
           </div>
 
-          <!-- Tab: OCR text -->
-          <div v-show="activeTab === 'ocr'" class="p-3">
-            <pre class="text-xs whitespace-pre-wrap break-words leading-relaxed text-[var(--gov-text)] max-h-[calc(100vh-280px)] overflow-y-auto bg-[var(--gov-surface-muted)] rounded-md border border-[var(--gov-border)] p-3">{{ currentPageOcr || '（当前页无OCR文本）' }}</pre>
+          <!-- Tab: structured OCR -->
+          <div v-show="activeTab === 'ocr'" class="mx-auto w-full max-w-[560px] space-y-8 px-5 py-8 2xl:max-w-[600px]">
+            <div v-if="currentStructureStatusText" class="border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
+              {{ currentStructureStatusText }}
+            </div>
+
+            <section v-if="!isOcrOnlyMode && tableStructuredBlocks.length" class="bg-white">
+              <div class="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
+                <div>
+                  <p class="text-sm font-semibold text-slate-800">表格区域</p>
+                  <p class="mt-0.5 text-[11px] text-slate-400">{{ tableStructuredBlocks.length }} 个表格 · 表格主体横向滚动</p>
+                </div>
+                <button type="button" class="text-[11px] font-semibold text-[var(--gov-primary)] hover:underline"
+                  @click="focusOcrBox(tableStructuredBlocks[0], { scroll: false })">定位区域</button>
+              </div>
+              <div class="space-y-5">
+                <article v-for="block in tableStructuredBlocks" :key="block.id"
+                  class="relative bg-white transition-all"
+                  :class="selectedOcrBoxId === block.id ? 'ring-1 ring-blue-500' : ''"
+                  @click="focusOcrBox(block, { scroll: false })">
+                  <div class="mb-1 flex items-center justify-between">
+                    <span class="bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">表格</span>
+                    <span class="text-[11px] text-slate-400">{{ blockConfidenceText(block) }}</span>
+                  </div>
+                  <div class="overflow-x-auto">
+                    <table v-if="normalizeTableRows(block.tableData).length" class="w-full min-w-[560px] table-fixed border-collapse text-[12px]">
+                      <tbody>
+                        <tr v-for="(row, rowIndex) in normalizeTableRows(block.tableData)" :key="rowIndex" class="bg-white">
+                          <td v-for="colIndex in tableColumnCount(block)" :key="colIndex"
+                            class="border border-slate-300 px-3 py-3 align-top leading-relaxed text-slate-700">
+                            {{ row[colIndex - 1] || '' }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <p v-else class="border border-blue-500 px-3 py-3 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{{ block.content || '表格结构未返回单元格，仅可定位区域。' }}</p>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section v-if="!isOcrOnlyMode && textStructuredBlocks.length" class="bg-white">
+              <div class="mb-4 border-b border-slate-100 pb-3">
+                <p class="text-sm font-semibold text-slate-800">正文 / 标题区域</p>
+                <p class="mt-0.5 text-[11px] text-slate-400">已排除表格和印章文本，避免证据混在正文里。</p>
+              </div>
+              <div class="space-y-5">
+                <button v-for="block in textStructuredBlocks" :key="block.id" type="button"
+                  class="relative w-full bg-white text-left transition-all"
+                  :class="selectedOcrBoxId === block.id ? 'ring-1 ring-blue-500' : ''"
+                  @click="focusOcrBox(block, { scroll: false })">
+                  <div class="mb-1 flex items-center justify-between gap-2">
+                    <span class="bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">{{ officialBlockLabel(block) }}</span>
+                    <span class="text-[10px] text-slate-400">{{ blockConfidenceText(block) }}</span>
+                  </div>
+                  <p class="border px-4 py-3 text-sm leading-7 text-slate-800 whitespace-pre-wrap"
+                    :class="selectedOcrBoxId === block.id ? 'border-blue-500' : 'border-transparent'">{{ block.content || '（无文本）' }}</p>
+                </button>
+              </div>
+            </section>
+
+            <section v-if="!isOcrOnlyMode && sealStructuredBlocks.length" class="bg-white">
+              <div class="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
+                <div>
+                  <p class="text-sm font-semibold text-slate-800">印章 / 归档章证据</p>
+                  <p class="mt-0.5 text-[11px] text-slate-400">{{ sealStructuredBlocks.length }} 个区域，裁剪自当前页图。</p>
+                </div>
+              </div>
+              <div class="space-y-6">
+                <article v-for="block in sealStructuredBlocks" :key="block.id" :ref="(el) => setSealCardRef(block, el)"
+                  class="relative bg-white transition-all"
+                  :class="selectedOcrBoxId === block.id ? 'ring-1 ring-blue-500' : ''"
+                  @click="focusOcrBox(block, { scroll: false })">
+                  <div class="mb-1 flex items-center justify-between">
+                    <span class="bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">印章</span>
+                    <span class="text-[10px] text-slate-400">{{ blockConfidenceText(block) }}</span>
+                  </div>
+                  <div v-if="pageImageUrl && sealCropRect(block)" class="relative h-[220px] overflow-hidden border border-slate-200 bg-white" :style="sealCropFrameStyle(block)">
+                    <img :src="pageImageUrl" alt="印章裁剪预览" class="absolute max-w-none object-fill" :style="sealCropStyle(block)" />
+                  </div>
+                  <div v-else class="border border-dashed border-slate-200 bg-slate-50 px-3 py-8 text-center text-xs text-slate-500">
+                    当前印章缺少可裁剪 bbox，已降级为文字证据。
+                  </div>
+                  <div class="mt-2 bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white">
+                    {{ sealPrimaryText(block) }}
+                  </div>
+                  <div class="mt-3 space-y-1.5">
+                    <p v-for="(text, textIndex) in sealTextList(block)" :key="textIndex" class="border border-transparent px-2.5 py-1.5 text-sm leading-relaxed text-slate-700">
+                      {{ text }}
+                    </p>
+                  </div>
+                  <div class="mt-3 flex items-center justify-end gap-2">
+                    <button type="button" class="h-8 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-50" @click.stop="copySealText(block)">复制</button>
+                    <button type="button" class="h-8 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-50" @click.stop="requestSealCorrection(block)">纠正</button>
+                    <button type="button" class="h-8 rounded-full border border-blue-200 bg-white px-3 text-[11px] font-semibold text-blue-600 shadow-sm hover:bg-blue-50" @click.stop="focusOcrBox(block)">定位区域</button>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section v-if="isOcrOnlyMode" class="bg-white">
+              <div class="mb-4 border-b border-slate-100 pb-3">
+                <p class="text-sm font-semibold text-slate-800">OCR 行文本</p>
+                <p class="mt-0.5 text-[11px] text-slate-400">当前页没有结构化区域，以下为纯文本识别结果。</p>
+              </div>
+              <pre class="whitespace-pre-wrap break-words text-sm leading-7 text-slate-800">{{ currentPageOcr || '（当前页无OCR文本）' }}</pre>
+            </section>
           </div>
         </div>
 
@@ -262,6 +411,8 @@
           </p>
         </div>
       </aside>
+      </div>
+      </div>
     </div>
 
     <ReworkModal v-model="showReworkModal" :record-id="String(taskId)" @submitted="submitStructure('reject', $event)" />
@@ -269,7 +420,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
@@ -290,20 +441,27 @@ const loadError = ref('')
 const submitting = ref(false)
 const opMsg = ref(null)
 const showReworkModal = ref(false)
-const activeTab = ref('boundary')
+const activeTab = ref('ocr')
 const dragFrom = ref(-1)
 const dragOverIdx = ref(-1)
 const refreshing = ref(false)
 const lastRefreshedAt = ref(null)
 const hasLocalStructureChanges = ref(false)
+const imageViewMode = ref('preview')
+const pageImageRef = ref(null)
+const pageImageNaturalSize = ref({ width: 0, height: 0 })
+const selectedOcrBoxId = ref('')
+const analysisPanelRef = ref(null)
+const sealCardRefs = new Map()
+const previewScale = ref(1)
 
 const AUTO_REFRESH_MS = 10000
 const ACTIVE_REVIEW_TASK_STATUSES = new Set(['pending', 'processing', 'human_review', 'claimed', 'running'])
 let structureRefreshTimer = null
 
 const evidenceTabs = [
-  { key: 'boundary', label: '边界证据' },
-  { key: 'ocr', label: 'OCR 文本' },
+  { key: 'ocr', label: '文档解析' },
+  { key: 'boundary', label: 'JSON' },
 ]
 
 const selectedDoc = computed(() => docs.value[selectedIdx.value] || null)
@@ -318,7 +476,20 @@ const _currentPageEntry = computed(() => {
   const localIdx = Math.max(0, Number(currentPage.value) - start)
   return doc.ocr_pages[localIdx] || doc.ocr_pages[0] || null
 })
-const pageImageUrl = computed(() => _currentPageEntry.value?.image_url || null)
+const previewImageUrl = computed(() => _currentPageEntry.value?.preview_image_url || _currentPageEntry.value?.previewImageUrl || _currentPageEntry.value?.image_url || null)
+const sourceImageUrl = computed(() => _currentPageEntry.value?.source_image_url || _currentPageEntry.value?.sourceImageUrl || null)
+const hasDistinctPreview = computed(() => Boolean(previewImageUrl.value && sourceImageUrl.value && previewImageUrl.value !== sourceImageUrl.value))
+const pageImageUrl = computed(() => {
+  if (imageViewMode.value === 'source' && sourceImageUrl.value) return sourceImageUrl.value
+  return previewImageUrl.value || sourceImageUrl.value || null
+})
+const pageImageStyle = computed(() => ({
+  width: `${Math.round(760 * previewScale.value)}px`,
+  maxWidth: 'none',
+  ...(pageImageRotation.value ? { transform: `rotate(${pageImageRotation.value}deg)`, transformOrigin: 'center center' } : {}),
+}))
+const currentImageViewLabel = computed(() => imageViewMode.value === 'source' ? '原始扫描' : '校正预览')
+const currentImageViewHint = computed(() => imageViewMode.value === 'source' ? '展示未校正原图，点击右侧定位后才叠加区域框' : '用于审核的预处理/方向校正图')
 const pageImageRotation = computed(() => Number(_currentPageEntry.value?.rotation || 0))
 const confirmedCount = computed(() => docs.value.filter(d => d._confirmed).length)
 const progressPercent = computed(() => docs.value.length ? Math.round((confirmedCount.value / docs.value.length) * 100) : 0)
@@ -337,6 +508,41 @@ const refreshStatusText = computed(() => {
     return stamp ? `${stamp} 更新 · 结构审核页每10s自动刷新` : '结构审核页每10s自动刷新'
   }
   return stamp ? `${stamp} 更新` : ''
+})
+
+const currentPageLines = computed(() => normalizeOcrLines(_currentPageEntry.value?.lines || _currentPageEntry.value?.ocr_lines || []))
+const pageStructuredBlocks = computed(() => {
+  const regions = Array.isArray(_currentPageEntry.value?.regions) ? _currentPageEntry.value.regions : []
+  return regions.map((region, index) => normalizeStructuredBlock(region, index)).filter(Boolean)
+})
+const tableStructuredBlocks = computed(() => pageStructuredBlocks.value.filter((block) => block.type === 'table'))
+const sealStructuredBlocks = computed(() => pageStructuredBlocks.value.filter((block) => block.type === 'seal'))
+const textStructuredBlocks = computed(() => pageStructuredBlocks.value.filter((block) => block.type !== 'table' && block.type !== 'seal'))
+const visibleStructuredBlocks = computed(() => [...tableStructuredBlocks.value, ...textStructuredBlocks.value, ...sealStructuredBlocks.value])
+const currentPageStructureSummary = computed(() => {
+  const raw = _currentPageEntry.value?.structure_summary || _currentPageEntry.value?.structureSummary || {}
+  const selectedMode = raw.selected_mode || raw.selectedMode || _currentPageEntry.value?.selected_mode || _currentPageEntry.value?.layout_type || (pageStructuredBlocks.value.length ? 'layout' : 'ocr_only')
+  return {
+    region_count: Number(raw.region_count ?? raw.regionCount ?? pageStructuredBlocks.value.length) || 0,
+    table_count: Number(raw.table_count ?? raw.tableCount ?? tableStructuredBlocks.value.length) || 0,
+    seal_count: Number(raw.seal_count ?? raw.sealCount ?? sealStructuredBlocks.value.length) || 0,
+    line_count: Number(raw.line_count ?? raw.lineCount ?? currentPageLines.value.length) || 0,
+    selected_mode: selectedMode,
+  }
+})
+const isOcrOnlyMode = computed(() => String(currentPageStructureSummary.value.selected_mode || '').toLowerCase() === 'ocr_only' || (!pageStructuredBlocks.value.length && currentPageLines.value.length > 0))
+const currentStructureStatusText = computed(() => {
+  if (isOcrOnlyMode.value) return '当前页未产出结构化结果，仅展示 OCR 行文本'
+  if (!pageStructuredBlocks.value.length) return '当前页暂无可定位的结构化区域'
+  return ''
+})
+const selectedStructuredBlock = computed(() => visibleStructuredBlocks.value.find((block) => block.id === selectedOcrBoxId.value) || null)
+const primaryStructuredBlock = computed(() => tableStructuredBlocks.value[0] || textStructuredBlocks.value[0] || sealStructuredBlocks.value[0] || null)
+const pageOverlayItems = computed(() => {
+  if (!pageImageUrl.value) return []
+  if (selectedStructuredBlock.value) return [selectedStructuredBlock.value]
+  if (imageViewMode.value === 'source') return []
+  return primaryStructuredBlock.value ? [primaryStructuredBlock.value] : []
 })
 
 const pageRange = computed(() => {
@@ -361,11 +567,263 @@ const confPercent = computed(() => {
 })
 
 const currentPageOcr = computed(() => {
+  const entry = _currentPageEntry.value
+  if (entry?.text || entry?.ocr_text || entry?.content) return entry.text || entry.ocr_text || entry.content
+  if (currentPageLines.value.length) return currentPageLines.value.map((line) => line.text).filter(Boolean).join('\n')
   const pages = selectedDoc.value?.ocr_pages || selectedDoc.value?.pages || []
   if (!Array.isArray(pages)) return ''
   const p = pages.find(pg => Number(pg.page_no || pg.page || pg.index) === Number(currentPage.value))
   return p?.text || ''
 })
+
+function normalizeOcrLines(lines) {
+  if (!Array.isArray(lines)) return []
+  return lines.map((line, index) => {
+    if (typeof line === 'string') return { id: `line_${index}`, text: line, confidence: null }
+    return {
+      id: String(line.id || line.line_id || `line_${index}`),
+      text: String(line.text || line.content || line.words || '').trim(),
+      confidence: line.confidence ?? line.score ?? null,
+      bbox: normalizeBbox(line.bbox || line.box || line.position || null),
+    }
+  }).filter((line) => line.text)
+}
+
+function normalizeRegionType(region = {}) {
+  const raw = String(region.type || region.region_type || region.layout_type || region.category || '').toLowerCase()
+  if (raw.includes('table') || raw.includes('表')) return 'table'
+  if (raw.includes('seal') || raw.includes('stamp') || raw.includes('印章') || raw.includes('归档章')) return 'seal'
+  if (raw.includes('title') || raw.includes('标题')) return 'title'
+  return 'text'
+}
+
+function normalizeStructuredBlock(region = {}, index = 0) {
+  const type = normalizeRegionType(region)
+  const tableData = region.table_data || region.tableData || region.table || null
+  const lines = normalizeOcrLines(region.lines || region.region_lines || region.ocr_lines || [])
+  const content = extractRegionText(region, lines)
+  const bbox = normalizeBbox(region.bbox || region.box || region.position || region.bounds || null)
+  if (!content && !tableData && !bbox) return null
+  return {
+    raw: region,
+    id: String(region.id || region.region_id || `${type}_${index}`),
+    index,
+    type,
+    label: region.label || region.name || (type === 'table' ? '表格' : type === 'seal' ? '印章' : type === 'title' ? '标题' : '正文'),
+    confidence: region.confidence ?? region.score ?? region.probability ?? null,
+    content,
+    tableData,
+    lines,
+    bbox,
+  }
+}
+
+function extractRegionText(region = {}, lines = []) {
+  const direct = region.content || region.text || region.value || region.words
+  if (direct) return String(direct).trim()
+  if (Array.isArray(region.texts)) return region.texts.map((item) => typeof item === 'string' ? item : item?.text || item?.content || '').filter(Boolean).join('\n')
+  if (lines.length) return lines.map((line) => line.text).filter(Boolean).join('\n')
+  return ''
+}
+
+function normalizeBbox(raw) {
+  if (!raw) return null
+  if (Array.isArray(raw) && raw.length >= 4) {
+    const nums = raw.slice(0, 4).map(Number)
+    if (nums.some((num) => !Number.isFinite(num))) return null
+    const [x1, y1, x2, y2] = nums
+    if (x2 > x1 && y2 > y1) return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }
+    return { x: x1, y: y1, width: Math.max(0, x2), height: Math.max(0, y2) }
+  }
+  if (typeof raw === 'object') {
+    const x = Number(raw.x ?? raw.left ?? raw.x1 ?? raw.min_x)
+    const y = Number(raw.y ?? raw.top ?? raw.y1 ?? raw.min_y)
+    const width = raw.width ?? raw.w
+    const height = raw.height ?? raw.h
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(Number(width)) && Number.isFinite(Number(height))) {
+      return { x, y, width: Number(width), height: Number(height) }
+    }
+    const right = Number(raw.right ?? raw.x2 ?? raw.max_x)
+    const bottom = Number(raw.bottom ?? raw.y2 ?? raw.max_y)
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(right) && Number.isFinite(bottom)) {
+      return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) }
+    }
+  }
+  return null
+}
+
+function clamp(num, min = 0, max = 100) {
+  return Math.min(max, Math.max(min, Number(num) || 0))
+}
+
+function bboxToPercentRect(bbox, expand = 0) {
+  if (!bbox) return null
+  const values = [bbox.x, bbox.y, bbox.width, bbox.height].map(Number)
+  if (values.some((value) => !Number.isFinite(value))) return null
+  let [x, y, width, height] = values
+  const maxValue = Math.max(Math.abs(x), Math.abs(y), Math.abs(width), Math.abs(height), Math.abs(x + width), Math.abs(y + height))
+  if (maxValue <= 1.2) {
+    x *= 100; y *= 100; width *= 100; height *= 100
+  } else if (pageImageNaturalSize.value.width > 0 && pageImageNaturalSize.value.height > 0) {
+    x = (x / pageImageNaturalSize.value.width) * 100
+    y = (y / pageImageNaturalSize.value.height) * 100
+    width = (width / pageImageNaturalSize.value.width) * 100
+    height = (height / pageImageNaturalSize.value.height) * 100
+  } else if (maxValue > 100) {
+    return null
+  }
+  const padX = expand ? Math.max(width * expand, pageImageNaturalSize.value.width ? (18 / pageImageNaturalSize.value.width) * 100 : 2) : 0
+  const padY = expand ? Math.max(height * expand, pageImageNaturalSize.value.height ? (18 / pageImageNaturalSize.value.height) * 100 : 2) : 0
+  const left = clamp(x - padX)
+  const top = clamp(y - padY)
+  const right = clamp(x + width + padX)
+  const bottom = clamp(y + height + padY)
+  return { x: left, y: top, width: Math.max(0.5, right - left), height: Math.max(0.5, bottom - top) }
+}
+
+function boxStyleFromBbox(bbox) {
+  const rect = bboxToPercentRect(bbox)
+  if (!rect) return { display: 'none' }
+  return { left: `${rect.x}%`, top: `${rect.y}%`, width: `${rect.width}%`, height: `${rect.height}%` }
+}
+
+function overlayBoxClass(block) {
+  if (block?.type === 'seal') return 'border-rose-500 bg-rose-500/5'
+  return 'border-blue-600 bg-blue-500/5'
+}
+
+function officialBlockLabel(block) {
+  if (block?.type === 'table') return '表格'
+  if (block?.type === 'seal') return '印章'
+  if (block?.type === 'title') return '标题'
+  return '文本'
+}
+
+function blockConfidenceText(block) {
+  const value = Number(block?.confidence)
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : ''
+}
+
+function normalizeTableRows(tableData) {
+  if (!tableData) return []
+  const rawRows = Array.isArray(tableData)
+    ? tableData
+    : Array.isArray(tableData.rows)
+      ? tableData.rows
+      : Array.isArray(tableData.data)
+        ? tableData.data
+        : []
+  return rawRows.map((row) => {
+    if (Array.isArray(row)) return row.map((cell) => String(cell?.text ?? cell?.content ?? cell ?? '').trim())
+    if (row && typeof row === 'object') return Object.values(row).map((cell) => String(cell?.text ?? cell?.content ?? cell ?? '').trim())
+    return [String(row ?? '').trim()]
+  }).filter((row) => row.some(Boolean))
+}
+
+function tableColumnCount(block) {
+  const rows = normalizeTableRows(block?.tableData)
+  return Math.max(1, ...rows.map((row) => row.length))
+}
+
+function focusOcrBox(block, options = {}) {
+  if (!block) return
+  selectedOcrBoxId.value = block.id
+  if (block.type === 'seal' && options.scroll !== false) {
+    nextTick(() => sealCardRefs.get(block.id)?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }))
+  }
+}
+
+function setSealCardRef(block, el) {
+  if (!block?.id) return
+  if (el) sealCardRefs.set(block.id, el)
+  else sealCardRefs.delete(block.id)
+}
+
+function sealTextList(block) {
+  const rawItems = block?.raw?.texts || block?.raw?.lines || block?.lines || []
+  const items = normalizeOcrLines(rawItems).map((line) => line.text).filter(Boolean)
+  if (items.length) return items
+  return String(block?.content || '').split(/\r?\n|\s{2,}/).map((item) => item.trim()).filter(Boolean)
+}
+
+function sealPrimaryText(block) {
+  const items = sealTextList(block)
+  if (!items.length) return '未识别到印章文本'
+  return items.find((item) => /公司|委员会|管理|编号|[0-9]{6,}/.test(item)) || items[0]
+}
+
+function sealCropRect(block) {
+  return bboxToPercentRect(block?.bbox, 0.16)
+}
+
+function sealCropFrameStyle(block) {
+  const rect = sealCropRect(block)
+  return rect ? { aspectRatio: `${Math.max(rect.width, 1)} / ${Math.max(rect.height, 1)}` } : {}
+}
+
+function sealCropStyle(block) {
+  const rect = sealCropRect(block)
+  if (!rect) return {}
+  return {
+    width: `${10000 / rect.width}%`,
+    height: `${10000 / rect.height}%`,
+    left: `-${(rect.x * 100) / rect.width}%`,
+    top: `-${(rect.y * 100) / rect.height}%`,
+  }
+}
+
+function handlePageImageLoad(event) {
+  pageImageNaturalSize.value = {
+    width: Number(event?.target?.naturalWidth || 0),
+    height: Number(event?.target?.naturalHeight || 0),
+  }
+}
+
+function switchImageViewMode(mode) {
+  imageViewMode.value = mode
+  if (mode === 'source') selectedOcrBoxId.value = ''
+}
+
+function goToPage(page) {
+  const first = pageRange.value[0] || 1
+  const last = pageRange.value[pageRange.value.length - 1] || first
+  currentPage.value = Math.min(Math.max(Number(page) || first, first), last)
+}
+
+function changePreviewScale(delta) {
+  previewScale.value = Math.min(1.6, Math.max(0.7, Number((previewScale.value + delta).toFixed(2))))
+}
+
+function resetPreviewScale() {
+  previewScale.value = 1
+}
+
+async function copySealText(block) {
+  const text = sealTextList(block).join('\n') || block?.content || ''
+  if (!text) return
+  try {
+    if (navigator?.clipboard?.writeText) await navigator.clipboard.writeText(text)
+    else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    opMsg.value = { ok: true, text: '印章识别文本已复制' }
+  } catch (error) {
+    opMsg.value = { ok: false, text: '复制失败，请手动选择文本' }
+  }
+}
+
+function requestSealCorrection(block) {
+  focusOcrBox(block, { scroll: false })
+  opMsg.value = { ok: true, text: '已定位印章区域，可在后续纠正流程中核对文本' }
+}
 
 function docConfidence(doc) { return doc?.confidence ?? doc?.evidence?.confidence ?? null }
 function confColor(c) { return c == null ? 'text-slate-400' : c >= 0.8 ? 'text-green-600' : c >= 0.5 ? 'text-amber-600' : 'text-red-600' }
@@ -455,6 +913,11 @@ function selectDoc(idx, options = {}) {
   const span = getDocSpan(doc)
   const requestedPage = options.preservePage ? Number(options.page || span.start) : span.start
   currentPage.value = Math.min(Math.max(requestedPage, span.start), span.end)
+  selectedOcrBoxId.value = ''
+  imageViewMode.value = 'preview'
+  previewScale.value = 1
+  sealCardRefs.clear()
+  pageImageNaturalSize.value = { width: 0, height: 0 }
 }
 
 function onDragStart(idx, e) { dragFrom.value = idx; e.dataTransfer.effectAllowed = 'move' }
@@ -562,6 +1025,14 @@ watch(autoRefreshEnabled, (active) => {
 })
 
 watch(selectedIdx, () => { pdfLoadFailed.value = false })
+watch(currentPage, () => {
+  selectedOcrBoxId.value = ''
+  sealCardRefs.clear()
+  pageImageNaturalSize.value = { width: 0, height: 0 }
+})
+watch(sourceImageUrl, (url) => {
+  if (!url && imageViewMode.value === 'source') imageViewMode.value = 'preview'
+})
 
 onMounted(() => { loadTask(); document.addEventListener('keydown', handleKeyboard) })
 onUnmounted(() => { stopAutoRefresh(); document.removeEventListener('keydown', handleKeyboard) })

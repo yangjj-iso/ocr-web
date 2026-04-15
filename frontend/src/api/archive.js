@@ -186,6 +186,77 @@ function normalizeArchiveDocUnit(doc = {}) {
   }
 }
 
+function normalizeReviewOcrPage(page = {}) {
+  const regions = Array.isArray(page.regions) ? page.regions : []
+  const lines = Array.isArray(page.lines)
+    ? page.lines
+    : Array.isArray(page.ocr_lines)
+      ? page.ocr_lines
+      : Array.isArray(page.ocrLines)
+        ? page.ocrLines
+        : []
+  const previewImageUrl = page.preview_image_url || page.previewImageUrl || page.preview_uri || page.previewUri || page.image_url || page.imageUrl || ''
+  const sourceImageUrl = page.source_image_url || page.sourceImageUrl || page.source_uri || page.sourceUri || page.original_image_url || page.originalImageUrl || ''
+  const tableCount = regions.filter((region) => {
+    const type = String(region?.type || region?.region_type || '').toLowerCase()
+    return type.includes('table') || type.includes('表')
+  }).length
+  const sealCount = regions.filter((region) => {
+    const type = String(region?.type || region?.region_type || '').toLowerCase()
+    return type.includes('seal') || type.includes('stamp') || type.includes('印章') || type.includes('归档章')
+  }).length
+  const summary = page.structure_summary || page.structureSummary || {}
+  return {
+    ...page,
+    page_no: Number(page.page_no ?? page.pageNo ?? page.page ?? page.index ?? 1) || 1,
+    image_url: page.image_url || page.imageUrl || previewImageUrl || sourceImageUrl,
+    preview_image_url: previewImageUrl,
+    source_image_url: sourceImageUrl,
+    regions,
+    lines,
+    structure_summary: {
+      region_count: Number(summary.region_count ?? summary.regionCount ?? regions.length) || 0,
+      table_count: Number(summary.table_count ?? summary.tableCount ?? tableCount) || 0,
+      seal_count: Number(summary.seal_count ?? summary.sealCount ?? sealCount) || 0,
+      line_count: Number(summary.line_count ?? summary.lineCount ?? lines.length) || 0,
+      selected_mode: summary.selected_mode || summary.selectedMode || page.selected_mode || page.layout_type || (regions.length ? 'layout' : 'ocr_only'),
+    },
+  }
+}
+
+function normalizeReviewDocUnit(doc = {}) {
+  const rawPages = Array.isArray(doc.ocr_pages)
+    ? doc.ocr_pages
+    : Array.isArray(doc.ocrPages)
+      ? doc.ocrPages
+      : Array.isArray(doc.pages)
+        ? doc.pages
+        : []
+  const normalizedPages = rawPages.map((page) => normalizeReviewOcrPage(page))
+  return {
+    ...normalizeArchiveDocUnit(doc),
+    ...doc,
+    ocr_pages: normalizedPages,
+    pages: normalizedPages.length ? normalizedPages : doc.pages,
+  }
+}
+
+function normalizeReviewTaskPayload(task = {}) {
+  const rawDocs = Array.isArray(task.docs)
+    ? task.docs
+    : Array.isArray(task.doc_units)
+      ? task.doc_units
+      : Array.isArray(task.docUnits)
+        ? task.docUnits
+        : []
+  const docs = rawDocs.map((doc) => normalizeReviewDocUnit(doc))
+  return {
+    ...task,
+    docs,
+    doc_units: docs,
+  }
+}
+
 function normalizeArchiveVersion(version = {}, index = 0) {
   return {
     ...version,
@@ -309,11 +380,11 @@ export const listReviewTasks = (params = {}) =>
   )
 
 export const getReviewTask = (taskId) =>
-  aiApi.get(`/tasks/${taskId}`).catch(async (error) => {
+  aiApi.get(`/tasks/${taskId}`).then(({ data }) => ({ data: normalizeReviewTaskPayload(data) })).catch(async (error) => {
     if (!isNotFound(error)) throw error
     const { data } = await legacyOcrApi.get(`/tasks/${taskId}`)
     const task = normalizeLegacyTaskItem(data || {})
-    return { data: { ...task, docs: [], doc_units: [], evidence: {} } }
+    return { data: normalizeReviewTaskPayload({ ...task, docs: [], doc_units: [], evidence: {} }) }
   })
 
 export const getWorkflowEvents = (taskId) =>
