@@ -4,6 +4,7 @@ import com.ocrweb.controlplane.auth.domain.AppUserEntity;
 import com.ocrweb.controlplane.auth.dto.AuthDtos;
 import com.ocrweb.controlplane.auth.repository.AppUserRepository;
 import com.ocrweb.controlplane.config.AuthProperties;
+import com.ocrweb.controlplane.tenant.service.TenantService;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.transaction.Transactional;
@@ -28,17 +29,20 @@ public class AuthService {
     private final PasswordHashService passwordHashService;
     private final SessionTokenService sessionTokenService;
     private final AuthProperties authProperties;
+    private final TenantService tenantService;
 
     public AuthService(
             AppUserRepository appUserRepository,
             PasswordHashService passwordHashService,
             SessionTokenService sessionTokenService,
-            AuthProperties authProperties
+            AuthProperties authProperties,
+            TenantService tenantService
     ) {
         this.appUserRepository = appUserRepository;
         this.passwordHashService = passwordHashService;
         this.sessionTokenService = sessionTokenService;
         this.authProperties = authProperties;
+        this.tenantService = tenantService;
     }
 
     public AuthDtos.AuthStatusResponse getAuthStatus(HttpServletRequest request) {
@@ -105,7 +109,7 @@ public class AuthService {
             capabilities = "operator"; // default capability for new members
         }
 
-        String resolvedTenantId = (tenantId == null || tenantId.isBlank()) ? "default" : tenantId.strip();
+        String resolvedTenantId = tenantService.resolveActiveTenantId(tenantId);
 
         AppUserEntity user = new AppUserEntity();
         user.setUsername(normalizedUsername);

@@ -5,6 +5,7 @@ import com.ocrweb.controlplane.task.service.AiProxyService;
 import com.ocrweb.controlplane.task.service.OcrTaskService;
 import com.ocrweb.controlplane.auth.service.AuthService;
 import com.ocrweb.controlplane.auth.service.CurrentUser;
+import com.ocrweb.controlplane.auth.service.OperationLogService;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -35,11 +36,13 @@ public class OcrTaskController {
     private final OcrTaskService taskService;
     private final AiProxyService aiProxyService;
     private final AuthService authService;
+    private final OperationLogService operationLogService;
 
-    public OcrTaskController(OcrTaskService taskService, AiProxyService aiProxyService, AuthService authService) {
+    public OcrTaskController(OcrTaskService taskService, AiProxyService aiProxyService, AuthService authService, OperationLogService operationLogService) {
         this.taskService = taskService;
         this.aiProxyService = aiProxyService;
         this.authService = authService;
+        this.operationLogService = operationLogService;
     }
 
     @PostMapping("/upload")
@@ -84,8 +87,14 @@ public class OcrTaskController {
             @Valid @RequestBody TaskDtos.AssignTasksRequest request,
             HttpServletRequest servletRequest
     ) {
-        authService.requireAdmin(servletRequest);
+        CurrentUser currentUser = authService.requireAdmin(servletRequest);
         int affected = taskService.assignTasks(request.taskIds(), request.assigneeUsername());
+        String resourceId = request.taskIds().isEmpty() ? "" : String.valueOf(request.taskIds().get(0));
+        operationLogService.writeLog(currentUser, servletRequest, "claim", "task", resourceId, java.util.Map.of(
+            "task_ids", request.taskIds(),
+            "assignee_username", request.assigneeUsername(),
+            "message", "任务已分配"
+        ));
         return new TaskDtos.BatchOperationResponse(affected, "已分配 " + affected + " 个任务");
     }
 
@@ -94,8 +103,13 @@ public class OcrTaskController {
             @Valid @RequestBody TaskDtos.SubmitBatchRequest request,
             HttpServletRequest servletRequest
     ) {
-        authService.requireOperatorOrAdmin(servletRequest);
+        CurrentUser currentUser = authService.requireOperatorOrAdmin(servletRequest);
         int affected = taskService.submitBatchForProcessing(request.taskIds());
+        String resourceId = request.taskIds().isEmpty() ? "" : String.valueOf(request.taskIds().get(0));
+        operationLogService.writeLog(currentUser, servletRequest, "submit", "task", resourceId, java.util.Map.of(
+            "task_ids", request.taskIds(),
+            "message", "任务已提交处理"
+        ));
         return new TaskDtos.BatchOperationResponse(affected, "已提交 " + affected + " 个任务进行识别");
     }
 
@@ -150,6 +164,30 @@ public class OcrTaskController {
     ) {
         authService.requireOperatorOrAdmin(servletRequest);
         return taskService.updateTask(taskId, request);
+    }
+
+    @PostMapping("/tasks/{taskId}/release-decision")
+    public TaskDtos.ReleaseDecisionResponse submitReleaseDecision(
+            @PathVariable Long taskId,
+            @RequestBody TaskDtos.ReleaseDecisionRequest request,
+            HttpServletRequest servletRequest
+    ) {
+        CurrentUser currentUser = authService.requireOperatorOrAdmin(servletRequest);
+        TaskDtos.ReleaseDecisionResponse response = taskService.submitReleaseDecision(taskId, request, currentUser);
+        TaskDtos.TaskDetailResponse task = taskService.getTask(taskId);
+        String actionType = "reject".equalsIgnoreCase(request == null ? null : request.decision())
+                ? "rework_request"
+                : "archive".equalsIgnoreCase(request == null ? null : request.action())
+                    ? "archive_store"
+                    : "final_release";
+        java.util.Map<String, Object> detail = new java.util.LinkedHashMap<>();
+        detail.put("batch_id", task.batchId());
+        detail.put("decision", request == null ? "" : request.decision());
+        detail.put("action", request == null ? "" : request.action());
+        detail.put("rework_id", response.reworkId() == null ? "" : response.reworkId());
+        detail.put("message", "reject".equalsIgnoreCase(request == null ? null : request.decision()) ? "已创建返工任务" : "已完成放行决策");
+        operationLogService.writeLog(currentUser, servletRequest, actionType, "task", String.valueOf(taskId), detail);
+        return response;
     }
 
     @PostMapping("/tasks/{taskId}/human-review/resume")

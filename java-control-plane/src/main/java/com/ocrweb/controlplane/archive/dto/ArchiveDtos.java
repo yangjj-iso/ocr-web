@@ -31,6 +31,54 @@ public final class ArchiveDtos {
     public record ArchiveRecordListResponse(long total, List<ArchiveRecordResponse> records) {
     }
 
+    public record ArchiveDocUnitResponse(
+            String id,
+            String docId,
+            String title,
+            Integer sortIndex,
+            Integer startPage,
+            Integer endPage,
+            Integer pageCount,
+            String status,
+            String previewUrl,
+            String pdfUrl
+    ) {
+    }
+
+    public record ArchiveVersionResponse(
+            Long id,
+            Integer versionNo,
+            String versionType,
+            OffsetDateTime createdAt
+    ) {
+    }
+
+    public record ArchiveRecordDetailResponse(
+            Long id,
+            String recordId,
+            Long taskId,
+            String batchId,
+            String batchFolder,
+            String archiveNo,
+            String docNo,
+            String responsible,
+            String title,
+            String date,
+            String preservationPeriod,
+            String classification,
+            String remarks,
+            String storagePath,
+            Integer pageCount,
+            String status,
+            String pdfUrl,
+            String fileUrl,
+            String lastReworkStatus,
+            List<ArchiveDocUnitResponse> docUnits,
+            List<ArchiveVersionResponse> versions,
+            OffsetDateTime createdAt
+    ) {
+    }
+
     public record ImportArchiveRequest(
             @JsonAlias("file_path") String filePath,
             @JsonAlias("batch_id") String batchId

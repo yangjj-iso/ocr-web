@@ -1,11 +1,14 @@
 import axios from 'axios'
-import { aiApiBase, requestDefaults } from './runtime.js'
+import { controlPlaneApiBase, requestDefaults } from './runtime.js'
 
-const tenantsApi = axios.create({ baseURL: aiApiBase('/admin/tenants'), ...requestDefaults })
+const tenantsApi = axios.create({ baseURL: controlPlaneApiBase('/admin/tenants'), ...requestDefaults })
+const publicTenantsApi = axios.create({ baseURL: controlPlaneApiBase('/tenants'), ...requestDefaults })
 
-export const listTenants = () => tenantsApi.get('/')
+export const listPublicTenants = () => publicTenantsApi.get('')
 
-export const createTenant = (data) => tenantsApi.post('/', data)
+export const listTenants = () => tenantsApi.get('')
+
+export const createTenant = (data) => tenantsApi.post('', data)
 
 export const getTenant = (tenantId) => tenantsApi.get(`/${tenantId}`)
 

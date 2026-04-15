@@ -1,11 +1,17 @@
 <template>
   <AppShell>
     <div class="p-5 space-y-4">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-3">
         <h1 class="gov-page-header">入库发布确认</h1>
-        <button @click="handleExport" :disabled="!selectedRow || exporting" class="px-3 py-1.5 text-sm border border-[var(--gov-primary)] text-[var(--gov-primary)] rounded-md hover:bg-blue-50 transition disabled:opacity-40">
-          {{ exporting ? '导出中…' : '导出终审 PDF' }}
-        </button>
+        <div class="flex items-center gap-2">
+          <span v-if="refreshStatusText" class="hidden text-xs text-[var(--gov-text-muted)] md:inline">{{ refreshStatusText }}</span>
+          <button @click="handleManualRefresh" class="px-3 py-1.5 text-sm border border-[var(--gov-border)] text-[var(--gov-text-muted)] rounded-md hover:bg-slate-50 transition">
+            刷新
+          </button>
+          <button @click="handleExport" :disabled="!selectedRow || exporting" class="px-3 py-1.5 text-sm border border-[var(--gov-primary)] text-[var(--gov-primary)] rounded-md hover:bg-blue-50 transition disabled:opacity-40">
+            {{ exporting ? '导出中…' : '导出终审 PDF' }}
+          </button>
+        </div>
       </div>
 
       <!-- 批次概览 -->
@@ -136,7 +142,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import dayjs from 'dayjs'
 
 import AppShell from '@/layouts/AppShell.vue'
@@ -144,6 +150,7 @@ import DataTable from '@/shared/components/DataTable.vue'
 import DetailDrawer from '@/shared/components/DetailDrawer.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import { listPendingRelease, releaseBatch, rejectRelease, exportBatchFinalPdf } from '@/api/archive'
+import { formatRefreshTime } from '@/features/batches/progress'
 
 const rows = ref([])
 const total = ref(0)
@@ -162,6 +169,28 @@ const opMsg = ref(null)
 const showDrawer = ref(false)
 const selectedRow = ref(null)
 const overview = ref(null)
+const lastRefreshedAt = ref(null)
+
+const AUTO_REFRESH_MS = 15000
+const ACTIVE_RELEASE_STATUSES = new Set(['human_review', 'processing', 'pending', 'claimed', 'running'])
+let releaseAutoRefreshTimer = null
+let releaseLoadInFlight = false
+
+const shouldPollReleases = computed(() => {
+  const selectedStatus = String(status.value || '').trim().toLowerCase()
+  if (!selectedStatus || ACTIVE_RELEASE_STATUSES.has(selectedStatus)) {
+    return true
+  }
+  return rows.value.some((row) => ACTIVE_RELEASE_STATUSES.has(String(row?.status || '').trim().toLowerCase()))
+})
+
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (shouldPollReleases.value) {
+    return stamp ? `${stamp} 更新 · 放行列表每15s自动刷新` : '放行列表每15s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
 
 const columns = [
   { key: 'id', label: '任务ID', width: '140px', mono: true },
@@ -185,8 +214,27 @@ const risks = computed(() => {
   return out
 })
 
-async function load() {
-  loading.value = true
+function extractRows(data) {
+  if (Array.isArray(data?.items)) return data.items
+  if (Array.isArray(data?.tasks)) return data.tasks
+  if (Array.isArray(data)) return data
+  return []
+}
+
+function syncSelectedRow(nextRows) {
+  if (!selectedRow.value?.id) return
+  const nextSelected = nextRows.find((row) => String(row.id) === String(selectedRow.value.id))
+  if (nextSelected) {
+    selectedRow.value = nextSelected
+  }
+}
+
+async function load(options = {}) {
+  if (releaseLoadInFlight) return
+  releaseLoadInFlight = true
+  if (!options.silent) {
+    loading.value = true
+  }
   loadError.value = ''
   try {
     const res = await listPendingRelease({
@@ -195,23 +243,49 @@ async function load() {
       status: status.value || undefined,
     })
     const data = res.data || {}
-    rows.value = data.items || data.tasks || data || []
+    rows.value = extractRows(data)
     total.value = data.total || rows.value.length
+    syncSelectedRow(rows.value)
     // 如果后端返回 overview 字段则展示
     if (data.overview) overview.value = data.overview
+    lastRefreshedAt.value = new Date()
   } catch (e) {
     console.error('加载发布列表失败', e)
     loadError.value = '加载发布列表失败，请稍后重试。'
     rows.value = []
     total.value = 0
   } finally {
-    loading.value = false
+    if (!options.silent) {
+      loading.value = false
+    }
+    releaseLoadInFlight = false
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!shouldPollReleases.value) return
+  releaseAutoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden && !rejectingRow.value && !submittingId.value && !showDrawer.value && !exporting.value) {
+      load({ silent: true })
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (releaseAutoRefreshTimer) {
+    window.clearInterval(releaseAutoRefreshTimer)
+    releaseAutoRefreshTimer = null
   }
 }
 
 function reload() {
   page.value = 1
   load()
+}
+
+async function handleManualRefresh() {
+  await load()
 }
 
 function onPageChange(p) {
@@ -284,5 +358,17 @@ async function handleExport() {
   }
 }
 
+watch(shouldPollReleases, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
 onMounted(load)
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
+})
 </script>

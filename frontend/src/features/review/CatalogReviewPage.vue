@@ -12,7 +12,13 @@
           </div>
           <span class="text-[11px] tabular-nums text-[var(--gov-text-muted)]">{{ completedDocCount }}/{{ docs.length }} 件</span>
         </div>
-        <div class="hidden md:inline-flex items-center gap-1.5 ml-auto text-[11px] text-[var(--gov-text-muted)]">
+        <div class="ml-auto flex items-center gap-2">
+          <span v-if="refreshStatusText" class="hidden text-[11px] text-[var(--gov-text-muted)] lg:inline">{{ refreshStatusText }}</span>
+          <button @click="handleManualRefresh" :disabled="refreshing" class="h-8 rounded-md border border-[var(--gov-border)] px-3 text-[11px] text-[var(--gov-text-muted)] hover:bg-slate-50 disabled:opacity-50">
+            {{ refreshing ? '刷新中...' : '刷新' }}
+          </button>
+        </div>
+        <div class="hidden md:inline-flex items-center gap-1.5 text-[11px] text-[var(--gov-text-muted)]">
           <span class="gov-kbd">&uarr;</span><span class="gov-kbd">&darr;</span> 切换
           <span class="gov-kbd ml-1">S</span> 保存
           <span class="gov-kbd ml-1">Enter</span> 提交
@@ -224,13 +230,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, nextTick } from 'vue'
+import { computed, onMounted, onUnmounted, ref, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from '@/layouts/AppShell.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import PdfViewer from '@/shared/components/PdfViewer.vue'
 import ReworkModal from '@/shared/components/ReworkModal.vue'
 import { getReviewTask, listDocUnits, getDocUnit, updateDocMetadata, submitReview } from '@/api/archive'
+import { formatRefreshTime } from '@/features/batches/progress'
 
 const route = useRoute()
 const router = useRouter()
@@ -248,6 +255,9 @@ const opMsg = ref(null)
 const showReworkModal = ref(false)
 const formModel = ref({})
 const confirmedFields = ref(new Set())
+const refreshing = ref(false)
+const lastRefreshedAt = ref(null)
+const hasPendingEdits = ref(false)
 
 const fieldDefs = [
   { key: 'title', label: '题名', source: 'llm' },
@@ -264,6 +274,40 @@ const fieldDefs = [
 const fieldConfidences = ref([])
 const candidates = ref([])
 const tagSuggestions = ref([])
+const persistedFormSnapshot = ref('')
+
+const AUTO_REFRESH_MS = 10000
+const ACTIVE_REVIEW_TASK_STATUSES = new Set(['pending', 'processing', 'human_review', 'claimed', 'running'])
+let catalogReviewRefreshTimer = null
+
+function buildFormModel(value = {}) {
+  return {
+    title: value?.title || '',
+    responsible: value?.responsible || '',
+    doc_no: value?.doc_no || '',
+    date: value?.date || '',
+    preservation_period: value?.preservation_period || '',
+    tags: Array.isArray(value?.tags) ? [...value.tags] : [],
+    notes: value?.notes || '',
+  }
+}
+
+function snapshotFormModel(value) {
+  return JSON.stringify(buildFormModel(value))
+}
+
+function getDocKey(doc) {
+  const key = doc?.id ?? doc?.doc_id
+  return key == null ? '' : String(key)
+}
+
+function getDocPageCount(doc) {
+  const directCount = Number(doc?.page_count || doc?.pages_count)
+  if (Number.isFinite(directCount) && directCount > 0) return directCount
+  if (Array.isArray(doc?.ocr_pages)) return Math.max(doc.ocr_pages.length, 1)
+  if (Array.isArray(doc?.pages)) return Math.max(doc.pages.length, 1)
+  return 1
+}
 
 const selectedDoc = computed(() => docs.value[selectedDocIdx.value] || null)
 const selectedDocTitle = computed(() => selectedDoc.value?.title || selectedDoc.value?.name || '未选择文档')
@@ -272,6 +316,20 @@ const totalPages = computed(() => Math.max(Number(selectedDoc.value?.page_count 
 const completedDocCount = computed(() => docs.value.filter(d => d._fieldsSaved).length)
 const overallProgress = computed(() => docs.value.length ? Math.round((completedDocCount.value / docs.value.length) * 100) : 0)
 const hasHighConfFields = computed(() => fieldConfidences.value.some(fc => fc.confidence >= 0.8 && !confirmedFields.value.has(fc.key)))
+const autoRefreshEnabled = computed(() => {
+  const status = String(task.value?.status || '').trim().toLowerCase()
+  return ACTIVE_REVIEW_TASK_STATUSES.has(status) && !hasPendingEdits.value
+})
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (hasPendingEdits.value) {
+    return stamp ? `${stamp} 更新 · 存在未保存修改，已暂停自动刷新` : '存在未保存修改，已暂停自动刷新'
+  }
+  if (autoRefreshEnabled.value) {
+    return stamp ? `${stamp} 更新 · 著录审核页每10s自动刷新` : '著录审核页每10s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
 
 const preservationRule = computed(() => {
   const ev = selectedDoc.value?.evidence || task.value?.evidence || {}
@@ -342,34 +400,70 @@ function extractTagSuggestions(doc) {
 function prevDoc() { if (selectedDocIdx.value > 0) { selectedDocIdx.value--; onDocChange() } }
 function nextDoc() { if (selectedDocIdx.value < docs.value.length - 1) { selectedDocIdx.value++; onDocChange() } }
 
-async function loadTask() {
+function extractArray(data, keys = ['items']) {
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  if (Array.isArray(data)) return data
+  return []
+}
+
+async function loadTask(options = {}) {
   loadError.value = ''
+  const previousDocKey = options.preserveSelection === false ? '' : getDocKey(selectedDoc.value)
+  const previousPage = currentPage.value
+  const previousZoom = zoom.value
+  const savedStateByDoc = new Map(docs.value.map((doc) => [getDocKey(doc), Boolean(doc._fieldsSaved)]))
   try {
     const res = await getReviewTask(taskId); task.value = res.data || null
     const taskDocs = task.value?.docs || task.value?.doc_units || []
-    if (Array.isArray(taskDocs) && taskDocs.length) { docs.value = taskDocs.map(d => ({ ...d, _fieldsSaved: false })) }
-    else if (task.value?.batch_id) { const r = await listDocUnits(task.value.batch_id); docs.value = (r.data?.items || r.data || []).map(d => ({ ...d, _fieldsSaved: false })) }
+    if (Array.isArray(taskDocs) && taskDocs.length) { docs.value = taskDocs.map(d => ({ ...d, _fieldsSaved: savedStateByDoc.get(getDocKey(d)) || false })) }
+    else if (task.value?.batch_id) { const r = await listDocUnits(task.value.batch_id); docs.value = extractArray(r.data).map(d => ({ ...d, _fieldsSaved: savedStateByDoc.get(getDocKey(d)) || false })) }
     else { docs.value = [] }
-    if (docs.value.length) await onDocChange()
+    if (docs.value.length) {
+      const nextIndex = previousDocKey
+        ? docs.value.findIndex((doc) => getDocKey(doc) === previousDocKey)
+        : 0
+      selectedDocIdx.value = nextIndex >= 0 ? nextIndex : 0
+      const preserveView = Boolean(previousDocKey) && nextIndex >= 0 && getDocKey(docs.value[selectedDocIdx.value]) === previousDocKey
+      await onDocChange({ preserveView, page: previousPage, zoom: previousZoom })
+    } else {
+      selectedDocIdx.value = 0
+      currentPage.value = 1
+      zoom.value = 1
+      formModel.value = buildFormModel()
+      fieldConfidences.value = []
+      candidates.value = []
+      tagSuggestions.value = []
+      persistedFormSnapshot.value = snapshotFormModel(formModel.value)
+      hasPendingEdits.value = false
+    }
+    lastRefreshedAt.value = new Date()
   } catch (error) { loadError.value = error?.response?.data?.detail || '加载审核任务失败，请返回重试。' }
 }
 
-async function onDocChange() {
+async function onDocChange(options = {}) {
   const doc = docs.value[selectedDocIdx.value]; if (!doc) return
-  currentPage.value = 1; zoom.value = 1; confirmedFields.value = new Set()
+  const requestedPage = options.preserveView ? Number(options.page || currentPage.value) : 1
+  const requestedZoom = options.preserveView ? Number(options.zoom || zoom.value) : 1
+  confirmedFields.value = new Set()
   const metadata = doc?.metadata || doc?.fields || {}
-  formModel.value = { title: metadata.title || '', responsible: metadata.responsible || '', doc_no: metadata.doc_no || '', date: metadata.date || '', preservation_period: metadata.preservation_period || '', tags: metadata.tags || [], notes: metadata.notes || '' }
+  formModel.value = buildFormModel(metadata)
   candidates.value = extractCandidates(doc); fieldConfidences.value = extractFieldConfidences(doc); tagSuggestions.value = extractTagSuggestions(doc)
   if (task.value?.batch_id && (doc?.id || doc?.doc_id)) {
     try {
       const detail = await getDocUnit(task.value.batch_id, doc.id || doc.doc_id); const d = detail.data || {}
       docs.value[selectedDocIdx.value] = { ...doc, ...d }; const fields = d.metadata || d.fields
-      if (fields) formModel.value = { ...formModel.value, ...fields }
+      if (fields) formModel.value = buildFormModel({ ...formModel.value, ...fields })
       candidates.value = extractCandidates(docs.value[selectedDocIdx.value])
       fieldConfidences.value = extractFieldConfidences(docs.value[selectedDocIdx.value])
       tagSuggestions.value = extractTagSuggestions(docs.value[selectedDocIdx.value])
     } catch { /* compat */ }
   }
+  currentPage.value = Math.min(Math.max(requestedPage, 1), getDocPageCount(docs.value[selectedDocIdx.value]))
+  zoom.value = Math.min(Math.max(requestedZoom, 0.4), 3)
+  persistedFormSnapshot.value = snapshotFormModel(formModel.value)
+  hasPendingEdits.value = false
   await nextTick()
   const lowField = fieldConfidences.value.find(fc => fc.confidence < 0.6)
   if (lowField) scrollToField(lowField.key)
@@ -380,10 +474,50 @@ async function saveMetadata() {
   saving.value = true; opMsg.value = null
   try {
     await updateDocMetadata(task.value.batch_id, selectedDoc.value.id || selectedDoc.value.doc_id, formModel.value)
+    const nextMetadata = buildFormModel(formModel.value)
+    docs.value[selectedDocIdx.value] = {
+      ...docs.value[selectedDocIdx.value],
+      metadata: nextMetadata,
+      fields: nextMetadata,
+      _fieldsSaved: true,
+    }
+    persistedFormSnapshot.value = snapshotFormModel(formModel.value)
+    hasPendingEdits.value = false
     docs.value[selectedDocIdx.value]._fieldsSaved = true
     opMsg.value = { ok: true, text: '字段已保存' }
   } catch (error) { opMsg.value = { ok: false, text: '保存失败：' + (error?.response?.data?.detail || error.message || '未知错误') } }
   finally { saving.value = false }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!autoRefreshEnabled.value) return
+  catalogReviewRefreshTimer = window.setInterval(() => {
+    if (!document.hidden && !showReworkModal.value && !saving.value && !submitting.value && !hasPendingEdits.value) {
+      loadTask()
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (catalogReviewRefreshTimer) {
+    window.clearInterval(catalogReviewRefreshTimer)
+    catalogReviewRefreshTimer = null
+  }
+}
+
+async function handleManualRefresh() {
+  if (refreshing.value) return
+  if (hasPendingEdits.value) {
+    opMsg.value = { ok: false, text: '存在未保存修改，请先保存后再刷新' }
+    return
+  }
+  refreshing.value = true
+  try {
+    await loadTask()
+  } finally {
+    refreshing.value = false
+  }
 }
 
 async function submitApprove() {
@@ -412,6 +546,19 @@ function handleKeyboard(e) {
   else if (e.key === 's' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); saveMetadata() }
   else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitApprove() }
 }
+
+watch(formModel, (value) => {
+  hasPendingEdits.value = snapshotFormModel(value) !== persistedFormSnapshot.value
+}, { deep: true })
+
+watch(autoRefreshEnabled, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
 onMounted(() => { loadTask(); document.addEventListener('keydown', handleKeyboard) })
-onUnmounted(() => { document.removeEventListener('keydown', handleKeyboard) })
+onUnmounted(() => { stopAutoRefresh(); document.removeEventListener('keydown', handleKeyboard) })
 </script>

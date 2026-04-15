@@ -19,20 +19,12 @@
           <div class="flex flex-wrap gap-3 items-center">
             <select v-model="filters.action" @change="reload" class="gov-select text-sm">
               <option value="">全部动作</option>
-              <option value="import">导入</option>
               <option value="workflow_start">工作流启动</option>
               <option value="claim">认领</option>
-              <option value="submit">提交</option>
-              <option value="skip">跳过</option>
-              <option value="rework">返工</option>
-              <option value="rework_accept">返工受理</option>
-              <option value="rework_reject">返工驳回</option>
-              <option value="release">放行</option>
-              <option value="archive">入库</option>
-              <option value="export">导出</option>
-              <option value="download">下载</option>
+              <option value="submit">提交审核</option>
+              <option value="rework_request">返工申请</option>
             </select>
-            <input v-model.trim="filters.keyword" @keyup.enter="reload" placeholder="任务ID / 批次ID / 操作人" class="gov-filter-input text-sm w-[260px]" />
+            <input v-model.trim="filters.keyword" @keyup.enter="reload" placeholder="任务ID / 批次ID / 备注" class="gov-filter-input text-sm w-[260px]" />
             <button @click="reload" class="gov-btn text-sm">查询</button>
             <button @click="reset" class="text-sm text-[var(--gov-text-muted)] hover:text-[var(--gov-text)]">重置</button>
           </div>
@@ -141,18 +133,10 @@ function fmt(v) {
 }
 
 const actionLabels = {
-  import: '导入',
   workflow_start: '启动工作流',
   claim: '认领',
-  submit: '提交',
-  skip: '跳过',
-  rework: '返工',
-  rework_accept: '返工受理',
-  rework_reject: '返工驳回',
-  release: '放行',
-  archive: '入库',
-  export: '导出',
-  download: '下载',
+  submit: '提交审核',
+  rework_request: '返工申请',
 }
 function actionLabel(v) {
   return actionLabels[v] || v || '-'
@@ -160,11 +144,9 @@ function actionLabel(v) {
 
 function actionClass(action) {
   const a = String(action || '').toLowerCase()
-  if (a === 'submit' || a === 'release' || a === 'archive') return 'border-green-300 text-green-700 bg-green-50'
-  if (a === 'rework' || a === 'rework_reject') return 'border-red-300 text-red-600 bg-red-50'
-  if (a === 'claim' || a === 'import' || a === 'workflow_start') return 'border-blue-300 text-blue-600 bg-blue-50'
-  if (a === 'export' || a === 'download') return 'border-purple-300 text-purple-600 bg-purple-50'
-  if (a === 'skip') return 'border-slate-300 text-slate-600 bg-slate-50'
+  if (a === 'submit') return 'border-green-300 text-green-700 bg-green-50'
+  if (a === 'rework_request') return 'border-red-300 text-red-600 bg-red-50'
+  if (a === 'claim' || a === 'workflow_start') return 'border-blue-300 text-blue-600 bg-blue-50'
   return 'border-slate-300 text-slate-600 bg-slate-50'
 }
 
