@@ -276,25 +276,22 @@
               {{ currentStructureStatusText }}
             </div>
 
-            <section v-if="!isOcrOnlyMode && tableStructuredBlocks.length" class="bg-white">
-              <div class="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
-                <div>
-                  <p class="text-sm font-semibold text-slate-800">表格区域</p>
-                  <p class="mt-0.5 text-[11px] text-slate-400">{{ tableStructuredBlocks.length }} 个表格 · 表格主体横向滚动</p>
-                </div>
-                <button type="button" class="text-[11px] font-semibold text-[var(--gov-primary)] hover:underline"
-                  @click="focusOcrBox(tableStructuredBlocks[0], { scroll: false })">定位区域</button>
+            <section v-if="!isOcrOnlyMode && documentStructuredBlocks.length" class="bg-white">
+              <div class="mb-5 border-b border-slate-100 pb-3">
+                <p class="text-sm font-semibold text-slate-800">文档结构还原</p>
+                <p class="mt-0.5 text-[11px] text-slate-400">按原页位置重排标题、正文、表格与印章证据。</p>
               </div>
               <div class="space-y-5">
-                <article v-for="block in tableStructuredBlocks" :key="block.id"
+                <article v-for="block in documentStructuredBlocks" :key="block.id" :ref="block.type === 'seal' ? (el) => setSealCardRef(block, el) : undefined"
                   class="relative bg-white transition-all"
                   :class="selectedOcrBoxId === block.id ? 'ring-1 ring-blue-500' : ''"
                   @click="focusOcrBox(block, { scroll: false })">
-                  <div class="mb-1 flex items-center justify-between">
-                    <span class="bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">表格</span>
-                    <span class="text-[11px] text-slate-400">{{ blockConfidenceText(block) }}</span>
+                  <div class="mb-1 flex items-center justify-between gap-2">
+                    <span class="px-2 py-0.5 text-[11px] font-semibold text-white" :class="block.type === 'table' ? 'bg-emerald-600' : block.type === 'seal' ? 'bg-rose-600' : 'bg-blue-600'">{{ officialBlockLabel(block) }}</span>
+                    <button type="button" class="text-[11px] font-semibold text-blue-600 hover:underline" @click.stop="focusOcrBox(block)">定位区域</button>
                   </div>
-                  <div class="overflow-x-auto">
+
+                  <div v-if="block.type === 'table'" class="overflow-x-auto">
                     <table v-if="normalizeTableRows(block.tableData).length" class="w-full min-w-[560px] table-fixed border-collapse text-[12px]">
                       <tbody>
                         <tr v-for="(row, rowIndex) in normalizeTableRows(block.tableData)" :key="rowIndex" class="bg-white">
@@ -305,67 +302,26 @@
                         </tr>
                       </tbody>
                     </table>
-                    <p v-else class="border border-blue-500 px-3 py-3 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{{ block.content || '表格结构未返回单元格，仅可定位区域。' }}</p>
+                    <p v-else class="border border-emerald-500 px-3 py-3 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">{{ block.content || '表格结构未返回单元格，仅可定位区域。' }}</p>
                   </div>
-                </article>
-              </div>
-            </section>
 
-            <section v-if="!isOcrOnlyMode && textStructuredBlocks.length" class="bg-white">
-              <div class="mb-4 border-b border-slate-100 pb-3">
-                <p class="text-sm font-semibold text-slate-800">正文 / 标题区域</p>
-                <p class="mt-0.5 text-[11px] text-slate-400">已排除表格和印章文本，避免证据混在正文里。</p>
-              </div>
-              <div class="space-y-5">
-                <button v-for="block in textStructuredBlocks" :key="block.id" type="button"
-                  class="relative w-full bg-white text-left transition-all"
-                  :class="selectedOcrBoxId === block.id ? 'ring-1 ring-blue-500' : ''"
-                  @click="focusOcrBox(block, { scroll: false })">
-                  <div class="mb-1 flex items-center justify-between gap-2">
-                    <span class="bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">{{ officialBlockLabel(block) }}</span>
-                    <span class="text-[10px] text-slate-400">{{ blockConfidenceText(block) }}</span>
+                  <div v-else-if="block.type === 'seal'">
+                    <div v-if="pageImageUrl && sealCropRect(block)" class="relative h-[220px] overflow-hidden border border-slate-200 bg-white" :style="sealCropFrameStyle(block)">
+                      <img :src="pageImageUrl" alt="印章裁剪预览" class="absolute max-w-none object-fill" :style="sealCropStyle(block)" />
+                    </div>
+                    <div v-else class="border border-dashed border-slate-200 bg-slate-50 px-3 py-8 text-center text-xs text-slate-500">
+                      已识别到印章文字，等待模型返回更精确的印章坐标。
+                    </div>
+                    <div class="mt-2 bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white">{{ sealPrimaryText(block) }}</div>
+                    <p v-for="(text, textIndex) in sealTextList(block)" :key="textIndex" class="border border-transparent px-2.5 py-1.5 text-sm leading-relaxed text-slate-700">{{ text }}</p>
+                    <div class="mt-3 flex items-center justify-end gap-2">
+                      <button type="button" class="h-8 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-50" @click.stop="copySealText(block)">复制</button>
+                      <button type="button" class="h-8 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-50" @click.stop="requestSealCorrection(block)">纠正</button>
+                    </div>
                   </div>
-                  <p class="border px-4 py-3 text-sm leading-7 text-slate-800 whitespace-pre-wrap"
-                    :class="selectedOcrBoxId === block.id ? 'border-blue-500' : 'border-transparent'">{{ block.content || '（无文本）' }}</p>
-                </button>
-              </div>
-            </section>
 
-            <section v-if="!isOcrOnlyMode && sealStructuredBlocks.length" class="bg-white">
-              <div class="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
-                <div>
-                  <p class="text-sm font-semibold text-slate-800">印章 / 归档章证据</p>
-                  <p class="mt-0.5 text-[11px] text-slate-400">{{ sealStructuredBlocks.length }} 个区域，裁剪自当前页图。</p>
-                </div>
-              </div>
-              <div class="space-y-6">
-                <article v-for="block in sealStructuredBlocks" :key="block.id" :ref="(el) => setSealCardRef(block, el)"
-                  class="relative bg-white transition-all"
-                  :class="selectedOcrBoxId === block.id ? 'ring-1 ring-blue-500' : ''"
-                  @click="focusOcrBox(block, { scroll: false })">
-                  <div class="mb-1 flex items-center justify-between">
-                    <span class="bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">印章</span>
-                    <span class="text-[10px] text-slate-400">{{ blockConfidenceText(block) }}</span>
-                  </div>
-                  <div v-if="pageImageUrl && sealCropRect(block)" class="relative h-[220px] overflow-hidden border border-slate-200 bg-white" :style="sealCropFrameStyle(block)">
-                    <img :src="pageImageUrl" alt="印章裁剪预览" class="absolute max-w-none object-fill" :style="sealCropStyle(block)" />
-                  </div>
-                  <div v-else class="border border-dashed border-slate-200 bg-slate-50 px-3 py-8 text-center text-xs text-slate-500">
-                    当前印章缺少可裁剪 bbox，已降级为文字证据。
-                  </div>
-                  <div class="mt-2 bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white">
-                    {{ sealPrimaryText(block) }}
-                  </div>
-                  <div class="mt-3 space-y-1.5">
-                    <p v-for="(text, textIndex) in sealTextList(block)" :key="textIndex" class="border border-transparent px-2.5 py-1.5 text-sm leading-relaxed text-slate-700">
-                      {{ text }}
-                    </p>
-                  </div>
-                  <div class="mt-3 flex items-center justify-end gap-2">
-                    <button type="button" class="h-8 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-50" @click.stop="copySealText(block)">复制</button>
-                    <button type="button" class="h-8 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-semibold text-slate-600 shadow-sm hover:bg-slate-50" @click.stop="requestSealCorrection(block)">纠正</button>
-                    <button type="button" class="h-8 rounded-full border border-blue-200 bg-white px-3 text-[11px] font-semibold text-blue-600 shadow-sm hover:bg-blue-50" @click.stop="focusOcrBox(block)">定位区域</button>
-                  </div>
+                  <p v-else class="border px-4 py-3 whitespace-pre-wrap"
+                    :class="[selectedOcrBoxId === block.id ? 'border-blue-500' : 'border-transparent', block.type === 'title' ? 'text-xl font-semibold leading-9 text-slate-900' : 'text-sm leading-7 text-slate-800']">{{ block.content || '（无文本）' }}</p>
                 </article>
               </div>
             </section>
@@ -519,6 +475,7 @@ const tableStructuredBlocks = computed(() => pageStructuredBlocks.value.filter((
 const sealStructuredBlocks = computed(() => pageStructuredBlocks.value.filter((block) => block.type === 'seal'))
 const textStructuredBlocks = computed(() => pageStructuredBlocks.value.filter((block) => block.type !== 'table' && block.type !== 'seal'))
 const visibleStructuredBlocks = computed(() => [...tableStructuredBlocks.value, ...textStructuredBlocks.value, ...sealStructuredBlocks.value])
+const documentStructuredBlocks = computed(() => [...pageStructuredBlocks.value].sort(compareBlocksByDocumentOrder))
 const currentPageStructureSummary = computed(() => {
   const raw = _currentPageEntry.value?.structure_summary || _currentPageEntry.value?.structureSummary || {}
   const selectedMode = raw.selected_mode || raw.selectedMode || _currentPageEntry.value?.selected_mode || _currentPageEntry.value?.layout_type || (pageStructuredBlocks.value.length ? 'layout' : 'ocr_only')
@@ -540,9 +497,9 @@ const selectedStructuredBlock = computed(() => visibleStructuredBlocks.value.fin
 const primaryStructuredBlock = computed(() => tableStructuredBlocks.value[0] || textStructuredBlocks.value[0] || sealStructuredBlocks.value[0] || null)
 const pageOverlayItems = computed(() => {
   if (!pageImageUrl.value) return []
-  if (selectedStructuredBlock.value) return [selectedStructuredBlock.value]
+  if (selectedStructuredBlock.value) return [withEffectiveBbox(selectedStructuredBlock.value)]
   if (imageViewMode.value === 'source') return []
-  return primaryStructuredBlock.value ? [primaryStructuredBlock.value] : []
+  return primaryStructuredBlock.value ? [withEffectiveBbox(primaryStructuredBlock.value)] : []
 })
 
 const pageRange = computed(() => {
@@ -584,7 +541,7 @@ function normalizeOcrLines(lines) {
       id: String(line.id || line.line_id || `line_${index}`),
       text: String(line.text || line.content || line.words || '').trim(),
       confidence: line.confidence ?? line.score ?? null,
-      bbox: normalizeBbox(line.bbox || line.box || line.position || null),
+      bbox: normalizeBbox(extractRawBbox(line)),
     }
   }).filter((line) => line.text)
 }
@@ -602,7 +559,7 @@ function normalizeStructuredBlock(region = {}, index = 0) {
   const tableData = region.table_data || region.tableData || region.table || null
   const lines = normalizeOcrLines(region.lines || region.region_lines || region.ocr_lines || [])
   const content = extractRegionText(region, lines)
-  const bbox = normalizeBbox(region.bbox || region.box || region.position || region.bounds || null)
+  const bbox = normalizeBbox(extractRawBbox(region))
   if (!content && !tableData && !bbox) return null
   return {
     raw: region,
@@ -626,8 +583,48 @@ function extractRegionText(region = {}, lines = []) {
   return ''
 }
 
+function extractRawBbox(item = {}) {
+  if (!item || typeof item !== 'object') return null
+  return item.bbox
+    || item.box
+    || item.position
+    || item.bounds
+    || item.bound
+    || item.bounding_box
+    || item.boundingBox
+    || item.rect
+    || item.rectangle
+    || item.location
+    || item.coordinates
+    || item.points
+    || item.polygon
+    || item.poly
+    || item.quad
+    || item.seal_bbox
+    || item.sealBox
+    || item.text_bbox
+    || item.textBox
+    || item?.seal?.bbox
+    || item?.seal?.box
+    || null
+}
+
 function normalizeBbox(raw) {
   if (!raw) return null
+  if (Array.isArray(raw) && raw.length >= 2 && Array.isArray(raw[0])) {
+    const points = raw
+      .map((point) => Array.isArray(point) ? { x: Number(point[0]), y: Number(point[1]) } : { x: Number(point?.x), y: Number(point?.y) })
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    if (points.length >= 2) {
+      const xs = points.map((point) => point.x)
+      const ys = points.map((point) => point.y)
+      const left = Math.min(...xs)
+      const top = Math.min(...ys)
+      const right = Math.max(...xs)
+      const bottom = Math.max(...ys)
+      return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) }
+    }
+  }
   if (Array.isArray(raw) && raw.length >= 4) {
     const nums = raw.slice(0, 4).map(Number)
     if (nums.some((num) => !Number.isFinite(num))) return null
@@ -636,6 +633,11 @@ function normalizeBbox(raw) {
     return { x: x1, y: y1, width: Math.max(0, x2), height: Math.max(0, y2) }
   }
   if (typeof raw === 'object') {
+    const nested = raw.bbox || raw.box || raw.points || raw.polygon || raw.poly || raw.coordinates || raw.rect || raw.rectangle
+    if (nested && nested !== raw) {
+      const normalized = normalizeBbox(nested)
+      if (normalized) return normalized
+    }
     const x = Number(raw.x ?? raw.left ?? raw.x1 ?? raw.min_x)
     const y = Number(raw.y ?? raw.top ?? raw.y1 ?? raw.min_y)
     const width = raw.width ?? raw.w
@@ -679,6 +681,62 @@ function bboxToPercentRect(bbox, expand = 0) {
   const right = clamp(x + width + padX)
   const bottom = clamp(y + height + padY)
   return { x: left, y: top, width: Math.max(0.5, right - left), height: Math.max(0.5, bottom - top) }
+}
+
+function blockSortRect(block) {
+  const bbox = effectiveBlockBbox(block)
+  if (!bbox) return null
+  const values = [bbox.x, bbox.y, bbox.width, bbox.height].map(Number)
+  if (values.some((value) => !Number.isFinite(value))) return null
+  let [x, y, width, height] = values
+  const maxValue = Math.max(Math.abs(x), Math.abs(y), Math.abs(width), Math.abs(height), Math.abs(x + width), Math.abs(y + height))
+  if (maxValue <= 1.2) {
+    x *= 100; y *= 100; width *= 100; height *= 100
+  } else if (pageImageNaturalSize.value.width > 0 && pageImageNaturalSize.value.height > 0 && maxValue > 100) {
+    x = (x / pageImageNaturalSize.value.width) * 100
+    y = (y / pageImageNaturalSize.value.height) * 100
+    width = (width / pageImageNaturalSize.value.width) * 100
+    height = (height / pageImageNaturalSize.value.height) * 100
+  }
+  return { x, y, width, height }
+}
+
+function compareBlocksByDocumentOrder(a, b) {
+  const ra = blockSortRect(a)
+  const rb = blockSortRect(b)
+  if (ra && rb) {
+    const yDelta = ra.y - rb.y
+    if (Math.abs(yDelta) > 3) return yDelta
+    const xDelta = ra.x - rb.x
+    if (Math.abs(xDelta) > 3) return xDelta
+  }
+  if (ra && !rb) return -1
+  if (!ra && rb) return 1
+  return Number(a?.index || 0) - Number(b?.index || 0)
+}
+
+function inferSealBbox(block) {
+  if (!block || block.type !== 'seal') return null
+  const seals = sealStructuredBlocks.value
+  const index = Math.max(0, seals.findIndex((seal) => seal.id === block.id))
+  const count = Math.max(1, seals.length)
+  if (count === 1) return { x: 24, y: 64, width: 48, height: 24 }
+  const slot = 68 / count
+  return {
+    x: 16 + index * slot,
+    y: 64,
+    width: Math.min(30, slot - 4),
+    height: 24,
+  }
+}
+
+function effectiveBlockBbox(block) {
+  return block?.bbox || inferSealBbox(block)
+}
+
+function withEffectiveBbox(block) {
+  if (!block) return block
+  return { ...block, bbox: effectiveBlockBbox(block) }
 }
 
 function boxStyleFromBbox(bbox) {
@@ -753,7 +811,7 @@ function sealPrimaryText(block) {
 }
 
 function sealCropRect(block) {
-  return bboxToPercentRect(block?.bbox, 0.16)
+  return bboxToPercentRect(effectiveBlockBbox(block), 0.16)
 }
 
 function sealCropFrameStyle(block) {
