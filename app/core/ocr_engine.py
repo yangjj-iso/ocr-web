@@ -271,6 +271,17 @@ def _annotate_fallback_document(
     return document
 
 
+def _paddle_cpu_safe_predictor_kwargs() -> dict[str, Any]:
+    if str(OCR_DEVICE or "").strip().lower() != "cpu":
+        return {}
+    return {
+        "enable_mkldnn": False,
+        "enable_hpi": False,
+        "enable_cinn": False,
+        "cpu_threads": 1,
+    }
+
+
 def get_ocr() -> PaddleOCR:
     """获取 PP-OCRv5 基础 OCR 单例（快速文字识别，无版面分析）"""
     global _ocr_instance
@@ -280,6 +291,15 @@ def get_ocr() -> PaddleOCR:
         # PP-OCRv5 server 模型在 PaddlePaddle 3.3.0 CPU 下有 PIR/oneDNN Bug
         # 当 device=cpu 时改用 mobile 模型，避免 ConvertPirAttribute2RuntimeAttribute 报错
         use_mobile = (OCR_DEVICE == "cpu")
+        predictor_kwargs = _paddle_cpu_safe_predictor_kwargs()
+        if predictor_kwargs:
+            logger.info(
+                "PP-OCRv5 CPU 模式启用安全推理参数: enable_mkldnn=%s enable_hpi=%s enable_cinn=%s cpu_threads=%s",
+                predictor_kwargs["enable_mkldnn"],
+                predictor_kwargs["enable_hpi"],
+                predictor_kwargs["enable_cinn"],
+                predictor_kwargs["cpu_threads"],
+            )
         _ocr_instance = PaddleOCR(
             lang=OCR_LANG,
             use_doc_orientation_classify=False,
@@ -288,6 +308,7 @@ def get_ocr() -> PaddleOCR:
             device=OCR_DEVICE,
             text_detection_model_name="PP-OCRv5_mobile_det" if use_mobile else None,
             text_recognition_model_name="PP-OCRv5_mobile_rec" if use_mobile else None,
+            **predictor_kwargs,
         )
         logger.info("PP-OCRv5 引擎初始化完成")
     return _ocr_instance

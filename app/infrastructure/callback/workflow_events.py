@@ -29,6 +29,7 @@ Python 计算面在关键节点主动向 Java 控制面回传状态事件。
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,9 +49,37 @@ EVT_WORKFLOW_RESUMED = "WORKFLOW_RESUMED"
 EVT_EXPORT_READY = "EXPORT_READY"
 EVT_WORKFLOW_FAILED = "WORKFLOW_FAILED"
 
+_DISABLED_WORKFLOW_EVENT_URLS: set[str] = set()
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_callback_path(path: str) -> str:
+    normalized = (path or "").strip()
+    if not normalized:
+        return ""
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized
+    return normalized
+
+
+def _build_headers(token: str) -> dict[str, str]:
+    normalized = (token or "").strip()
+    if not normalized:
+        return {}
+    return {
+        "Authorization": f"Bearer {normalized}",
+        "X-Internal-Token": normalized,
+    }
 
 
 def _build_event(
@@ -82,30 +111,67 @@ async def _send_event(event: dict[str, Any]) -> None:
         from config import (
             CONTROL_PLANE_BASE_URL,
             CONTROL_PLANE_INTERNAL_TOKEN,
+            CONTROL_PLANE_WORKFLOW_EVENTS_PATH,
             CONTROL_PLANE_VERIFY_TLS,
             CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS,
         )
     except ImportError:
-        import os
         CONTROL_PLANE_BASE_URL = os.getenv("CONTROL_PLANE_BASE_URL", "")
         CONTROL_PLANE_INTERNAL_TOKEN = os.getenv("CONTROL_PLANE_INTERNAL_TOKEN", "")
+        CONTROL_PLANE_WORKFLOW_EVENTS_PATH = os.getenv(
+            "CONTROL_PLANE_WORKFLOW_EVENTS_PATH",
+            "",
+        )
         CONTROL_PLANE_VERIFY_TLS = True
         CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS = 10
 
-    if not CONTROL_PLANE_BASE_URL:
+    base_url = (os.getenv("CONTROL_PLANE_BASE_URL") or CONTROL_PLANE_BASE_URL or "").rstrip("/")
+    internal_token = os.getenv("CONTROL_PLANE_INTERNAL_TOKEN") or CONTROL_PLANE_INTERNAL_TOKEN
+    callback_path = _normalize_callback_path(
+        os.getenv("CONTROL_PLANE_WORKFLOW_EVENTS_PATH", CONTROL_PLANE_WORKFLOW_EVENTS_PATH or "")
+    )
+    verify_tls = _env_flag("CONTROL_PLANE_VERIFY_TLS", bool(CONTROL_PLANE_VERIFY_TLS))
+    timeout_seconds = float(
+        os.getenv(
+            "CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS",
+            str(CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS),
+        )
+    )
+
+    if not base_url:
         logger.debug("CONTROL_PLANE_BASE_URL not set, skip event %s", event.get("event_type"))
         return
+    if not callback_path:
+        logger.debug("CONTROL_PLANE_WORKFLOW_EVENTS_PATH empty, skip event %s", event.get("event_type"))
+        return
 
-    url = f"{CONTROL_PLANE_BASE_URL.rstrip('/')}/internal/events/workflow"
-    headers = {"X-Internal-Token": CONTROL_PLANE_INTERNAL_TOKEN}
+    url = f"{base_url}{callback_path}"
+    if url in _DISABLED_WORKFLOW_EVENT_URLS:
+        logger.debug(
+            "Workflow event endpoint disabled after 404, skip event %s -> %s",
+            event.get("event_type"),
+            url,
+        )
+        return
+
+    headers = _build_headers(internal_token)
 
     try:
         async with httpx.AsyncClient(
-            verify=CONTROL_PLANE_VERIFY_TLS,
-            timeout=float(CONTROL_PLANE_CALLBACK_TIMEOUT_SECONDS),
+            verify=verify_tls,
+            timeout=timeout_seconds,
         ) as client:
             resp = await client.post(url, json=event, headers=headers)
-            if resp.status_code >= 400:
+            if resp.status_code == 404:
+                _DISABLED_WORKFLOW_EVENT_URLS.add(url)
+                logger.warning(
+                    "Workflow event endpoint unavailable; disabling further sends: event_type=%s status=%d url=%s body=%s",
+                    event.get("event_type"),
+                    resp.status_code,
+                    url,
+                    resp.text[:200],
+                )
+            elif resp.status_code >= 400:
                 logger.warning(
                     "Event send failed: event_type=%s status=%d body=%s",
                     event.get("event_type"),

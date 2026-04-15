@@ -1,28 +1,29 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthState } from './composables/useAuthState.js'
 
-import LoginPage from './features/auth/LoginPage.vue'
-import RegisterPage from './features/auth/RegisterPage.vue'
-import ProfilePage from './features/profile/ProfilePage.vue'
-
-import DashboardPage from './features/dashboard/DashboardPage.vue'
-import BatchListPage from './features/batches/BatchListPage.vue'
-import BatchDetailPage from './features/batches/BatchDetailPage.vue'
-import TaskListPage from './features/tasks/TaskListPage.vue'
-import ReviewWorkbenchPage from './features/review/ReviewWorkbenchPage.vue'
-import StructureReviewPage from './features/review/StructureReviewPage.vue'
-import CatalogReviewPage from './features/review/CatalogReviewPage.vue'
-import ArchiveListPage from './features/archives/ArchiveListPage.vue'
-import ArchiveDetailPage from './features/archives/ArchiveDetailPage.vue'
-import ReleasePage from './features/release/ReleasePage.vue'
-import ReleaseConsolePage from './features/release/ReleaseConsolePage.vue'
-import ReworkListPage from './features/rework/ReworkListPage.vue'
-import TenantManagePage from './features/config/TenantManagePage.vue'
-import UserManagePage from './features/config/UserManagePage.vue'
-import RulesConfigPage from './features/config/RulesConfigPage.vue'
-import AuditPage from './features/audit/AuditPage.vue'
-import DevDashboardPage from './features/dev/DevDashboardPage.vue'
 import { hasAuthRole, roleBasedHome } from './utils/authz.js'
+
+const LoginPage = () => import('./features/auth/LoginPage.vue')
+const RegisterPage = () => import('./features/auth/RegisterPage.vue')
+const ProfilePage = () => import('./features/profile/ProfilePage.vue')
+
+const DashboardPage = () => import('./features/dashboard/DashboardPage.vue')
+const BatchListPage = () => import('./features/batches/BatchListPage.vue')
+const BatchDetailPage = () => import('./features/batches/BatchDetailPage.vue')
+const TaskListPage = () => import('./features/tasks/TaskListPage.vue')
+const ReviewWorkbenchPage = () => import('./features/review/ReviewWorkbenchPage.vue')
+const StructureReviewPage = () => import('./features/review/StructureReviewPage.vue')
+const CatalogReviewPage = () => import('./features/review/CatalogReviewPage.vue')
+const ArchiveListPage = () => import('./features/archives/ArchiveListPage.vue')
+const ArchiveDetailPage = () => import('./features/archives/ArchiveDetailPage.vue')
+const ReleasePage = () => import('./features/release/ReleasePage.vue')
+const ReleaseConsolePage = () => import('./features/release/ReleaseConsolePage.vue')
+const ReworkListPage = () => import('./features/rework/ReworkListPage.vue')
+const TenantManagePage = () => import('./features/config/TenantManagePage.vue')
+const UserManagePage = () => import('./features/config/UserManagePage.vue')
+const RulesConfigPage = () => import('./features/config/RulesConfigPage.vue')
+const AuditPage = () => import('./features/audit/AuditPage.vue')
+const DevDashboardPage = () => import('./features/dev/DevDashboardPage.vue')
 
 const routes = [
   { path: '/', redirect: '/dashboard' },

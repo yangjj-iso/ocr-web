@@ -25,11 +25,7 @@ ocr:
   security:
     require-user-auth: ${OCR_REQUIRE_USER_AUTH:true}
     public-paths:
-      - /api/auth/me
-      - /api/auth/login
-      - /api/auth/register
-      - /api/auth/logout
-      - /api/dev/dashboard
+      - /api
     cors-allowed-origins:
       - ${OCR_CORS_ALLOWED_ORIGIN_1:http://localhost:3000}
       - ${OCR_CORS_ALLOWED_ORIGIN_2:http://127.0.0.1:3000}

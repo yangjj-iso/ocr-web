@@ -7,7 +7,7 @@
           <p class="text-sm text-[var(--gov-text-muted)] mt-0.5">管理策略快照与规则，用于批次处理时版本化引用</p>
         </div>
         <div class="flex items-center gap-2">
-          <button @click="openCreateForm" class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition">新建快照</button>
+          <button v-if="canEdit" @click="openCreateForm" class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition">新建快照</button>
           <button @click="loadSnapshots" class="gov-btn text-sm">刷新</button>
         </div>
       </div>
@@ -93,7 +93,7 @@
                 <p class="text-sm font-semibold text-[var(--gov-text)]">规则详情</p>
                 <p class="text-xs text-[var(--gov-text-muted)] mt-1">{{ selected?.version || selected?.id || '未选择快照' }}</p>
               </div>
-              <button v-if="selected" @click="openEditForm" class="px-3 py-1.5 text-sm border border-[var(--gov-border)] rounded hover:bg-slate-50">编辑</button>
+              <button v-if="selected && canEdit" @click="openEditForm" class="px-3 py-1.5 text-sm border border-[var(--gov-border)] rounded hover:bg-slate-50">编辑</button>
             </div>
             <pre class="mt-3 rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] p-3 text-xs leading-5 whitespace-pre-wrap break-words">{{ prettyRules }}</pre>
           </div>
@@ -108,7 +108,10 @@ import { computed, onMounted, ref } from 'vue'
 import dayjs from 'dayjs'
 
 import AppShell from '@/layouts/AppShell.vue'
+import { useAuthState } from '@/composables/useAuthState'
 import { listPolicySnapshots, getPolicySnapshot, createPolicySnapshot, updatePolicySnapshot } from '@/api/archive'
+
+const { authProfile } = useAuthState()
 
 const loading = ref(false)
 const saving = ref(false)
@@ -118,34 +121,66 @@ const selectedDetail = ref(null)
 const editing = ref(false)
 const editingNew = ref(false)
 const opMsg = ref(null)
+const canEdit = computed(() => authProfile.value.isSysAdmin)
 
-const editForm = ref({
-  version: '',
-  split_rules: '',
-  sort_rules: '',
-  numbering_rules: '',
-  retention_rules: '',
-  field_rules: '',
-  tag_rules: '',
-  review_thresholds: '',
-})
+function createEmptyEditForm(version = '') {
+  return {
+    version,
+    split_rules: '',
+    sort_rules: '',
+    numbering_rules: '',
+    retention_rules: '',
+    field_rules: '',
+    tag_rules: '',
+    review_thresholds: '',
+  }
+}
+
+const editForm = ref(createEmptyEditForm())
 
 function fmt(v) {
   return v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'
 }
 
+function extractRules(detail) {
+  const rules = detail?.rules_json || detail?.rules
+  return rules && typeof rules === 'object' ? rules : {}
+}
+
+function normalizeSnapshotDetail(detail = {}) {
+  const rules = extractRules(detail)
+  return {
+    ...detail,
+    rules,
+    rules_json: rules,
+  }
+}
+
+function extractArray(data, keys = ['items']) {
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  if (Array.isArray(data)) return data
+  return []
+}
+
 const prettyRules = computed(() => {
   if (!selectedDetail.value) return '暂无规则详情'
-  return JSON.stringify(selectedDetail.value, null, 2)
+  return JSON.stringify(extractRules(selectedDetail.value), null, 2)
 })
 
 async function loadSnapshots() {
   loading.value = true
   try {
+    const currentSelectedId = selected.value?.id
     const res = await listPolicySnapshots()
-    snapshots.value = res.data?.items || res.data || []
-    if (snapshots.value.length && !selected.value) {
-      await selectSnapshot(snapshots.value[0])
+    snapshots.value = extractArray(res.data)
+    const nextSelected = snapshots.value.find((item) => item.id === currentSelectedId) || snapshots.value[0]
+    if (nextSelected) {
+      await selectSnapshot(nextSelected)
+    } else {
+      selected.value = null
+      selectedDetail.value = null
     }
   } catch (e) {
     console.error('加载策略快照失败', e)
@@ -162,44 +197,38 @@ async function selectSnapshot(snapshot) {
   try {
     if (snapshot?.id) {
       const res = await getPolicySnapshot(snapshot.id)
-      selectedDetail.value = res.data || snapshot
+      selectedDetail.value = normalizeSnapshotDetail(res.data || snapshot)
     } else {
-      selectedDetail.value = snapshot
+      selectedDetail.value = normalizeSnapshotDetail(snapshot)
     }
   } catch (e) {
     console.error('加载策略详情失败', e)
-    selectedDetail.value = snapshot
+    selectedDetail.value = normalizeSnapshotDetail(snapshot)
   }
 }
 
 function openCreateForm() {
+  if (!canEdit.value) return
   editing.value = true
   editingNew.value = true
-  editForm.value = {
-    version: '',
-    split_rules: '',
-    sort_rules: '',
-    numbering_rules: '',
-    retention_rules: '',
-    field_rules: '',
-    tag_rules: '',
-    review_thresholds: '',
-  }
+  editForm.value = createEmptyEditForm()
 }
 
 function openEditForm() {
+  if (!canEdit.value || !selectedDetail.value) return
   editing.value = true
   editingNew.value = false
   const d = selectedDetail.value || {}
+  const rules = extractRules(d)
   editForm.value = {
     version: d.version || '',
-    split_rules: safeStr(d.split_rules),
-    sort_rules: safeStr(d.sort_rules),
-    numbering_rules: safeStr(d.numbering_rules),
-    retention_rules: safeStr(d.retention_rules),
-    field_rules: safeStr(d.field_rules),
-    tag_rules: safeStr(d.tag_rules),
-    review_thresholds: safeStr(d.review_thresholds),
+    split_rules: safeStr(rules.split_rules),
+    sort_rules: safeStr(rules.sort_rules),
+    numbering_rules: safeStr(rules.numbering_rules),
+    retention_rules: safeStr(rules.retention_rules),
+    field_rules: safeStr(rules.field_rules),
+    tag_rules: safeStr(rules.tag_rules),
+    review_thresholds: safeStr(rules.review_thresholds),
   }
 }
 
@@ -219,19 +248,30 @@ function safeParse(v) {
   try { return JSON.parse(v) } catch { return v }
 }
 
+function buildRulesPayload() {
+  const entries = [
+    ['split_rules', safeParse(editForm.value.split_rules)],
+    ['sort_rules', safeParse(editForm.value.sort_rules)],
+    ['numbering_rules', safeParse(editForm.value.numbering_rules)],
+    ['retention_rules', safeParse(editForm.value.retention_rules)],
+    ['field_rules', safeParse(editForm.value.field_rules)],
+    ['tag_rules', safeParse(editForm.value.tag_rules)],
+    ['review_thresholds', safeParse(editForm.value.review_thresholds)],
+  ]
+  return Object.fromEntries(entries.filter(([, value]) => value !== null && value !== undefined))
+}
+
 async function saveEdit() {
+  if (!canEdit.value) {
+    opMsg.value = { ok: false, text: '当前账号仅可查看规则，不能修改快照。' }
+    return
+  }
   saving.value = true
   opMsg.value = null
   try {
     const payload = {
-      version: editForm.value.version || undefined,
-      split_rules: safeParse(editForm.value.split_rules),
-      sort_rules: safeParse(editForm.value.sort_rules),
-      numbering_rules: safeParse(editForm.value.numbering_rules),
-      retention_rules: safeParse(editForm.value.retention_rules),
-      field_rules: safeParse(editForm.value.field_rules),
-      tag_rules: safeParse(editForm.value.tag_rules),
-      review_thresholds: safeParse(editForm.value.review_thresholds),
+      version_tag: editForm.value.version || undefined,
+      rules_json: buildRulesPayload(),
     }
 
     if (editingNew.value) {

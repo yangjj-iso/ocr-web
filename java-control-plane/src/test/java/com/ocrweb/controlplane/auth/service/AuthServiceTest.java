@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ocrweb.controlplane.auth.domain.AppUserEntity;
 import com.ocrweb.controlplane.auth.repository.AppUserRepository;
 import com.ocrweb.controlplane.config.AuthProperties;
+import com.ocrweb.controlplane.tenant.service.TenantService;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -21,6 +22,7 @@ class AuthServiceTest {
         PasswordHashService passwordHashService = new PasswordHashService();
         SessionTokenService sessionTokenService = new SessionTokenService(authProperties, new ObjectMapper());
         AppUserRepository appUserRepository = mock(AppUserRepository.class);
+        TenantService tenantService = mock(TenantService.class);
 
         AppUserEntity user = new AppUserEntity();
         user.setUsername("member01");
@@ -32,7 +34,7 @@ class AuthServiceTest {
 
         when(appUserRepository.findByUsername("member01")).thenReturn(Optional.of(user));
 
-        AuthService authService = new AuthService(appUserRepository, passwordHashService, sessionTokenService, authProperties);
+        AuthService authService = new AuthService(appUserRepository, passwordHashService, sessionTokenService, authProperties, tenantService);
 
         AuthService.AuthLoginResult result = authService.login("member01", "secret123");
 

@@ -2,17 +2,26 @@
   <AppShell>
     <div class="p-5 space-y-4">
       <!-- 页头 -->
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-3">
         <div>
           <h1 class="gov-page-header">批次管理</h1>
         </div>
-        <button
-          v-if="canCreate"
-          @click="openCreateModal"
-          class="gov-btn text-sm"
-        >
-          + 新建批次
-        </button>
+        <div class="flex items-center gap-2">
+          <span v-if="refreshStatusText" class="hidden text-xs text-[var(--gov-text-muted)] md:inline">{{ refreshStatusText }}</span>
+          <button
+            @click="handleManualRefresh"
+            class="px-3 py-2 border border-[var(--gov-border)] text-sm rounded-md text-[var(--gov-text-muted)] hover:bg-slate-50 transition"
+          >
+            刷新
+          </button>
+          <button
+            v-if="canCreate"
+            @click="openCreateModal"
+            class="gov-btn text-sm"
+          >
+            + 新建批次
+          </button>
+        </div>
       </div>
 
       <!-- 数据表格 -->
@@ -157,6 +166,21 @@
           </div>
         </div>
 
+        <div class="rounded-md border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] p-3">
+          <div class="flex items-center gap-3">
+            <div class="flex-1 bg-gray-200 rounded-full h-1.5 min-w-[60px]">
+              <div
+                class="bg-[var(--gov-primary)] h-1.5 rounded-full transition-all"
+                :style="{ width: `${getProgress(selectedBatch)}%` }"
+              ></div>
+            </div>
+            <span class="w-10 text-right font-mono text-sm text-[var(--gov-text-muted)]">{{ getProgress(selectedBatch) }}%</span>
+          </div>
+          <p v-if="getProgressSummary(selectedBatch)" class="mt-2 text-xs text-[var(--gov-text-muted)]">
+            {{ getProgressSummary(selectedBatch) }}
+          </p>
+        </div>
+
         <!-- 工作流进度 -->
         <div v-if="selectedBatch.workflow_stages?.length" class="mt-4">
           <p class="text-sm font-medium text-[var(--gov-text)] mb-2">工作流阶段</p>
@@ -248,13 +272,19 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthState } from '@/composables/useAuthState'
 import AppShell from '@/layouts/AppShell.vue'
 import DataTable from '@/shared/components/DataTable.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import DetailDrawer from '@/shared/components/DetailDrawer.vue'
+import {
+  formatRefreshTime,
+  getBatchProgressPercent,
+  getBatchProgressSummary,
+  isBatchAutoRefreshable,
+} from '@/features/batches/progress'
 import {
   listBatches,
   createBatch,
@@ -296,6 +326,11 @@ const policySnapshots = ref([])
 const createForm = ref({ name: '', policy_snapshot_id: '', notes: '' })
 const loadError = ref('')
 const opMsg = ref(null)
+const lastRefreshedAt = ref(null)
+
+const AUTO_REFRESH_MS = 15000
+let listAutoRefreshTimer = null
+let loadInFlight = false
 
 const columns = [
   { key: 'batch_id', label: '批次ID', width: '200px' },
@@ -305,8 +340,46 @@ const columns = [
   { key: 'created_at', label: '创建时间' },
 ]
 
-async function loadData() {
-  loading.value = true
+const hasActiveBatches = computed(() => batches.value.some((batch) => isBatchAutoRefreshable(batch)))
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (hasActiveBatches.value) {
+    return stamp ? `${stamp} 更新 · 在途批次每15s自动刷新` : '在途批次每15s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
+
+function syncSelectedBatch(nextRows) {
+  if (!selectedBatch.value?.batch_id) return
+  const nextSelected = nextRows.find((row) => row.batch_id === selectedBatch.value.batch_id)
+  if (nextSelected) {
+    selectedBatch.value = nextSelected
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!hasActiveBatches.value) return
+  listAutoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      loadData({ silent: true })
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (listAutoRefreshTimer) {
+    window.clearInterval(listAutoRefreshTimer)
+    listAutoRefreshTimer = null
+  }
+}
+
+async function loadData(options = {}) {
+  if (loadInFlight) return
+  loadInFlight = true
+  if (!options.silent) {
+    loading.value = true
+  }
   loadError.value = ''
   try {
     const params = {
@@ -319,11 +392,16 @@ async function loadData() {
     const res = await listBatches(params)
     batches.value = res.data?.items ?? res.data ?? []
     total.value = res.data?.total ?? batches.value.length
+    syncSelectedBatch(batches.value)
+    lastRefreshedAt.value = new Date()
   } catch (e) {
     console.error('加载批次失败', e)
     loadError.value = e?.response?.status === 401 ? '认证已失效，请重新登录。' : '加载批次列表失败，请稍后重试。'
   } finally {
-    loading.value = false
+    if (!options.silent) {
+      loading.value = false
+    }
+    loadInFlight = false
   }
 }
 
@@ -350,13 +428,20 @@ function handleViewDetail(row) {
 }
 
 function getProgress(row) {
-  if (!row.total_docs || row.total_docs === 0) return 0
-  return Math.round(((row.done_docs ?? 0) / row.total_docs) * 100)
+  return getBatchProgressPercent(row)
+}
+
+function getProgressSummary(row) {
+  return getBatchProgressSummary(row)
+}
+
+async function handleManualRefresh() {
+  await loadData()
 }
 
 function canStartWorkflow(row) {
   if (!row) return false
-  return canCreate.value && row.status === 'draft'
+  return canCreate.value && row.status === 'draft' && Number(row.file_count || 0) > 0
 }
 
 function canAssign(row) {
@@ -378,7 +463,7 @@ async function handleStartWorkflow(row) {
 }
 
 function handleAssign(row) {
-  router.push(`/batches/${row.batch_id}?tab=assignments`)
+  router.push({ path: '/tasks', query: { batchId: row.batch_id } })
 }
 
 function openCreateModal() {
@@ -434,11 +519,23 @@ watch(
   { immediate: true }
 )
 
+watch(hasActiveBatches, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
 onMounted(async () => {
   await loadData()
   try {
     const res = await listPolicySnapshots()
     policySnapshots.value = res.data?.items ?? res.data ?? []
   } catch {}
+})
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
 })
 </script>

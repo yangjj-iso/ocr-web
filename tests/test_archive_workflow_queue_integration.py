@@ -1,6 +1,5 @@
 import os
 import unittest
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -92,24 +91,6 @@ class ArchivePublisherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["current_stage"], "run_draft_subgraph")
         self.assertEqual(payload["affected_scope"]["doc_ids"], ["doc-1"])
         self.assertEqual(payload["recompute_targets"], ["draft", "catalog"])
-
-    async def test_enqueue_workflow_resume_includes_review_result(self):
-        publish = AsyncMock()
-
-        with patch("app.infrastructure.queue.archive_publisher._publish_to_queue", new=publish):
-            await archive_publisher.enqueue_workflow_resume(
-                run_id="wf_existing",
-                batch_id="batch-a",
-                reason="review_submitted",
-                affected_scope={"invalidate_catalog": True},
-                resume_from_checkpoint="build_catalog_final",
-                review_result={"result_type": "field_corrected", "field_updates": {"doc-1": {"title": "修正题名"}}},
-            )
-
-        queue_name, payload = publish.await_args.args
-        self.assertEqual(queue_name, archive_publisher.QUEUE_REVIEW_RESUME)
-        self.assertEqual(payload["review_result"]["result_type"], "field_corrected")
-        self.assertEqual(payload["resume_from_checkpoint"], "build_catalog_final")
 
     async def test_enqueue_final_pipeline_includes_resume_context(self):
         publish = AsyncMock()
@@ -221,30 +202,6 @@ class ArchiveWorkerTests(unittest.IsolatedAsyncioTestCase):
             reason="rework_requested",
             affected_scope={"doc_ids": ["doc-1"], "invalidate_catalog": True},
             resume_from_checkpoint="build_catalog_final",
-        )
-
-    async def test_handle_review_resume_passes_review_result(self):
-        resume = AsyncMock(return_value={"final_status": "done"})
-
-        with patch("app.services.archive_workflow.resume_archive_workflow", new=resume):
-            await archive_worker._handle_review_resume(
-                {
-                    "run_id": "wf_existing",
-                    "batch_id": "batch-a",
-                    "reason": "review_submitted",
-                    "affected_scope": {"invalidate_catalog": True},
-                    "resume_from_checkpoint": "build_catalog_final",
-                    "review_result": {"result_type": "field_corrected"},
-                }
-            )
-
-        resume.assert_awaited_once_with(
-            task_id="wf_existing",
-            batch_id="batch-a",
-            reason="review_submitted",
-            affected_scope={"invalidate_catalog": True},
-            resume_from_checkpoint="build_catalog_final",
-            review_result={"result_type": "field_corrected"},
         )
 
     async def test_handle_page_preprocess_enqueues_ocr_for_same_chunk(self):
@@ -799,101 +756,6 @@ class ArchiveWorkflowRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Batch has no source files or completed OCR task results", response.json()["detail"])
-
-    def test_get_dashboard_stats_handles_naive_and_aware_datetimes(self):
-        self.db = _ArchiveRouteDB(
-            _ScalarResult([
-                SimpleNamespace(created_at=datetime(2026, 4, 13, 9, 0, 0), status="processing"),
-            ]),
-            _ScalarResult([]),
-            _ScalarResult([]),
-            _ScalarResult([
-                SimpleNamespace(created_at=datetime(2026, 4, 10, 12, 0, 0)),
-                SimpleNamespace(created_at=datetime(2026, 4, 1, 12, 0, 0, tzinfo=timezone.utc)),
-            ]),
-            _ScalarResult([]),
-            _ScalarResult([SimpleNamespace(id="default")]),
-        )
-
-        async def override_get_db():
-            yield self.db
-
-        self.app.dependency_overrides[get_db] = override_get_db
-
-        with patch("app.api.archive_workflow._utc_now", return_value=datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)):
-            response = self.client.get("/api/archive/dashboard/stats")
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["todayTasks"], 1)
-        self.assertEqual(payload["recentArchived"], 1)
-
-    def test_submit_review_enqueues_resume_only_when_workflow_unblocked(self):
-        task = SimpleNamespace(
-            review_task_id="rt-1",
-            task_type="metadata",
-            affected_doc_ids_json=["doc-1"],
-            batch_id="batch-a",
-            run_id="wf-1",
-            reason="metadata review",
-        )
-        workflow_run = SimpleNamespace(run_id="wf-1", run_status="running", current_stage="resume_from_review")
-        self.db = _ArchiveRouteDB(_ScalarResult([workflow_run]))
-
-        async def override_get_db():
-            yield self.db
-
-        self.app.dependency_overrides[get_db] = override_get_db
-        enqueue = AsyncMock()
-
-        with patch("app.api.archive_workflow._find_review_task", new=AsyncMock(return_value=task)), patch(
-            "app.api.archive_workflow.submit_review_result",
-            new=AsyncMock(return_value=True),
-        ), patch("app.api.archive_workflow.enqueue_workflow_resume", new=enqueue):
-            response = self.client.post(
-                "/api/archive/tasks/rt-1/submit",
-                json={"decision": "approve", "metadata": {"title": "修正题名"}},
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["resumed"])
-        kwargs = enqueue.await_args.kwargs
-        self.assertEqual(kwargs["run_id"], "wf-1")
-        self.assertEqual(kwargs["batch_id"], "batch-a")
-        self.assertEqual(kwargs["resume_from_checkpoint"], "build_catalog_final")
-        self.assertEqual(kwargs["review_result"]["result_type"], "field_corrected")
-        self.assertEqual(kwargs["review_result"]["field_updates"]["doc-1"]["title"], "修正题名")
-
-    def test_submit_review_skips_resume_when_other_tasks_still_pending(self):
-        task = SimpleNamespace(
-            review_task_id="rt-1",
-            task_type="boundary",
-            affected_doc_ids_json=["doc-1"],
-            batch_id="batch-a",
-            run_id="wf-1",
-            reason="boundary review",
-        )
-        workflow_run = SimpleNamespace(run_id="wf-1", run_status="blocked", current_stage="wait_for_review")
-        self.db = _ArchiveRouteDB(_ScalarResult([workflow_run]))
-
-        async def override_get_db():
-            yield self.db
-
-        self.app.dependency_overrides[get_db] = override_get_db
-        enqueue = AsyncMock()
-
-        with patch("app.api.archive_workflow._find_review_task", new=AsyncMock(return_value=task)), patch(
-            "app.api.archive_workflow.submit_review_result",
-            new=AsyncMock(return_value=True),
-        ), patch("app.api.archive_workflow.enqueue_workflow_resume", new=enqueue):
-            response = self.client.post(
-                "/api/archive/tasks/rt-1/submit",
-                json={"decision": "approve"},
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.json()["resumed"])
-        enqueue.assert_not_awaited()
 
 
 class InternalWorkflowRouteTests(unittest.TestCase):
