@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ocrweb.controlplane.archive.service.ArchiveRecordService;
+import com.ocrweb.controlplane.archive.service.ReworkTaskService;
+import com.ocrweb.controlplane.archive.dto.ReworkDtos;
 import com.ocrweb.controlplane.auth.service.CurrentUser;
 import com.ocrweb.controlplane.auth.service.UserQuotaService;
 import com.ocrweb.controlplane.task.domain.OcrTaskEntity;
@@ -41,6 +43,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.FORBIDDEN;
 
 @Service
 public class OcrTaskService {
@@ -55,6 +58,7 @@ public class OcrTaskService {
     private final TaskStorageService storageService;
     private final TaskCommandProducer taskCommandProducer;
     private final ArchiveRecordService archiveRecordService;
+    private final ReworkTaskService reworkTaskService;
     private final UserQuotaService userQuotaService;
     private final ObjectMapper objectMapper;
 
@@ -64,6 +68,7 @@ public class OcrTaskService {
             TaskStorageService storageService,
             TaskCommandProducer taskCommandProducer,
             ArchiveRecordService archiveRecordService,
+            ReworkTaskService reworkTaskService,
             UserQuotaService userQuotaService,
             ObjectMapper objectMapper
     ) {
@@ -72,6 +77,7 @@ public class OcrTaskService {
         this.storageService = storageService;
         this.taskCommandProducer = taskCommandProducer;
         this.archiveRecordService = archiveRecordService;
+        this.reworkTaskService = reworkTaskService;
         this.userQuotaService = userQuotaService;
         this.objectMapper = objectMapper;
     }
@@ -441,6 +447,32 @@ public class OcrTaskService {
         }
         taskRepository.save(task);
         return toDetail(task);
+    }
+
+    @Transactional
+    public TaskDtos.ReleaseDecisionResponse submitReleaseDecision(Long taskId, TaskDtos.ReleaseDecisionRequest request, CurrentUser currentUser) {
+        OcrTaskEntity task = taskRepository.findById(taskId).orElseThrow();
+        enforceTaskAccess(currentUser, task);
+
+        String decision = safe(request == null ? null : request.decision()).toLowerCase(Locale.ROOT);
+        if ("reject".equals(decision)) {
+            String reason = truncate(StringUtils.hasText(request.reason()) ? request.reason() : "人工驳回，待返工处理。", 1000);
+            ReworkDtos.ReworkStatusResponse rework = reworkTaskService.createFromReleaseDecision(currentUser, task, reason, request.rework());
+            task.setStatus(normalizeStatus(OcrTaskStatus.FAILED));
+            task.setReviewStatus("rejected");
+            task.setReviewReason(reason);
+            task.setHumanReviewPayload(null);
+            taskRepository.save(task);
+            return new TaskDtos.ReleaseDecisionResponse(task.getId(), true, rework.id(), effectiveStatus(task));
+        }
+
+        String action = safe(request == null ? null : request.action()).toLowerCase(Locale.ROOT);
+        task.setStatus(normalizeStatus(OcrTaskStatus.COMPLETED));
+        task.setReviewStatus("approved");
+        task.setReviewReason("archive".equals(action) ? "入库确认完成。" : "放行完成。");
+        task.setHumanReviewPayload(null);
+        taskRepository.save(task);
+        return new TaskDtos.ReleaseDecisionResponse(task.getId(), true, null, effectiveStatus(task));
     }
 
     @Transactional
@@ -922,6 +954,19 @@ public class OcrTaskService {
             case "failed" -> "failed";
             default -> rawStatus.trim().toLowerCase();
         };
+    }
+
+    private void enforceTaskAccess(CurrentUser currentUser, OcrTaskEntity task) {
+        if (currentUser == null) {
+            throw new ResponseStatusException(FORBIDDEN, "未认证用户无法操作任务。");
+        }
+        String role = currentUser.effectiveRole();
+        if (currentUser.isAdmin() || "admin".equals(role)) {
+            return;
+        }
+        if (!currentUser.effectiveTenantId().equals(task.getTenantId())) {
+            throw new ResponseStatusException(FORBIDDEN, "无权操作其他租户任务。");
+        }
     }
 
     private static String extension(String filename) {

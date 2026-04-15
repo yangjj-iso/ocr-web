@@ -7,6 +7,10 @@
           <p class="text-sm text-[var(--gov-text-muted)] mt-0.5">批次 {{ batchId }}</p>
         </div>
         <div class="flex items-center gap-2">
+          <span v-if="refreshStatusText" class="hidden text-xs text-[var(--gov-text-muted)] md:inline">{{ refreshStatusText }}</span>
+          <button @click="handleManualRefresh" :disabled="refreshing" class="px-3 py-2 border border-[var(--gov-border)] text-sm rounded-md text-[var(--gov-text-muted)] hover:bg-slate-50 transition disabled:opacity-50">
+            {{ refreshing ? '刷新中...' : '刷新' }}
+          </button>
           <button v-if="canStartWorkflow" @click="handleStartWorkflow" :disabled="starting" class="px-4 py-2 text-sm rounded-md bg-green-600 text-white hover:bg-green-700 transition disabled:opacity-50">
             {{ starting ? '启动中...' : '启动工作流' }}
           </button>
@@ -53,6 +57,16 @@
         <!-- 处理进度 -->
         <section class="rounded-lg border border-[var(--gov-border)] bg-white p-4">
           <h2 class="text-sm font-semibold text-[var(--gov-text)]">处理进度</h2>
+          <div class="mt-3 flex items-center gap-3">
+            <div class="flex-1 bg-gray-200 rounded-full h-1.5 min-w-[60px]">
+              <div
+                class="bg-[var(--gov-primary)] h-1.5 rounded-full transition-all"
+                :style="{ width: `${progressPercent}%` }"
+              ></div>
+            </div>
+            <span class="w-10 text-right font-mono text-sm text-[var(--gov-text-muted)]">{{ progressPercent }}%</span>
+          </div>
+          <p v-if="progressSummary" class="mt-2 text-xs text-[var(--gov-text-muted)]">{{ progressSummary }}</p>
           <div class="mt-3 space-y-2">
             <div v-for="s in stages" :key="s.name || s.id" class="flex items-center gap-2 text-sm">
               <span class="w-2 h-2 rounded-full" :class="dotClass(s.status)"></span>
@@ -149,13 +163,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 
 import AppShell from '@/layouts/AppShell.vue'
 import StatusBadge from '@/shared/components/StatusBadge.vue'
 import { useAuthState } from '@/composables/useAuthState'
+import {
+  formatRefreshTime,
+  getBatchProgressPercent,
+  getBatchProgressSummary,
+  isBatchAutoRefreshable,
+} from '@/features/batches/progress'
 import { getBatch, startBatchWorkflow, listBatchFiles, uploadBatchFiles, listDocUnits } from '@/api/archive'
 
 const route = useRoute()
@@ -171,7 +191,12 @@ const filesLoading = ref(false)
 const docsLoading = ref(false)
 const uploading = ref(false)
 const starting = ref(false)
+const refreshing = ref(false)
 const opMsg = ref(null)
+const lastRefreshedAt = ref(null)
+
+const AUTO_REFRESH_MS = 10000
+let detailAutoRefreshTimer = null
 
 const canReview = computed(() => authProfile.value.hasOperator)
 const canUpload = computed(() => {
@@ -180,7 +205,18 @@ const canUpload = computed(() => {
 })
 const canStartWorkflow = computed(() => {
   const s = batch.value.status
-  return canReview.value && (s === 'created' || s === 'pending' || s === 'draft') && files.value.length > 0
+  const availableInputs = Math.max(Number(batch.value.file_count || 0), Number(files.value.length || 0))
+  return canReview.value && (s === 'created' || s === 'pending' || s === 'draft') && availableInputs > 0
+})
+const progressPercent = computed(() => getBatchProgressPercent(batch.value))
+const progressSummary = computed(() => getBatchProgressSummary(batch.value))
+const autoRefreshEnabled = computed(() => isBatchAutoRefreshable(batch.value))
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (autoRefreshEnabled.value) {
+    return stamp ? `${stamp} 更新 · 当前批次每10s自动刷新` : '当前批次每10s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
 })
 
 function fmt(v) {
@@ -208,7 +244,15 @@ function confidenceClass(c) {
 }
 
 function goTask() {
-  router.push('/tasks')
+  router.push({ path: '/tasks', query: { batchId } })
+}
+
+function extractArray(data, keys = ['items']) {
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  if (Array.isArray(data)) return data
+  return []
 }
 
 async function load() {
@@ -225,7 +269,7 @@ async function loadFiles() {
   filesLoading.value = true
   try {
     const res = await listBatchFiles(batchId)
-    files.value = res.data?.items || res.data || []
+    files.value = extractArray(res.data)
   } catch {
     files.value = []
   } finally {
@@ -233,16 +277,56 @@ async function loadFiles() {
   }
 }
 
-async function loadDocUnits() {
-  docsLoading.value = true
+async function loadDocUnits(options = {}) {
+  if (!options.silent) {
+    docsLoading.value = true
+  }
   try {
     const res = await listDocUnits(batchId)
-    docUnits.value = res.data?.items || res.data || []
+    docUnits.value = extractArray(res.data)
   } catch {
     docUnits.value = []
   } finally {
-    docsLoading.value = false
+    if (!options.silent) {
+      docsLoading.value = false
+    }
   }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!autoRefreshEnabled.value) return
+  detailAutoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden) {
+      refreshAll({ silent: true })
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (detailAutoRefreshTimer) {
+    window.clearInterval(detailAutoRefreshTimer)
+    detailAutoRefreshTimer = null
+  }
+}
+
+async function refreshAll(options = {}) {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([
+      load(),
+      loadDocUnits(options),
+      options.includeFiles ? loadFiles() : Promise.resolve(),
+    ])
+    lastRefreshedAt.value = new Date()
+  } finally {
+    refreshing.value = false
+  }
+}
+
+async function handleManualRefresh() {
+  await refreshAll({ includeFiles: true })
 }
 
 async function handleFileSelect(e) {
@@ -279,7 +363,7 @@ async function handleStartWorkflow() {
   try {
     await startBatchWorkflow(batchId, batch.value.policy_snapshot_id)
     opMsg.value = { ok: true, text: '工作流已启动' }
-    await load()
+    await refreshAll()
   } catch (e) {
     opMsg.value = { ok: false, text: '启动失败：' + (e?.response?.data?.detail || e.message || '未知错误') }
   } finally {
@@ -287,9 +371,19 @@ async function handleStartWorkflow() {
   }
 }
 
-onMounted(() => {
-  load()
-  loadFiles()
-  loadDocUnits()
+watch(autoRefreshEnabled, (enabled) => {
+  if (enabled) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
+onMounted(async () => {
+  await refreshAll({ includeFiles: true })
+})
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
 })
 </script>

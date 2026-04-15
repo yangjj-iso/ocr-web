@@ -9,14 +9,12 @@ responsibilities have moved to the Java control plane.
 
 from fastapi import APIRouter
 
-from app.api.admin_users import operator_router, router as admin_router
 from app.api.ai_batches import router as ai_batches_router
 from app.api.archive_workflow import router as archive_workflow_router
 from app.api.evaluation import router as evaluation_router
 from app.api.files import router as files_router
 from app.api.qa import router as qa_router
 from app.api.tasks import router as tasks_router
-from app.api.tenants import router as tenants_router, public_router as tenants_public_router
 from app.services.archive_service import save_archive_record
 from app.services.batch_evaluation_service import (
     get_batch_evaluation_ai_report,
@@ -48,10 +46,6 @@ router.include_router(archive_workflow_router)
 router.include_router(qa_router)
 router.include_router(evaluation_router)
 router.include_router(files_router)
-router.include_router(admin_router)
-router.include_router(operator_router)
-router.include_router(tenants_router)
-router.include_router(tenants_public_router)
 
 __all__ = [
     "answer_batch_question",

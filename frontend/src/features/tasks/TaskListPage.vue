@@ -1,9 +1,15 @@
 <template>
   <AppShell>
     <div class="p-5 space-y-4">
-      <div class="flex items-center justify-between">
+      <div class="flex items-center justify-between gap-3">
         <div>
           <h1 class="gov-page-header">任务列表</h1>
+        </div>
+        <div class="flex items-center gap-2">
+          <span v-if="refreshStatusText" class="hidden text-xs text-[var(--gov-text-muted)] md:inline">{{ refreshStatusText }}</span>
+          <button @click="handleManualRefresh" class="px-3 py-2 border border-[var(--gov-border)] text-sm rounded-md text-[var(--gov-text-muted)] hover:bg-slate-50 transition">
+            刷新
+          </button>
         </div>
       </div>
 
@@ -77,6 +83,10 @@
       <div v-if="loadError" class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
         {{ loadError }}
       </div>
+
+      <div v-if="opMsg" class="rounded-md border p-3 text-sm" :class="opMsg.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'">
+        {{ opMsg.text }}
+      </div>
     </div>
 
     <div v-if="showAssign" class="gov-modal-backdrop">
@@ -112,8 +122,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 
 import AppShell from '@/layouts/AppShell.vue'
@@ -123,7 +133,9 @@ import { useAuthState } from '@/composables/useAuthState'
 import { listReviewTasks, getMyAssignedTasks, assignTask } from '@/api/archive'
 import { listUsers } from '@/api/admin'
 import { buildAuthProfile } from '@/utils/authz.js'
+import { formatRefreshTime } from '@/features/batches/progress'
 
+const route = useRoute()
 const router = useRouter()
 const { authProfile } = useAuthState()
 
@@ -137,6 +149,7 @@ const pageSize = ref(20)
 const loading = ref(false)
 
 const loadError = ref('')
+const opMsg = ref(null)
 const filters = ref({ type: '', status: '', keyword: '' })
 
 const columns = [
@@ -153,6 +166,41 @@ const assigning = ref(false)
 const selectedTask = ref(null)
 const assignableUsers = ref([])
 const assignForm = ref({ userId: '', notes: '' })
+const lastRefreshedAt = ref(null)
+
+const AUTO_REFRESH_MS = 15000
+const ACTIVE_TASK_STATUSES = new Set(['pending', 'processing', 'human_review', 'claimed', 'running'])
+let taskAutoRefreshTimer = null
+let taskLoadInFlight = false
+
+const shouldPollForTasks = computed(() => {
+  const selectedStatus = String(filters.value.status || '').trim().toLowerCase()
+  if (!selectedStatus || ACTIVE_TASK_STATUSES.has(selectedStatus)) {
+    return true
+  }
+  return tasks.value.some((task) => ACTIVE_TASK_STATUSES.has(String(task?.status || '').trim().toLowerCase()))
+})
+
+const refreshStatusText = computed(() => {
+  const stamp = formatRefreshTime(lastRefreshedAt.value)
+  if (shouldPollForTasks.value) {
+    return stamp ? `${stamp} 更新 · 任务列表每15s自动刷新` : '任务列表每15s自动刷新'
+  }
+  return stamp ? `${stamp} 更新` : ''
+})
+
+function normalizeTaskType(type) {
+  return {
+    boundary: 'boundary_review',
+    boundary_review: 'boundary_review',
+    metadata: 'metadata_review',
+    metadata_review: 'metadata_review',
+    ordering: 'order_review',
+    order_review: 'order_review',
+    final_release: 'final_release',
+    rework: 'rework',
+  }[String(type || '').trim()] || String(type || '').trim()
+}
 
 function buildParams() {
   return {
@@ -164,24 +212,106 @@ function buildParams() {
   }
 }
 
-async function loadTasks() {
-  loading.value = true
+function matchesTaskKeyword(task, keyword) {
+  const q = String(keyword || '').trim().toLowerCase()
+  if (!q) return true
+  const haystack = [
+    task?.id,
+    task?.review_task_id,
+    task?.batch_id,
+    task?.title,
+    task?.reason,
+    task?.assignee,
+    task?.assignee_name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  return haystack.includes(q)
+}
+
+function filterAssignedTasks(items, params) {
+  const normalizedType = normalizeTaskType(params.type)
+  return items.filter((task) => {
+    const taskType = normalizeTaskType(task?.type || task?.task_type)
+    if (normalizedType && taskType !== normalizedType) return false
+    return matchesTaskKeyword(task, params.q)
+  })
+}
+
+function extractArray(data, keys = ['items', 'tasks']) {
+  for (const key of keys) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  if (Array.isArray(data)) return data
+  return []
+}
+
+function syncSelectedTask(nextTasks) {
+  if (!selectedTask.value?.id) return
+  const nextSelected = nextTasks.find((task) => String(task.id) === String(selectedTask.value.id))
+  if (nextSelected) {
+    selectedTask.value = nextSelected
+  }
+}
+
+async function loadTasks(options = {}) {
+  if (taskLoadInFlight) return
+  taskLoadInFlight = true
+  if (!options.silent) {
+    loading.value = true
+  }
   loadError.value = ''
   try {
     const params = buildParams()
     const res = canViewAll.value
       ? await listReviewTasks(params)
-      : await getMyAssignedTasks(params)
+      : await getMyAssignedTasks({
+          page: 1,
+          page_size: 500,
+          status: params.status,
+        })
     const data = res.data || {}
-    tasks.value = data.items || data.tasks || []
-    total.value = data.total || tasks.value.length
+    const items = data.items || data.tasks || []
+
+    if (canViewAll.value) {
+      tasks.value = items
+      total.value = data.total || tasks.value.length
+    } else {
+      const filteredItems = filterAssignedTasks(items, params)
+      total.value = filteredItems.length
+      const start = (page.value - 1) * pageSize.value
+      tasks.value = filteredItems.slice(start, start + pageSize.value)
+    }
+    syncSelectedTask(tasks.value)
+    lastRefreshedAt.value = new Date()
   } catch (error) {
     console.error('加载任务失败', error)
     loadError.value = '加载任务失败，请检查网络或稍后重试。'
     tasks.value = []
     total.value = 0
   } finally {
-    loading.value = false
+    if (!options.silent) {
+      loading.value = false
+    }
+    taskLoadInFlight = false
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (!shouldPollForTasks.value) return
+  taskAutoRefreshTimer = window.setInterval(() => {
+    if (!document.hidden && !showAssign.value && !assigning.value) {
+      loadTasks({ silent: true })
+    }
+  }, AUTO_REFRESH_MS)
+}
+
+function stopAutoRefresh() {
+  if (taskAutoRefreshTimer) {
+    window.clearInterval(taskAutoRefreshTimer)
+    taskAutoRefreshTimer = null
   }
 }
 
@@ -189,10 +319,10 @@ async function loadAssignableUsers() {
   if (!canAssignTask.value) return
   try {
     const res = await listUsers({ page: 1, page_size: 200 })
-    const items = res.data?.items || res.data || []
+    const items = extractArray(res.data, ['items'])
     assignableUsers.value = items.filter((u) => {
       const profile = buildAuthProfile(u)
-      return profile.hasOperator || profile.hasSearcher
+      return !profile.isSysAdmin && !profile.isTenantAdmin && (profile.hasOperator || profile.hasSearcher)
     })
   } catch (error) {
     console.error('加载用户失败', error)
@@ -207,6 +337,10 @@ function reloadFromFirstPage() {
 function resetFilters() {
   filters.value = { type: '', status: '', keyword: '' }
   reloadFromFirstPage()
+}
+
+async function handleManualRefresh() {
+  await loadTasks()
 }
 
 function handlePageChange(p) {
@@ -233,13 +367,18 @@ function formatDate(value) {
   return dayjs(value).format('YYYY-MM-DD HH:mm')
 }
 
+function resolveTaskRoute(task) {
+  const taskType = normalizeTaskType(task?.type || task?.task_type)
+  if (taskType === 'boundary_review') return `/review/structure/${task.id}`
+  if (taskType === 'metadata_review') return `/review/catalog/${task.id}`
+  if (taskType === 'final_release') return `/release/console/${task.id}`
+  if (taskType === 'rework') return '/rework'
+  return `/review/${task.id}`
+}
+
 function goToTask(task) {
   if (!task) return
-  if (task.type === 'final_release') {
-    router.push('/release')
-    return
-  }
-  router.push(`/review/${task.id}`)
+  router.push(resolveTaskRoute(task))
 }
 
 function handleRowClick(task) {
@@ -260,28 +399,57 @@ function closeAssign() {
 async function submitAssign() {
   if (!selectedTask.value || !assignForm.value.userId) return
   assigning.value = true
+  opMsg.value = null
   try {
+    const assignee = assignableUsers.value.find((user) => String(user.id || user.user_id || user.username) === String(assignForm.value.userId))
     await assignTask({
       task_id: selectedTask.value.id,
-      assignee_id: assignForm.value.userId,
+      assignee_id: assignee?.id || assignee?.user_id || Number(assignForm.value.userId) || undefined,
+      assignee_username: assignee?.username || undefined,
       notes: assignForm.value.notes || undefined,
     })
+    opMsg.value = { ok: true, text: `任务 ${selectedTask.value.id} 已分配` }
     closeAssign()
     await loadTasks()
   } catch (error) {
     console.error('任务分配失败', error)
+    opMsg.value = { ok: false, text: '任务分配失败：' + (error?.response?.data?.detail || error.message || '未知错误') }
   } finally {
     assigning.value = false
   }
 }
 
+function applyRouteFilters() {
+  filters.value = {
+    ...filters.value,
+    type: route.query.type ? String(route.query.type) : '',
+    keyword: route.query.batchId
+      ? String(route.query.batchId)
+      : route.query.keyword
+        ? String(route.query.keyword)
+        : filters.value.keyword,
+  }
+}
+
 onMounted(async () => {
-  if (route.query.type) filters.value.type = String(route.query.type)
+  applyRouteFilters()
   await Promise.all([loadTasks(), loadAssignableUsers()])
 })
 
-watch(() => route.query.type, (val) => {
-  filters.value.type = val ? String(val) : ''
+watch(shouldPollForTasks, (active) => {
+  if (active) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
+watch(() => [route.query.type, route.query.batchId, route.query.keyword], () => {
+  applyRouteFilters()
   reloadFromFirstPage()
+})
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
 })
 </script>

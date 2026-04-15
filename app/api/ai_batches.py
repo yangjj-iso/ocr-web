@@ -11,7 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, raise_for_error, raise_service_unavailable, require_auth
-from app.api.admin_users import write_operation_log
 from app.core.auth import require_operator_access
 from app.db.models import ArchiveRecord
 from app.schemas.batches import (
@@ -23,6 +22,7 @@ from app.schemas.batches import (
     AIExtractFieldsRequest,
     AIExtractFieldsResponse,
 )
+from app.services.operation_log_service import write_operation_log
 
 
 def _compat_routes():

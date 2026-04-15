@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ocrweb.controlplane.archive.domain.ArchiveRecordEntity;
 import com.ocrweb.controlplane.archive.repository.ArchiveRecordRepository;
 import com.ocrweb.controlplane.task.repository.OcrTaskRepository;
+import com.ocrweb.controlplane.task.service.TaskStorageService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -25,10 +26,14 @@ class ArchiveRecordServiceTest {
         ArchiveRecordRepository archiveRecordRepository = mock(ArchiveRecordRepository.class);
         OcrTaskRepository ocrTaskRepository = mock(OcrTaskRepository.class);
         PathAccessService pathAccessService = mock(PathAccessService.class);
+        ReworkTaskService reworkTaskService = mock(ReworkTaskService.class);
+        TaskStorageService taskStorageService = mock(TaskStorageService.class);
         ArchiveRecordService service = new ArchiveRecordService(
                 archiveRecordRepository,
                 ocrTaskRepository,
-                pathAccessService
+            pathAccessService,
+            reworkTaskService,
+            taskStorageService
         );
 
         when(archiveRecordRepository.findByTaskId(286L)).thenReturn(Optional.empty());

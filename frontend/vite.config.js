@@ -24,6 +24,17 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
+      '/api/archive-control': {
+        target: controlPlaneTarget,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/archive-control/, '/api/archive'),
+      },
+      '/api/admin/tenants': { target: controlPlaneTarget, changeOrigin: true },
+      '/api/admin/users': { target: controlPlaneTarget, changeOrigin: true },
+      '/api/admin/operation-logs': { target: controlPlaneTarget, changeOrigin: true },
+      '/api/tenants': { target: controlPlaneTarget, changeOrigin: true },
+      '/api/operator/my-quota': { target: controlPlaneTarget, changeOrigin: true },
+      '/api/operator/my-quota/consume': { target: controlPlaneTarget, changeOrigin: true },
       '/api/admin': { target: aiApiTarget, changeOrigin: true },
       '/api/archive': { target: aiApiTarget, changeOrigin: true },
       '/api/operator': { target: aiApiTarget, changeOrigin: true },
@@ -33,5 +44,17 @@ export default defineConfig({
   build: {
     outDir: outputDir,
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('pdfjs-dist')) return 'vendor-pdf'
+          if (id.includes('chart.js') || id.includes('vue-chartjs')) return 'vendor-charts'
+          if (/[\\/]node_modules[\\/](vue|vue-router|pinia)[\\/]/.test(id)) return 'vendor-core'
+          if (id.includes('lucide-vue-next')) return 'vendor-ui'
+          return 'vendor'
+        },
+      },
+    },
   },
 })

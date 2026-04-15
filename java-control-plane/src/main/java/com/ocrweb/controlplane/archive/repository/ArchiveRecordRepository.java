@@ -13,6 +13,12 @@ import java.util.Optional;
 public interface ArchiveRecordRepository extends JpaRepository<ArchiveRecordEntity, Long> {
     Optional<ArchiveRecordEntity> findByTaskId(Long taskId);
 
+        Optional<ArchiveRecordEntity> findByArchiveNo(String archiveNo);
+
+        Optional<ArchiveRecordEntity> findByIdAndTenantId(Long id, String tenantId);
+
+        Optional<ArchiveRecordEntity> findByArchiveNoAndTenantId(String archiveNo, String tenantId);
+
     @Query("""
             select r from ArchiveRecordEntity r
             where (:folder = '' or r.batchFolder = :folder)

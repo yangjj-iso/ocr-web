@@ -67,6 +67,10 @@
               <option value="disabled">disabled</option>
             </select>
           </div>
+
+          <p v-if="opMsg" class="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            {{ opMsg }}
+          </p>
         </div>
 
         <div class="mt-5 flex justify-end gap-2">
@@ -102,6 +106,7 @@ const loading = ref(false)
 const saving = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
+const opMsg = ref('')
 
 const editing = ref(false)
 const formMode = ref('create')
@@ -123,6 +128,7 @@ function onPageChange(nextPage) {
 function openCreate() {
   formMode.value = 'create'
   form.value = { id: '', name: '', status: 'active' }
+  opMsg.value = ''
   editing.value = true
 }
 
@@ -133,11 +139,47 @@ function openEdit(tenant) {
     name: tenant.name || '',
     status: tenant.status || 'active',
   }
+  opMsg.value = ''
   editing.value = true
 }
 
 function closeDialog() {
   editing.value = false
+  opMsg.value = ''
+}
+
+function validateCreatePayload() {
+  const normalizedId = String(form.value.id || '').trim().toLowerCase()
+  const normalizedName = String(form.value.name || '').trim()
+  form.value.id = normalizedId
+  form.value.name = normalizedName
+
+  if (!/^[a-z0-9_-]{2,64}$/.test(normalizedId)) {
+    return '租户标识不合法：仅支持 2-64 位小写字母、数字、下划线和横线。'
+  }
+  if (!normalizedName) {
+    return '租户名称不能为空。'
+  }
+  if (normalizedName.length > 120) {
+    return '租户名称长度不能超过 120。'
+  }
+  return ''
+}
+
+function parseApiError(error) {
+  const detail = error?.response?.data?.detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        const field = Array.isArray(item?.loc) ? item.loc.join('.') : 'body'
+        return `${field}: ${item?.msg || '参数不合法'}`
+      })
+      .join('；')
+  }
+  if (typeof detail === 'string' && detail) {
+    return detail
+  }
+  return error?.message || '未知错误'
 }
 
 async function loadTenants() {
@@ -155,6 +197,15 @@ async function loadTenants() {
 }
 
 async function save() {
+  opMsg.value = ''
+  if (formMode.value === 'create') {
+    const validationError = validateCreatePayload()
+    if (validationError) {
+      opMsg.value = validationError
+      return
+    }
+  }
+
   saving.value = true
   try {
     if (formMode.value === 'create') {
@@ -165,6 +216,7 @@ async function save() {
     closeDialog()
     await loadTenants()
   } catch (error) {
+    opMsg.value = `保存失败：${parseApiError(error)}`
     console.error('保存租户失败', error)
   } finally {
     saving.value = false

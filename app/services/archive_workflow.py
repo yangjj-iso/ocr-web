@@ -160,24 +160,49 @@ async def node_ingest_batch(state: ArchiveWorkflowState) -> dict[str, Any]:
 
     # 创建 WorkflowRun 记录（Develop.md §16.1）
     try:
+        from sqlalchemy import select
+        from sqlalchemy.exc import IntegrityError
         from app.db.database import async_session as AsyncSessionLocal
         from app.db.models import WorkflowRun
+
         async with AsyncSessionLocal() as db:
-            run = WorkflowRun(
-                run_id=task_id,
-                batch_id=batch_id,
-                tenant_id=tenant_id,
-                run_type=state.get("run_mode", "normal"),
-                run_status="running",
-                current_stage="ingest_batch",
-                state_json={},
-                blocked_reasons_json=[],
-                policy_snapshot_id=state.get("policy_snapshot_id"),
+            existing_result = await db.execute(
+                select(WorkflowRun).where(WorkflowRun.run_id == task_id).limit(1)
             )
-            db.add(run)
-            await db.commit()
+            run = existing_result.scalar_one_or_none()
+            if run is None:
+                run = WorkflowRun(
+                    run_id=task_id,
+                    batch_id=batch_id,
+                    tenant_id=tenant_id,
+                    run_type=state.get("run_mode", "normal"),
+                    run_status="running",
+                    current_stage="ingest_batch",
+                    state_json={},
+                    blocked_reasons_json=[],
+                    policy_snapshot_id=state.get("policy_snapshot_id"),
+                )
+                db.add(run)
+            else:
+                run.batch_id = batch_id
+                run.tenant_id = tenant_id
+                run.run_type = state.get("run_mode", "normal")
+                run.run_status = "running"
+                run.current_stage = "ingest_batch"
+                run.blocked_reasons_json = []
+                if state.get("policy_snapshot_id"):
+                    run.policy_snapshot_id = state.get("policy_snapshot_id")
+
+            try:
+                await db.commit()
+            except IntegrityError:
+                await db.rollback()
+                logger.info(
+                    "[%s] WorkflowRun already exists during ingest_batch; reusing persisted row",
+                    task_id,
+                )
     except Exception:
-        logger.exception("Failed to create WorkflowRun for task_id=%s", task_id)
+        logger.exception("Failed to create or reuse WorkflowRun for task_id=%s", task_id)
 
     # 发送 WORKFLOW_STARTED 事件（Develop.md §17.3）
     try:

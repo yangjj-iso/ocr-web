@@ -254,6 +254,22 @@ public final class TaskDtos {
     ) {
     }
 
+    public record ReleaseDecisionRequest(
+            String decision,
+            String reason,
+            String action,
+            JsonNode rework
+    ) {
+    }
+
+    public record ReleaseDecisionResponse(
+            Long id,
+            boolean submitted,
+            @JsonProperty("rework_id") String reworkId,
+            String status
+    ) {
+    }
+
     public record InternalCallbackResponse(boolean accepted, boolean persisted, Long taskId, String status, String serverTime) {
     }
 }

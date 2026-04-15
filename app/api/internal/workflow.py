@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -108,6 +109,38 @@ class WorkflowResponse(BaseModel):
     occurred_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+async def _find_latest_batch_run(db: AsyncSession, batch_id: str) -> WorkflowRun | None:
+    result = await db.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.batch_id == batch_id)
+        .order_by(desc(WorkflowRun.created_at))
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _normalize_affected_scope(scope: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(scope or {})
+    if normalized.get("regenerate_catalog"):
+        normalized.setdefault("invalidate_catalog", True)
+    if normalized.get("regenerate_pdf"):
+        normalized.setdefault("invalidate_pdf", True)
+    if normalized.get("renumber_from_order_index") is not None:
+        normalized.setdefault("invalidate_numbering", True)
+    return normalized
+
+
+def _resolve_resume_checkpoint(scope: dict[str, Any], preferred: str | None = None) -> str | None:
+    if preferred:
+        return preferred
+    normalized_scope = _normalize_affected_scope(scope)
+    if not normalized_scope:
+        return None
+    from app.domains.rework.invalidation_service import earliest_invalidated_stage
+
+    return earliest_invalidated_stage(normalized_scope)
+
+
 # ---------------------------------------------------------------------------
 # 路由实现
 # ---------------------------------------------------------------------------
@@ -122,8 +155,6 @@ async def start_workflow(
     Java 控制面调用：启动新的档案整理工作流。
     幂等：相同 request_id 重复调用直接返回已有 run_id。
     """
-    from sqlalchemy import select
-
     # 幂等检查一：按 request_id 查询（Develop.md §17.4）
     # 避免 Java 重试时重复创建工作流
     if req.request_id:
@@ -216,7 +247,20 @@ async def start_workflow(
     # 异步派发工作流任务（通过队列）
     try:
         from app.infrastructure.queue.archive_publisher import enqueue_workflow_start
-        await enqueue_workflow_start(run_id=run_id, batch_id=req.batch_id, tenant_id=req.tenant_id)
+        extra_pages = req.extra.get("pages") if isinstance(req.extra.get("pages"), list) else []
+        await enqueue_workflow_start(
+            run_id=run_id,
+            batch_id=req.batch_id,
+            tenant_id=req.tenant_id,
+            policy_snapshot_id=req.policy_snapshot_id,
+            source_file_uris=req.source_file_uris,
+            page_count=req.page_count,
+            submitted_by=req.submitted_by,
+            run_mode=str(req.extra.get("run_mode") or "normal"),
+            request_id=req.request_id,
+            pages=extra_pages,
+            extra=req.extra,
+        )
     except Exception:
         logger.exception("Failed to enqueue workflow start for run_id=%s", run_id)
         # 不回滚——run 记录已创建，可由补偿机制重试
@@ -234,7 +278,7 @@ async def resume_workflow(
     """
     Java 控制面调用：审核完成后恢复被阻塞的工作流，支持局部重跑。
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import update
 
     # 幂等检查：同一 request_id 已处理过则直接返回（Develop.md §17.4）
     if req.request_id:
@@ -267,6 +311,8 @@ async def resume_workflow(
             message=f"workflow_status_is_{wf_run.run_status}_no_resume_needed",
         )
 
+    affected_scope = _normalize_affected_scope(req.affected_scope.model_dump())
+
     await db.execute(
         update(WorkflowRun)
         .where(WorkflowRun.run_id == req.task_id)
@@ -278,7 +324,7 @@ async def resume_workflow(
                 "request_id": req.request_id,
                 "resume_reason": req.reason,
                 "resume_from_checkpoint": req.resume_from_checkpoint,
-                "affected_scope": req.affected_scope.model_dump(),
+                "affected_scope": affected_scope,
             },
         )
     )
@@ -306,7 +352,7 @@ async def resume_workflow(
             run_id=req.task_id,
             batch_id=req.batch_id,
             reason=req.reason,
-            affected_scope=req.affected_scope.model_dump(),
+            affected_scope=affected_scope,
             resume_from_checkpoint=req.resume_from_checkpoint,
         )
     except Exception:
@@ -325,8 +371,6 @@ async def rework_workflow(
     """
     Java 控制面调用：租户管理员受理返工申请后，触发局部或全卷返工。
     """
-    from sqlalchemy import select
-
     batch_result = await db.execute(
         select(BatchRecord).where(BatchRecord.batch_id == req.batch_id).limit(1)
     )
@@ -334,26 +378,16 @@ async def rework_workflow(
     if not batch_obj:
         raise HTTPException(status_code=404, detail=f"BatchRecord not found: {req.batch_id}")
 
-    run_id = f"wf_{req.batch_id}_rework_{uuid4().hex[:8]}"
-    wf_run = WorkflowRun(
-        run_id=run_id,
-        batch_id=req.batch_id,
-        tenant_id=req.tenant_id,
-        run_type="rework",
-        run_status="running",
-        current_stage="load_policy_snapshot" if req.rework_level == "full_rework" else "resume_from_review",
-        state_json={
-            "request_id": req.request_id,
-            "rework_task_id": req.rework_task_id,
-            "rework_level": req.rework_level,
-            "affected_scope": req.affected_scope.model_dump(),
-            "resume_from_checkpoint": req.resume_from_checkpoint,
-        },
-        blocked_reasons_json=[],
-    )
-    db.add(wf_run)
+    source_run = await _find_latest_batch_run(db, req.batch_id)
+    if not source_run:
+        raise HTTPException(status_code=404, detail=f"WorkflowRun not found for batch: {req.batch_id}")
+
+    affected_scope = _normalize_affected_scope(req.affected_scope.model_dump())
+    resume_from_checkpoint = _resolve_resume_checkpoint(affected_scope, req.resume_from_checkpoint)
+    previous_final_status = batch_obj.final_status
 
     # 更新批次状态
+    batch_obj.status = "processing"
     batch_obj.final_status = "pending"
     batch_obj.draft_status = "running"
     batch_obj.current_version = batch_obj.current_version + 1
@@ -365,12 +399,14 @@ async def rework_workflow(
         action="rework_request",
         target_type="batch",
         target_id=req.batch_id,
-        before_snapshot={"final_status": batch_obj.final_status},
+        before_snapshot={"final_status": previous_final_status},
         after_snapshot={
-            "run_id": run_id,
+            "run_id": source_run.run_id,
+            "source_run_id": source_run.run_id,
             "rework_level": req.rework_level,
             "rework_task_id": req.rework_task_id,
             "request_id": req.request_id,
+            "resume_from_checkpoint": resume_from_checkpoint,
         },
     )
     db.add(audit)
@@ -379,17 +415,26 @@ async def rework_workflow(
     try:
         from app.infrastructure.queue.archive_publisher import enqueue_workflow_rework
         await enqueue_workflow_rework(
-            run_id=run_id,
+            run_id=source_run.run_id,
             batch_id=req.batch_id,
+            tenant_id=req.tenant_id,
+            source_run_id=source_run.run_id,
+            reason="rework_requested",
             rework_level=req.rework_level,
-            affected_scope=req.affected_scope.model_dump(),
-            resume_from_checkpoint=req.resume_from_checkpoint,
+            affected_scope=affected_scope,
+            resume_from_checkpoint=resume_from_checkpoint,
         )
     except Exception:
-        logger.exception("Failed to enqueue workflow rework for run_id=%s", run_id)
+        logger.exception("Failed to enqueue workflow rework for run_id=%s", source_run.run_id)
 
-    logger.info("Workflow rework: run_id=%s batch_id=%s level=%s", run_id, req.batch_id, req.rework_level)
-    return WorkflowResponse(success=True, run_id=run_id, batch_id=req.batch_id, message="rework_started")
+    logger.info(
+        "Workflow rework: source_run_id=%s batch_id=%s level=%s checkpoint=%s",
+        source_run.run_id,
+        req.batch_id,
+        req.rework_level,
+        resume_from_checkpoint,
+    )
+    return WorkflowResponse(success=True, run_id=source_run.run_id, batch_id=req.batch_id, message="rework_started")
 
 
 @router.post("/export/searchable-pdf", response_model=WorkflowResponse)
@@ -427,6 +472,7 @@ async def export_searchable_pdf(
         await enqueue_export_pdf(
             run_id=run_id,
             batch_id=req.batch_id,
+            tenant_id=req.tenant_id,
             export_type=req.export_type,
             doc_ids=req.doc_ids,
         )
@@ -446,17 +492,26 @@ async def recompute_affected_scope(
     Java 控制面调用：人工改动后，重新计算受影响范围并触发局部重算。
     例如：改了字段 → 重算目录和索引，但不重跑 OCR 和分件。
     """
-    run_id = f"recompute_{req.batch_id}_{uuid4().hex[:8]}"
+    source_run = await _find_latest_batch_run(db, req.batch_id)
+    if not source_run:
+        raise HTTPException(status_code=404, detail=f"WorkflowRun not found for batch: {req.batch_id}")
+
+    affected_scope = _normalize_affected_scope(req.affected_scope.model_dump())
+    resume_from_checkpoint = _resolve_resume_checkpoint(affected_scope)
 
     try:
-        from app.infrastructure.queue.archive_publisher import enqueue_recompute
-        await enqueue_recompute(
-            run_id=run_id,
+        from app.infrastructure.queue.archive_publisher import enqueue_workflow_resume
+        await enqueue_workflow_resume(
+            run_id=source_run.run_id,
             batch_id=req.batch_id,
-            affected_scope=req.affected_scope.model_dump(),
-            recompute_targets=req.recompute_targets,
+            reason="recompute_affected_scope",
+            affected_scope={
+                **affected_scope,
+                "recompute_targets": req.recompute_targets,
+            },
+            resume_from_checkpoint=resume_from_checkpoint,
         )
     except Exception:
         logger.exception("Failed to enqueue recompute for batch_id=%s", req.batch_id)
 
-    return WorkflowResponse(success=True, run_id=run_id, batch_id=req.batch_id, message="recompute_enqueued")
+    return WorkflowResponse(success=True, run_id=source_run.run_id, batch_id=req.batch_id, message="recompute_enqueued")
