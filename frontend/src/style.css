@@ -13,6 +13,7 @@
   --gov-success: #2e6b53;
   --gov-danger: #a03a3a;
   --gov-shadow: 0 10px 24px rgba(31, 56, 91, 0.08);
+  --gov-header-font: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
 }
 
 html,
@@ -40,6 +41,18 @@ body {
 .gov-header {
   border-bottom: 1px solid var(--gov-border);
   background: linear-gradient(180deg, #ffffff 0%, #f9fbfe 100%);
+}
+
+.gov-header-title {
+  font-family: var(--gov-header-font);
+  font-weight: 500;
+  letter-spacing: 0.015em;
+}
+
+.gov-header-nav-link {
+  font-family: var(--gov-header-font);
+  font-weight: 400;
+  letter-spacing: 0.04em;
 }
 
 .gov-panel {

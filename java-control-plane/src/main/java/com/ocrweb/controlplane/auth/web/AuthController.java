@@ -69,4 +69,14 @@ public class AuthController {
     public AuthDtos.UserStatusResponse rejectUser(@PathVariable Long userId, HttpServletRequest request) {
         return authService.rejectUser(userId, request);
     }
+
+    @GetMapping("/users")
+    public AuthDtos.AllUsersResponse allUsers(HttpServletRequest request) {
+        return authService.listAllUsers(request);
+    }
+
+    @PostMapping("/users/{userId}/set-admin")
+    public AuthDtos.UserStatusResponse setAdmin(@PathVariable Long userId, @RequestBody AuthDtos.SetAdminRequest body, HttpServletRequest request) {
+        return authService.setAdmin(userId, body.admin(), request);
+    }
 }

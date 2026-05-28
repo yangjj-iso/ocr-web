@@ -61,4 +61,19 @@ public final class AuthDtos {
             String status
     ) {
     }
+
+    public record UserItem(
+            Long id,
+            String username,
+            String status,
+            boolean isAdmin,
+            OffsetDateTime createdAt
+    ) {
+    }
+
+    public record AllUsersResponse(List<UserItem> items) {
+    }
+
+    public record SetAdminRequest(boolean admin) {
+    }
 }

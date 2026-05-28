@@ -140,6 +140,25 @@ public class AuthService {
         return updateUserStatus(userId, "rejected");
     }
 
+    public AuthDtos.AllUsersResponse listAllUsers(HttpServletRequest request) {
+        requireAdmin(request);
+        List<AuthDtos.UserItem> items = appUserRepository.findAll()
+                .stream()
+                .map(user -> new AuthDtos.UserItem(user.getId(), user.getUsername(), user.getStatus(), user.isAdmin(), user.getCreatedAt()))
+                .toList();
+        return new AuthDtos.AllUsersResponse(items);
+    }
+
+    @Transactional
+    public AuthDtos.UserStatusResponse setAdmin(Long userId, boolean admin, HttpServletRequest request) {
+        requireAdmin(request);
+        AppUserEntity user = appUserRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found."));
+        user.setAdmin(admin);
+        appUserRepository.save(user);
+        return new AuthDtos.UserStatusResponse(user.getId(), user.getUsername(), user.getStatus());
+    }
+
     public CurrentUser resolveAuthenticatedUser(HttpServletRequest request) {
         Object existing = request.getAttribute(CurrentUser.REQUEST_ATTRIBUTE);
         if (existing instanceof CurrentUser currentUser) {

@@ -47,33 +47,6 @@
         <div class="space-y-1 p-3">
           <button
             class="group flex w-full items-center gap-3 rounded-lg px-3 py-4 text-left transition-all"
-            :class="selectedTab === 'assistant'
-              ? 'bg-violet-50 ring-1 ring-violet-200'
-              : 'hover:bg-slate-50'"
-            @click="onAssistantTabClick"
-          >
-            <div
-              class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg transition-colors"
-              :class="selectedTab === 'assistant'
-                ? 'bg-violet-600 text-white'
-                : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200'"
-            >
-              <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <span class="text-sm font-semibold text-[var(--gov-text)]">智能辅助</span>
-                <span
-                  class="rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none"
-                  :class="capabilityBadgeClass"
-                >{{ capabilityBadgeText }}</span>
-              </div>
-              <p class="mt-0.5 truncate text-xs gov-muted">批次整合与质量概览</p>
-            </div>
-          </button>
-
-          <button
-            class="group flex w-full items-center gap-3 rounded-lg px-3 py-4 text-left transition-all"
             :class="selectedTab === 'history'
               ? 'bg-slate-100 ring-1 ring-slate-200'
               : 'hover:bg-slate-50'"
@@ -473,7 +446,7 @@ const models = [
   },
 ]
 const availableModelModes = new Set(models.map((model) => model.mode))
-const AUXILIARY_TABS = new Set(['assistant', 'history'])
+const AUXILIARY_TABS = new Set(['history'])
 const _storedTab = sessionStorage.getItem('ocr:selectedTab')
 const selectedTab = ref(
   availableModelModes.has(_storedTab) || AUXILIARY_TABS.has(_storedTab)
