@@ -42,11 +42,8 @@ start.bat
 tmp/
 
 # Frontend
-frontend/node_modules/
-frontend/dist/
 frontend-next/node_modules/
 frontend-next/.next/
-static/vue/
 
 # Java
 java-control-plane/target/

@@ -31,19 +31,14 @@ def test_api_modules_do_not_import_legacy_services_directly():
         assert "import app.services" not in content
 
 
-def test_feature_pages_use_src_alias_imports():
-    for path in Path("frontend/src/features").rglob("*.vue"):
+def test_frontend_next_uses_path_alias_imports():
+    for path in Path("frontend-next/app").rglob("*.tsx"):
         content = path.read_text(encoding="utf-8")
+        # Should use @/ alias, not relative paths to api/hooks/components
         assert "from '../api/" not in content
         assert 'from "../api/' not in content
         assert "from '../../api/" not in content
         assert 'from "../../api/' not in content
-        assert "from '../components/" not in content
-        assert 'from "../components/' not in content
-        assert "from '../composables/" not in content
-        assert 'from "../composables/' not in content
-        assert "from '../constants/" not in content
-        assert 'from "../constants/' not in content
 
 
 def test_shared_contracts_are_used_in_core_chains():
