@@ -28,7 +28,7 @@ from app.infrastructure.metrics import (
     task_started,
 )
 from app.core.result_validation import normalize_result_pages, serialize_pages_text
-from app.domains.extraction import field_service
+from app.services.excel_export import extract_fields as _extract_fields
 from app.services.agent_ocr_workflow import run_hierarchical_ocr_detached
 from app.services.ocr_service import _run_ocr_document
 from config import CALLBACK_INLINE_RESULT_MAX_BYTES, WORKER_TEMP_DIR
@@ -97,6 +97,26 @@ def _compute_sha256(path: Path) -> str:
 async def _stage_input_file(command: OcrTaskCommand) -> tuple[str, bool]:
     if command.file is None:
         raise ValueError("OCR_TASK_SUBMIT requires file payload.")
+
+    # S3/MinIO download path
+    if command.file.storage_provider == "s3" and command.file.bucket and command.file.object_key:
+        from app.infrastructure.storage.s3_client import download_object
+
+        suffix = Path(command.file.filename).suffix or mimetypes.guess_extension(command.file.content_type or "") or ".bin"
+        temp_file = NamedTemporaryFile(delete=False, suffix=suffix, dir=WORKER_TEMP_DIR)
+        temp_path = Path(temp_file.name)
+        temp_file.close()
+        await asyncio.to_thread(download_object, command.file.bucket, command.file.object_key, str(temp_path))
+        expected_sha256 = (command.file.sha256 or "").strip().lower()
+        if expected_sha256:
+            actual_sha256 = _compute_sha256(temp_path)
+            if actual_sha256.lower() != expected_sha256:
+                temp_path.unlink(missing_ok=True)
+                raise ValueError(
+                    f"S3 file sha256 mismatch: expected={expected_sha256}, actual={actual_sha256}"
+                )
+        return str(temp_path), True
+
     file_url = (command.file.file_url or "").strip()
     if file_url.lower().startswith(("http://", "https://")):
         suffix = Path(command.file.filename).suffix or mimetypes.guess_extension(command.file.content_type or "") or ".bin"
@@ -152,12 +172,29 @@ def _persist_large_result(task_id: int, payload: dict[str, Any]) -> ResultArtifa
     target = WORKER_TEMP_DIR / f"task_{task_id}_result.json"
     content = json.dumps(payload, ensure_ascii=False, indent=2)
     target.write_text(content, encoding="utf-8")
-    return ResultArtifactPayload(
-        storage_provider="local",
-        file_url=target.as_uri(),
-        sha256=_compute_sha256(target),
-        size_bytes=target.stat().st_size,
-    )
+
+    # Attempt to upload to MinIO; fall back to local storage on failure
+    try:
+        from app.infrastructure.storage.s3_client import get_default_bucket, upload_object
+
+        bucket = get_default_bucket()
+        object_key = f"results/task_{task_id}_result.json"
+        upload_object(bucket, object_key, str(target), content_type="application/json")
+        return ResultArtifactPayload(
+            storage_provider="s3",
+            bucket=bucket,
+            object_key=object_key,
+            sha256=_compute_sha256(target),
+            size_bytes=target.stat().st_size,
+        )
+    except Exception:
+        logger.debug("MinIO upload failed for task %s result; using local storage.", task_id, exc_info=True)
+        return ResultArtifactPayload(
+            storage_provider="local",
+            file_url=target.as_uri(),
+            sha256=_compute_sha256(target),
+            size_bytes=target.stat().st_size,
+        )
 
 
 def _cleanup_runtime_memory() -> None:
@@ -205,7 +242,7 @@ async def _execute_non_hierarchical(command: OcrTaskCommand, file_path: str) -> 
     result = await asyncio.to_thread(_run_ocr_document, file_path, mode)
     pages = normalize_result_pages(result.get("pages") or [])
     full_text = serialize_pages_text(pages)
-    fields = field_service.extract_fields(
+    fields_raw = _extract_fields(
         command.file.filename,
         full_text,
         pages,
@@ -215,7 +252,7 @@ async def _execute_non_hierarchical(command: OcrTaskCommand, file_path: str) -> 
         "pages": pages,
         "full_text": full_text,
         "page_count": int(result.get("page_count") or len(pages)),
-        "final_fields": {str(key): str(value or "") for key, value in fields.items()},
+        "final_fields": {str(key): str(value or "") for key, value in (fields_raw or {}).items()},
         "overall_confidence": 0.75 if full_text else 0.0,
         "issues": [],
         "human_review": False,

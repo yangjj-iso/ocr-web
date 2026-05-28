@@ -4,11 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, raise_service_unavailable, require_auth
-from app.application.workflows.evaluation import (
-    get_ai_report as run_get_ai_report,
-    get_metrics as run_get_metrics,
-    get_truth as run_get_truth,
-    save_truth as run_save_truth,
+from app.services.batch_evaluation_service import (
+    get_batch_evaluation_ai_report,
+    get_batch_evaluation_metrics,
+    get_batch_evaluation_truth,
+    save_batch_evaluation_truth,
 )
 from app.schemas.evaluation import (
     BatchEvaluationAiReportResponse,
@@ -27,7 +27,7 @@ router = APIRouter(
 @router.get("/batches/{batch_id}/evaluation-truth", response_model=BatchEvaluationTruthGetResponse)
 async def get_batch_truth(batch_id: str, db: AsyncSession = Depends(get_db)):
     try:
-        payload = await run_get_truth(batch_id=batch_id, db=db)
+        payload = await get_batch_evaluation_truth(db, batch_id=batch_id)
     except Exception as error:  # noqa: BLE001
         raise_service_unavailable(error, "Evaluation truth service is temporarily unavailable. Please retry later.")
     return payload
@@ -40,11 +40,11 @@ async def put_batch_truth(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        payload = await run_save_truth(
+        payload = await save_batch_evaluation_truth(
+            db,
             batch_id=batch_id,
             tasks=[item.model_dump(mode="python") for item in body.tasks],
             documents=[item.model_dump(mode="python") for item in body.documents],
-            db=db,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -60,7 +60,7 @@ async def get_batch_metrics(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        payload = await run_get_metrics(batch_id=batch_id, force_refresh=force_refresh, db=db)
+        payload = await get_batch_evaluation_metrics(db, batch_id=batch_id, force_refresh=force_refresh)
     except Exception as error:  # noqa: BLE001
         raise_service_unavailable(error, "Evaluation metrics service is temporarily unavailable. Please retry later.")
 
@@ -76,7 +76,7 @@ async def get_batch_ai_report(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        payload = await run_get_ai_report(batch_id=batch_id, force_refresh=force_refresh, db=db)
+        payload = await get_batch_evaluation_ai_report(db, batch_id=batch_id, force_refresh=force_refresh)
     except Exception as error:  # noqa: BLE001
         raise_service_unavailable(error, "Evaluation report service is temporarily unavailable. Please retry later.")
 

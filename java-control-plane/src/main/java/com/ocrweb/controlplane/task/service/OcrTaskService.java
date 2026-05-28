@@ -51,6 +51,7 @@ public class OcrTaskService {
     private final TaskStorageService storageService;
     private final TaskCommandProducer taskCommandProducer;
     private final ArchiveRecordService archiveRecordService;
+    private final TaskSseService taskSseService;
     private final ObjectMapper objectMapper;
 
     public OcrTaskService(
@@ -59,6 +60,7 @@ public class OcrTaskService {
             TaskStorageService storageService,
             TaskCommandProducer taskCommandProducer,
             ArchiveRecordService archiveRecordService,
+            TaskSseService taskSseService,
             ObjectMapper objectMapper
     ) {
         this.taskRepository = taskRepository;
@@ -66,6 +68,7 @@ public class OcrTaskService {
         this.storageService = storageService;
         this.taskCommandProducer = taskCommandProducer;
         this.archiveRecordService = archiveRecordService;
+        this.taskSseService = taskSseService;
         this.objectMapper = objectMapper;
     }
 
@@ -334,6 +337,7 @@ public class OcrTaskService {
             task.setProgressPercent(request.progress().percent());
         }
         taskRepository.save(task);
+        broadcastTaskEvent(taskId, task.getBatchId(), request.eventType(), buildProgressPayload(task, request.eventType()));
         return accepted(taskId, task.getStatus());
     }
 
@@ -372,6 +376,7 @@ public class OcrTaskService {
                 folderFromFilePath(task.getFilePath()),
                 request.archiveFields()
         );
+        broadcastTaskEvent(taskId, task.getBatchId(), "TASK_COMPLETED", buildCompletionPayload(task));
         return accepted(taskId, task.getStatus());
     }
 
@@ -393,6 +398,7 @@ public class OcrTaskService {
             task.setProgressPercent(request.progress().percent());
         }
         taskRepository.save(task);
+        broadcastTaskEvent(taskId, task.getBatchId(), "TASK_FAILED", buildFailurePayload(task));
         return accepted(taskId, task.getStatus());
     }
 
@@ -434,6 +440,7 @@ public class OcrTaskService {
             task.setPageCount(normalizedResultJson.size());
         }
         taskRepository.save(task);
+        broadcastTaskEvent(taskId, task.getBatchId(), "TASK_PAUSED", buildPausePayload(task));
         return accepted(taskId, task.getStatus());
     }
 
@@ -449,6 +456,57 @@ public class OcrTaskService {
         task.setReviewReason("人工复核结果已提交，等待工作流恢复执行。");
         taskRepository.save(task);
         return toDetail(task);
+    }
+
+    // --- SSE broadcast helpers ---
+
+    private void broadcastTaskEvent(Long taskId, String batchId, String eventType, Object payload) {
+        try {
+            taskSseService.broadcast(taskId, batchId, eventType, payload);
+        } catch (Exception e) {
+            logger.debug("SSE broadcast failed for taskId={}, eventType={}: {}", taskId, eventType, e.getMessage());
+        }
+    }
+
+    private ObjectNode buildProgressPayload(OcrTaskEntity task, String eventType) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("taskId", task.getId());
+        node.put("batchId", safe(task.getBatchId()));
+        node.put("status", effectiveStatus(task));
+        node.put("eventType", eventType);
+        node.put("currentPage", task.getProcessedPages() == null ? 0 : task.getProcessedPages());
+        node.put("totalPages", task.getTotalPages() == null ? 0 : task.getTotalPages());
+        node.put("percent", task.getProgressPercent() == null ? 0.0 : task.getProgressPercent());
+        return node;
+    }
+
+    private ObjectNode buildCompletionPayload(OcrTaskEntity task) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("taskId", task.getId());
+        node.put("batchId", safe(task.getBatchId()));
+        node.put("status", "done");
+        node.put("pageCount", task.getPageCount() == null ? 0 : task.getPageCount());
+        node.put("percent", 100.0);
+        return node;
+    }
+
+    private ObjectNode buildFailurePayload(OcrTaskEntity task) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("taskId", task.getId());
+        node.put("batchId", safe(task.getBatchId()));
+        node.put("status", "failed");
+        node.put("error", safe(task.getErrorMessage()));
+        return node;
+    }
+
+    private ObjectNode buildPausePayload(OcrTaskEntity task) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("taskId", task.getId());
+        node.put("batchId", safe(task.getBatchId()));
+        node.put("status", "human_review");
+        node.put("reviewStatus", safe(task.getReviewStatus()));
+        node.put("reviewReason", safe(task.getReviewReason()));
+        return node;
     }
 
     private TaskDtos.TaskListResponse paginateTasks(List<OcrTaskEntity> tasks, int page, int pageSize) {

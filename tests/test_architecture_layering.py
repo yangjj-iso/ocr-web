@@ -1,17 +1,27 @@
+"""Architecture layering tests — verify the flat API → services structure."""
+
 from pathlib import Path
 
 
 def test_python_web_surface_is_ai_only():
+    """Ensure old multi-surface entry points are gone."""
     assert not Path("app/main.py").exists()
     assert not Path("app/main_business.py").exists()
     assert not Path("app/interfaces/api/v1/router_registry.py").exists()
     assert not Path("app/interfaces/api/business/router_registry.py").exists()
 
 
-def test_main_ai_uses_ai_router_registry():
+def test_old_abstraction_layers_removed():
+    """Ensure the domains and workflows layers are gone."""
+    assert not Path("app/application").exists()
+    assert not Path("app/domains").exists()
+    assert not Path("app/interfaces").exists()
+
+
+def test_main_ai_uses_api_routes():
     content = Path("app/main_ai.py").read_text(encoding="utf-8")
     assert "include_ai_routers" in content
-    assert "router_loader=include_ai_routers" in content
+    assert "from app.api.routes" in content
 
 
 def test_compatibility_router_keeps_only_ai_modules():
@@ -22,30 +32,21 @@ def test_compatibility_router_keeps_only_ai_modules():
         assert module not in content
 
 
-def test_api_modules_do_not_import_legacy_services_directly():
+def test_api_modules_do_not_import_deleted_layers():
+    """API routes should not import from the deleted application/domains/interfaces layers."""
     for path in Path("app/api").glob("*.py"):
         if path.name in {"routes.py", "__init__.py"}:
             continue
         content = path.read_text(encoding="utf-8")
-        assert "from app.services" not in content
-        assert "import app.services" not in content
+        assert "from app.application" not in content, f"{path.name} imports from deleted app.application"
+        assert "from app.domains" not in content, f"{path.name} imports from deleted app.domains"
+        assert "from app.interfaces" not in content, f"{path.name} imports from deleted app.interfaces"
 
 
 def test_frontend_next_uses_path_alias_imports():
     for path in Path("frontend-next/app").rglob("*.tsx"):
         content = path.read_text(encoding="utf-8")
-        # Should use @/ alias, not relative paths to api/hooks/components
         assert "from '../api/" not in content
         assert 'from "../api/' not in content
         assert "from '../../api/" not in content
         assert 'from "../../api/' not in content
-
-
-def test_shared_contracts_are_used_in_core_chains():
-    field_service = Path("app/domains/extraction/field_service.py").read_text(encoding="utf-8")
-    batch_ai_service = Path("app/domains/batch_ai/batch_ai_service.py").read_text(encoding="utf-8")
-    qa_service = Path("app/domains/qa_eval/qa_service.py").read_text(encoding="utf-8")
-
-    assert "FieldExtractionResult" in field_service
-    assert "DocumentMergeGroup" in batch_ai_service
-    assert "QaAnswerWithEvidence" in qa_service

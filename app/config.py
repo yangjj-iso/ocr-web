@@ -146,6 +146,13 @@ UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads"))).resolve(st
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 WORKER_TEMP_DIR = Path(os.getenv("WORKER_TEMP_DIR", str(CACHE_DIR / "worker-temp"))).resolve(strict=False)
 WORKER_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# MinIO / S3 object storage (Worker download/upload)
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000").strip()
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin").strip()
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin").strip()
+MINIO_SECURE = _env_flag("MINIO_SECURE", False)
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "ocr-files").strip()
 WORKER_METRICS_ENABLED = _env_flag("WORKER_METRICS_ENABLED", True)
 WORKER_METRICS_HOST = os.getenv("WORKER_METRICS_HOST", "0.0.0.0").strip() or "0.0.0.0"
 WORKER_METRICS_PORT = int(os.getenv("WORKER_METRICS_PORT", "9108"))

@@ -8,6 +8,7 @@ import { getTask, getTaskFileUrl, getTasks, updateTask } from '@/api/ocr'
 import { getModeLabel, getStatusClass, getStatusLabel } from '@/lib/ui-copy'
 import { useAsyncState } from '@/hooks/use-async-state'
 import { useTaskPolling } from '@/hooks/use-task-polling'
+import { useTaskSSE, TaskSseEvent } from '@/hooks/use-task-sse'
 import { normalizeTaskForDisplay } from '@/lib/ocr-display'
 
 function inferFolderPath(filePath = '') {
@@ -143,6 +144,35 @@ export function useResultViewState(taskId: string | number) {
     (data: any) => { applyTask(data) }
   )
 
+  // SSE real-time updates — re-fetch task on progress/completion events
+  const sseTaskIds = useMemo(() => {
+    const id = Number(taskId)
+    return Number.isFinite(id) ? [id] : []
+  }, [taskId])
+
+  const handleSseEvent = useCallback((event: TaskSseEvent) => {
+    if (event.type === 'TASK_COMPLETED' || event.type === 'TASK_FAILED' || event.type === 'TASK_PAUSED') {
+      // Terminal event — fetch final state
+      stopPolling()
+      getTask(taskIdRef.current).then(({ data }) => applyTask(data)).catch(() => {})
+    } else if (event.type === 'PROGRESS_UPDATED' || event.type === 'PAGE_COMPLETED') {
+      // Progress update — update inline without full fetch
+      setTask((prev: any) => prev ? {
+        ...prev,
+        progress_percent: event.percent ?? prev.progress_percent,
+        processed_pages: event.currentPage ?? prev.processed_pages,
+        total_pages: event.totalPages ?? prev.total_pages,
+        status: event.status || prev.status,
+      } : prev)
+    }
+  }, [stopPolling, applyTask])
+
+  const { isConnected: sseConnected } = useTaskSSE({
+    taskIds: sseTaskIds,
+    onEvent: handleSseEvent,
+    enabled: sseTaskIds.length > 0,
+  })
+
   const fetchTask = useCallback(async ({ silent = false } = {}) => {
     const fetchToken = ++latestFetchTokenRef.current
     const requestedTaskId = taskIdRef.current
@@ -156,7 +186,8 @@ export function useResultViewState(taskId: string | number) {
       const p = normalizePages(normalizedData?.result_data?.pages)
       if (p.length) viewState.setSuccess(normalizedData)
       else viewState.setEmpty(normalizedData)
-      if (!['done', 'failed', 'human_review'].includes(normalizedData?.status)) startPolling()
+      // Only fall back to polling if SSE is not connected
+      if (!['done', 'failed', 'human_review'].includes(normalizedData?.status) && !sseConnected) startPolling()
     } catch (requestError: any) {
       if (fetchToken !== latestFetchTokenRef.current || String(requestedTaskId) !== String(taskIdRef.current)) return
       const message = requestError?.response?.data?.detail || '结果加载失败。'
@@ -165,7 +196,7 @@ export function useResultViewState(taskId: string | number) {
     } finally {
       if (fetchToken === latestFetchTokenRef.current) setRefreshing(false)
     }
-  }, [task, viewState, stopPolling, startPolling, applyTask, showToast])
+  }, [task, viewState, stopPolling, startPolling, applyTask, showToast, sseConnected])
 
   const loadFolderTasks = useCallback(async () => {
     if (!materialContextKind || !materialContextValue) { setFolderTasks([]); return }
@@ -286,7 +317,7 @@ export function useResultViewState(taskId: string | number) {
     folderTasks, folderLoading, regionRefs, editingKey, editText, setEditText,
     editingTableKey, tableDraft, setTableDraft, refreshing,
     fileUrl, folderPath, folderSourcePath, materialContextKind, materialContextValue,
-    folderLabel, pages, totalPages, isPdf, jsonText, modeLabel, modeClass, currentPage, polling,
+    folderLabel, pages, totalPages, isPdf, jsonText, modeLabel, modeClass, currentPage, polling, sseConnected,
     formatTime, showToast, statusLabel, statusClass, switchTask,
     copyRegion, copyAll, downloadTxt, setRegionRef,
     startTextEdit, cancelTextEdit, startTableEdit, cancelTableEdit,

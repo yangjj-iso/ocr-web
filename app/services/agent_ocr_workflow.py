@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ocr_engine import get_ocr_engine, pdf_to_images, uses_shared_layout_api_for_ocr_and_vl
 from app.core.result_validation import normalize_result_pages, serialize_pages_text
 from app.db.models import OCRTask
-from app.domains.extraction import field_service
+from app.services.excel_export import extract_fields as _extract_fields
 from app.llm.base import LLMMessage
 from app.llm.client import get_llm_client
 from app.services import vector_store
@@ -805,7 +805,7 @@ async def node_ocr(state: PageAgentState) -> dict[str, Any]:
         page_confidence = _ocr_confidence(raw_page)
         page = normalize_result_pages([{**raw_page, "page_num": state["page_num"]}])[0]
         full_text = _result_text(page)
-        fields = field_service.extract_fields(state["filename"], full_text, [page], 1)
+        fields = _extract_fields(state["filename"], full_text, [page], 1)
         issues = []
         if not full_text:
             issues.append("传统 OCR 未提取到有效文本。")
@@ -850,7 +850,7 @@ async def node_ppocr_vl(state: PageAgentState) -> dict[str, Any]:
         page_confidence = _ocr_confidence(raw_page)
         page = normalize_result_pages([{**raw_page, "page_num": state["page_num"]}])[0]
         full_text = _result_text(page)
-        fields = field_service.extract_fields(state["filename"], full_text, [page], 1)
+        fields = _extract_fields(state["filename"], full_text, [page], 1)
         issues = []
         if not full_text:
             issues.append("PaddleOCR-VL-1.5 未提取到有效文本。")

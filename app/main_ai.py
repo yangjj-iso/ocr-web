@@ -3,7 +3,7 @@ import logging
 import uvicorn
 
 from app.bootstrap import create_service_app
-from app.interfaces.api.ai import include_ai_routers
+from app.api.routes import include_ai_routers
 
 
 logging.basicConfig(
