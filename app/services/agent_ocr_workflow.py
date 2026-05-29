@@ -796,11 +796,15 @@ async def route_after_ocr(state: PageAgentState) -> str:
 
 async def node_ocr(state: PageAgentState) -> dict[str, Any]:
     try:
+        from app.config import OCR_NODE_TIMEOUT_SECONDS
         engine = get_ocr_engine(
             strategy=state.get("processing_strategy", "none"),
             mode="ocr",
         )
-        raw_page = await asyncio.to_thread(engine.recognize_page, state["image_path"])
+        raw_page = await asyncio.wait_for(
+            asyncio.to_thread(engine.recognize_page, state["image_path"]),
+            timeout=OCR_NODE_TIMEOUT_SECONDS,
+        )
         confidence_available, confidence_source = _read_route_confidence_meta(raw_page)
         page_confidence = _ocr_confidence(raw_page)
         page = normalize_result_pages([{**raw_page, "page_num": state["page_num"]}])[0]
@@ -818,6 +822,23 @@ async def node_ocr(state: PageAgentState) -> dict[str, Any]:
                 "confidence_available": confidence_available,
                 "confidence_source": confidence_source,
                 "issues": issues,
+                "processing_strategy": state.get("processing_strategy", "none"),
+                "preprocess_reason": _clean_text(state.get("preprocess_reason")),
+            }
+        }
+    except asyncio.TimeoutError:
+        from app.infrastructure.metrics.worker_metrics import increment_agent_timeout
+        increment_agent_timeout("node_ocr")
+        logger.warning("OCR node timed out: task=%s page=%s", state.get("task_id"), state.get("page_num"))
+        return {
+            "ocr_result": {
+                "page": _page_from_transcript(state["page_num"], ""),
+                "full_text": "",
+                "fields": _blank_fields(),
+                "confidence": 0.0,
+                "confidence_available": False,
+                "confidence_source": "ocr_timeout",
+                "issues": ["传统 OCR 执行超时"],
                 "processing_strategy": state.get("processing_strategy", "none"),
                 "preprocess_reason": _clean_text(state.get("preprocess_reason")),
             }
@@ -841,11 +862,15 @@ async def node_ocr(state: PageAgentState) -> dict[str, Any]:
 
 async def node_ppocr_vl(state: PageAgentState) -> dict[str, Any]:
     try:
+        from app.config import OCR_NODE_TIMEOUT_SECONDS
         engine = get_ocr_engine(
             strategy=state.get("processing_strategy", "none"),
             mode="vl",
         )
-        raw_page = await asyncio.to_thread(engine.recognize_page, state["image_path"])
+        raw_page = await asyncio.wait_for(
+            asyncio.to_thread(engine.recognize_page, state["image_path"]),
+            timeout=OCR_NODE_TIMEOUT_SECONDS,
+        )
         confidence_available, confidence_source = _read_route_confidence_meta(raw_page)
         page_confidence = _ocr_confidence(raw_page)
         page = normalize_result_pages([{**raw_page, "page_num": state["page_num"]}])[0]
@@ -863,6 +888,21 @@ async def node_ppocr_vl(state: PageAgentState) -> dict[str, Any]:
                 "confidence_source": confidence_source,
                 "issues": issues,
                 "transcript": full_text,
+                "evidence": {},
+            }
+        }
+    except asyncio.TimeoutError:
+        from app.infrastructure.metrics.worker_metrics import increment_agent_timeout
+        increment_agent_timeout("node_ppocr_vl")
+        logger.warning("PaddleOCR-VL timed out: task=%s page=%s", state.get("task_id"), state.get("page_num"))
+        return {
+            "vl_result": {
+                "fields": _blank_fields(),
+                "confidence": 0.0,
+                "confidence_available": False,
+                "confidence_source": "ppocr_vl_timeout",
+                "issues": ["PaddleOCR-VL-1.5 执行超时"],
+                "transcript": "",
                 "evidence": {},
             }
         }
@@ -1085,6 +1125,8 @@ async def node_adjust_strategy(state: PageAgentState) -> dict[str, Any]:
         current,
         next_strategy,
     )
+    from app.infrastructure.metrics.worker_metrics import increment_agent_retry
+    increment_agent_retry("page_agent", f"low_confidence_strategy_{next_strategy}")
     return {
         "retry_count": retry_count + 1,
         "processing_strategy": next_strategy,
@@ -1275,16 +1317,66 @@ async def node_process_next_page(state: BatchSupervisorState) -> dict[str, Any]:
         "processing_strategy": "none",
     }
     try:
-        page_state = await page_graph.ainvoke(initial_state)
+        from app.config import PAGE_AGENT_TIMEOUT_SECONDS
+        import time as _time
+        _page_start = _time.perf_counter()
+        page_state = await asyncio.wait_for(
+            page_graph.ainvoke(initial_state),
+            timeout=PAGE_AGENT_TIMEOUT_SECONDS,
+        )
+        _page_duration = _time.perf_counter() - _page_start
+        from app.infrastructure.metrics.worker_metrics import observe_agent_node_duration
+        observe_agent_node_duration("page_agent", "success", _page_duration)
         output = page_state.get("page_output") or {}
         if not output:
             raise RuntimeError(f"Page agent did not return page_output for page {page_num}.")
+    except asyncio.TimeoutError:
+        _page_duration = _time.perf_counter() - _page_start
+        from app.infrastructure.metrics.worker_metrics import increment_agent_timeout, observe_agent_node_duration as _obs
+        increment_agent_timeout("page_agent")
+        _obs("page_agent", "timeout", _page_duration)
+        logger.warning(
+            "Page agent timed out: task=%s page=%s timeout=%.0fs",
+            state.get("task_id"),
+            page_num,
+            PAGE_AGENT_TIMEOUT_SECONDS,
+        )
+        from app.infrastructure.metrics.worker_metrics import increment_agent_timeout
+        increment_agent_timeout("page_agent")
+        output = {
+            "page_num": page_num,
+            "page": normalize_result_pages(
+                [
+                    {
+                        **_page_from_transcript(page_num, ""),
+                        "agent_meta": {
+                            "confidence": 0.0,
+                            "issues": [f"Page Agent 执行超时（{PAGE_AGENT_TIMEOUT_SECONDS}s）"],
+                            "source": "timeout_fallback",
+                            "retry_count": 0,
+                            "processing_strategy": "none",
+                            "human_review": True,
+                            "review_reason": "页面处理超时，需要人工复核。",
+                        },
+                    }
+                ]
+            )[0],
+            "fields": _blank_fields(),
+            "confidence": 0.0,
+            "issues": [f"Page Agent 执行超时（{PAGE_AGENT_TIMEOUT_SECONDS}s）"],
+            "source": "timeout_fallback",
+            "human_review": True,
+            "review_reason": "页面处理超时，需要人工复核。",
+        }
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Page agent subgraph failed: task=%s page=%s",
             state.get("task_id"),
             page_num,
         )
+        _page_duration = _time.perf_counter() - _page_start
+        from app.infrastructure.metrics.worker_metrics import observe_agent_node_duration as _obs2
+        _obs2("page_agent", "error", _page_duration)
         output = {
             "page_num": page_num,
             "page": normalize_result_pages(

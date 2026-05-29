@@ -1,10 +1,15 @@
 import axios from 'axios'
 import { controlPlaneApiBase, controlPlaneBackendUrl, requestDefaults } from './runtime'
+import { attachErrorToast, attachCsrfToken } from './index'
 
-const controlPlaneApi = axios.create({
-  baseURL: controlPlaneApiBase('/ocr'),
-  ...requestDefaults,
-})
+const controlPlaneApi = attachErrorToast(
+  attachCsrfToken(
+    axios.create({
+      baseURL: controlPlaneApiBase('/ocr'),
+      ...requestDefaults,
+    })
+  )
+)
 
 export type UploadOptions = {
   relativePath?: string

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
 import { AppShell } from '@/components/app-shell'
+import { Toaster } from 'sonner'
 
 export const metadata: Metadata = {
   title: 'OmniScan · 智能文档识别平台',
@@ -12,6 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-CN" suppressHydrationWarning>
       <body className="min-h-screen bg-background antialiased">
         <AppShell>{children}</AppShell>
+        <Toaster richColors position="top-right" closeButton />
       </body>
     </html>
   )

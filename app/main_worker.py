@@ -1,13 +1,12 @@
 import logging
 
+from app.config import LOG_FORMAT
+from app.infrastructure.logging import configure_logging
 from app.infrastructure.metrics import start_worker_metrics_server
 from app.infrastructure.queue.rabbitmq_consumer import run_command_consumer
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+configure_logging(log_format=LOG_FORMAT, level=logging.INFO)
 
 
 if __name__ == "__main__":

@@ -4,12 +4,11 @@ import uvicorn
 
 from app.bootstrap import create_service_app
 from app.api.routes import include_ai_routers
+from app.config import LOG_FORMAT
+from app.infrastructure.logging import configure_logging
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+configure_logging(log_format=LOG_FORMAT, level=logging.INFO)
 
 
 app = create_service_app(

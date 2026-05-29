@@ -1,6 +1,0 @@
-com\ocrweb\controlplane\web\ControlPlaneWebInfrastructureTest.class
-com\ocrweb\controlplane\task\service\TaskCommandProducerTest.class
-com\ocrweb\controlplane\web\ControlPlaneWebInfrastructureTest$TestController.class
-com\ocrweb\controlplane\archive\service\ArchiveRecordServiceTest.class
-com\ocrweb\controlplane\health\ControlPlaneHealthServiceTest.class
-com\ocrweb\controlplane\task\service\TaskRegionImageServiceTest.class

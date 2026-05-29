@@ -266,6 +266,12 @@ async def _execute_non_hierarchical(command: OcrTaskCommand, file_path: str) -> 
 
 
 async def process_task_command(command: OcrTaskCommand, *, retry_count: int = 0) -> dict[str, Any]:
+    from app.infrastructure.logging import new_trace_id, set_trace_context
+    new_trace_id()
+    set_trace_context(
+        task_id=str(command.task_id),
+        batch_id=str(getattr(command, "batch_id", "") or ""),
+    )
     started_at = time.perf_counter()
     client = ControlPlaneCallbackClient.from_command(command)
     staged_file_path = ""
@@ -483,6 +489,9 @@ async def process_task_command(command: OcrTaskCommand, *, retry_count: int = 0)
                 logger.warning("Failed to cleanup staged input file: %s", staged_file_path, exc_info=True)
         _cleanup_runtime_memory()
         task_finished(command_mode)
+        # 更新熔断器状态指标
+        from app.infrastructure.metrics.worker_metrics import export_circuit_breaker_states
+        export_circuit_breaker_states()
 
 
 def process_task_command_sync(payload: dict[str, Any], *, retry_count: int = 0) -> dict[str, Any]:
@@ -491,13 +500,12 @@ def process_task_command_sync(payload: dict[str, Any], *, retry_count: int = 0) 
 
 
 def run_worker_entrypoint() -> None:
+    from app.config import LOG_FORMAT
+    from app.infrastructure.logging import configure_logging
     from app.infrastructure.metrics import start_worker_metrics_server
     from app.infrastructure.queue.rabbitmq_consumer import run_command_consumer
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    configure_logging(log_format=LOG_FORMAT, level=logging.INFO)
     logger.info("worker_executor.py started directly; delegating to RabbitMQ worker entrypoint.")
     start_worker_metrics_server()
     run_command_consumer()

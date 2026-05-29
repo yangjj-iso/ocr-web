@@ -4,6 +4,7 @@ import * as React from 'react'
 import dayjs from 'dayjs'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, FileText, Loader2, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { deleteTasksBySubmission, getTaskSubmissions, getTasks } from '@/api/ocr'
 import { Button } from '@/components/ui/button'
@@ -120,13 +121,16 @@ export const HistoryList = React.forwardRef<HistoryListHandle, HistoryListProps>
 
     async function doDelete() {
       if (!deleteTarget?.submission_id) return
+      const count = deleteTarget.count || 0
       setDeleting(true)
       try {
         await deleteTasksBySubmission(deleteTarget.submission_id)
         setDeleteTarget(null)
         await loadSubmissions()
-      } catch (_) {}
-      finally { setDeleting(false) }
+        toast.success(`已删除 ${count} 份材料`)
+      } catch (_) {
+        // 错误已由 axios 拦截器统一弹出 toast
+      } finally { setDeleting(false) }
     }
 
     if (loading) {

@@ -13,6 +13,11 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueCo
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:  # pgvector not installed — column will be nullable text fallback
+    Vector = None
+
 from app.db.database import Base
 
 
@@ -66,6 +71,10 @@ class ArchiveRecord(Base):
     pages: Mapped[str | None] = mapped_column(String(20), nullable=True)          # 页数
     classification: Mapped[str | None] = mapped_column(String(50), nullable=True) # 密级
     remarks: Mapped[str | None] = mapped_column(String(1000), nullable=True)      # 备注
+    embedding = mapped_column(
+        Vector(1024) if Vector is not None else Text,
+        nullable=True,
+    )  # pgvector embedding for semantic search
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

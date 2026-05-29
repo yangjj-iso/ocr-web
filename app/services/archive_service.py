@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 
@@ -41,7 +42,57 @@ async def save_archive_record(
 
     await db.commit()
     await db.refresh(record)
+
+    # 异步生成 embedding（fire-and-forget，不阻塞主流程）
+    asyncio.ensure_future(_generate_embedding_for_record(record))
+
     return record
+
+
+async def _generate_embedding_for_record(record: ArchiveRecord) -> None:
+    """为单条 ArchiveRecord 生成 embedding 并写入数据库"""
+    try:
+        from app.services.embedding_service import embed_single, is_embedding_available
+
+        if not is_embedding_available():
+            return
+
+        text = _record_text_for_embedding(record)
+        if not text:
+            return
+
+        vector = await embed_single(text)
+        if vector is None:
+            return
+
+        # 写入 embedding 列
+        from app.db.database import async_session
+        async with async_session() as db:
+            from sqlalchemy import update
+            await db.execute(
+                update(ArchiveRecord)
+                .where(ArchiveRecord.id == record.id)
+                .values(embedding=vector)
+            )
+            await db.commit()
+            logger.debug("Embedding generated for archive record id=%d", record.id)
+    except Exception as exc:
+        logger.warning("Failed to generate embedding for record id=%s: %s", record.id, exc)
+
+
+def _record_text_for_embedding(record: ArchiveRecord) -> str:
+    """拼接所有字段作为 embedding 输入文本"""
+    parts = [
+        str(record.archive_no or ""),
+        str(record.doc_no or ""),
+        str(record.responsible or ""),
+        str(record.title or ""),
+        str(record.date or ""),
+        str(record.pages or ""),
+        str(record.classification or ""),
+        str(record.remarks or ""),
+    ]
+    return " ".join(p for p in parts if p).strip()
 
 
 async def get_archive_records(

@@ -81,3 +81,13 @@ ocr:
   internal-api:
     token: ${OCR_INTERNAL_API_TOKEN:change-this-internal-token}
     base-url: ${OCR_CONTROL_PLANE_BASE_URL:http://127.0.0.1:8080}
+  csrf:
+    enabled: ${OCR_CSRF_ENABLED:true}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  api-docs:
+    path: /v3/api-docs

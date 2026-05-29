@@ -3,6 +3,7 @@
 import * as React from 'react'
 import dayjs from 'dayjs'
 import { motion } from 'framer-motion'
+import { toast } from 'sonner'
 import {
   CheckCircle2,
   Clock,
@@ -78,10 +79,18 @@ export default function OrgPage() {
       else if (action === 'reject') await rejectUser(user.id)
       else if (action === 'grant-admin') await setUserAdmin(user.id, true)
       else if (action === 'revoke-admin') await setUserAdmin(user.id, false)
+      const successText: Record<string, string> = {
+        approve: `已批准用户 "${user.username}"`,
+        reject: `已拒绝用户 "${user.username}"`,
+        'grant-admin': `已将 "${user.username}" 设为管理员`,
+        'revoke-admin': `已撤销 "${user.username}" 的管理员权限`,
+      }
       setActionTarget(null)
       await loadUsers()
-    } catch (_) {}
-    finally { setActing(false) }
+      toast.success(successText[action] || '操作成功')
+    } catch (_) {
+      // 错误已由 axios 拦截器统一弹出 toast，此处仅保持对话框关闭状态不变
+    } finally { setActing(false) }
   }
 
   function actionLabel() {

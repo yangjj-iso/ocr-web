@@ -1,6 +1,8 @@
 """
 LLM 客户端工厂 — 根据配置创建对应的 Provider 实例
 
+支持主备 fallback 链：主 provider 熔断时自动切换到备用 provider。
+
 优先读取新配置 (LLM_*), 兼容旧配置 (MINIMAX_*)
 切换 Provider 只需改 .env, 无需改代码。
 
@@ -19,19 +21,28 @@ LLM 客户端工厂 — 根据配置创建对应的 Provider 实例
     LLM_BASE_URL=http://localhost:8000/v1
     LLM_API_KEY=token-abc123
     LLM_MODEL=Qwen/Qwen2.5-14B-Instruct
+
+    # Fallback (备用 provider)
+    LLM_FALLBACK_BASE_URL=http://localhost:11434/v1
+    LLM_FALLBACK_API_KEY=
+    LLM_FALLBACK_MODEL=qwen2.5:7b
 """
 import logging
 import os
 
 import config as _config  # noqa: F401  # ensure .env is loaded before reading os.getenv
 
-from app.llm.base import LLMProvider
+from app.llm.base import LLMMessage, LLMProvider, LLMResponse
+from app.llm.circuit_breaker import CircuitBreaker
+from app.llm.errors import LLMCircuitOpenError, LLMError
 from app.llm.providers.openai_compatible import OpenAICompatibleProvider
 
 logger = logging.getLogger(__name__)
 
 _instance: LLMProvider | None = None
 _vision_instance: LLMProvider | None = None
+_primary_circuit_breaker: CircuitBreaker | None = None
+_vision_circuit_breaker: CircuitBreaker | None = None
 
 
 def _resolve_config(*, vision: bool = False) -> dict[str, str]:
@@ -91,19 +102,115 @@ def vision_endpoint_supports_image_inputs() -> bool:
     return True
 
 
+class FallbackProvider(LLMProvider):
+    """主备 fallback 链 — 主 provider 失败（熔断/异常）时自动切换到备用"""
+
+    def __init__(self, primary: OpenAICompatibleProvider, fallback: OpenAICompatibleProvider | None):
+        self._primary = primary
+        self._fallback = fallback
+
+    @property
+    def provider_name(self) -> str:
+        return self._primary.provider_name
+
+    @property
+    def default_model(self) -> str:
+        return self._primary.default_model
+
+    def is_available(self) -> bool:
+        return self._primary.is_available() or (self._fallback is not None and self._fallback.is_available())
+
+    async def chat_completion(
+        self,
+        messages: list[LLMMessage],
+        *,
+        model: str | None = None,
+        temperature: float = 0.1,
+        response_format: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> LLMResponse:
+        try:
+            return await self._primary.chat_completion(
+                messages,
+                model=model,
+                temperature=temperature,
+                response_format=response_format,
+                timeout_seconds=timeout_seconds,
+            )
+        except LLMCircuitOpenError:
+            if self._fallback and self._fallback.is_available():
+                logger.warning("Primary LLM circuit open, switching to fallback provider.")
+                return await self._fallback.chat_completion(
+                    messages,
+                    model=None,  # 使用 fallback 自身的默认模型
+                    temperature=temperature,
+                    response_format=response_format,
+                    timeout_seconds=timeout_seconds,
+                )
+            raise
+        except LLMError as exc:
+            if not exc.retryable:
+                raise
+            # 可重试错误已在 provider 内部重试过，到这里说明全部失败
+            if self._fallback and self._fallback.is_available():
+                logger.warning(
+                    "Primary LLM failed (%s), switching to fallback provider.",
+                    type(exc).__name__,
+                )
+                return await self._fallback.chat_completion(
+                    messages,
+                    model=None,
+                    temperature=temperature,
+                    response_format=response_format,
+                    timeout_seconds=timeout_seconds,
+                )
+            raise
+
+
+def _get_circuit_breaker(name: str) -> CircuitBreaker:
+    """创建或获取熔断器实例"""
+    from app.config import LLM_CB_FAILURE_THRESHOLD, LLM_CB_RECOVERY_SECONDS
+    return CircuitBreaker(
+        name=name,
+        failure_threshold=LLM_CB_FAILURE_THRESHOLD,
+        recovery_seconds=LLM_CB_RECOVERY_SECONDS,
+    )
+
+
+def _build_fallback_provider() -> OpenAICompatibleProvider | None:
+    """构建备用 provider（如果配置了 LLM_FALLBACK_* 环境变量）"""
+    from app.config import LLM_FALLBACK_BASE_URL, LLM_FALLBACK_API_KEY, LLM_FALLBACK_MODEL
+    if not LLM_FALLBACK_BASE_URL or not LLM_FALLBACK_MODEL:
+        return None
+    return OpenAICompatibleProvider(
+        base_url=LLM_FALLBACK_BASE_URL,
+        api_key=LLM_FALLBACK_API_KEY,
+        model=LLM_FALLBACK_MODEL,
+    )
+
+
 def get_llm_client(*, vision: bool = False) -> LLMProvider:
     """
-    获取单例的 LLM Provider 实例，支持普通的纯文本大模型（vision=False）或多模态视觉大模型（vision=True）。
-    
-    使用单例模式（基于全局变量缓存）以避免在每次调用时重复创建底层 HTTP session/client 带来过大开销。
-    因为可能需要多模态图文对话（如 GPT-4o, Qwen-VL）用于双路 OCR 校验，这里支持 `vision` 隔离实例。
+    获取 LLM Provider 实例（含 fallback 链和熔断器）。
+
+    使用单例模式以避免重复创建底层 HTTP session/client。
+    支持 vision 隔离实例用于多模态图文对话。
     """
-    global _instance, _vision_instance
+    global _instance, _vision_instance, _primary_circuit_breaker, _vision_circuit_breaker
     current = _vision_instance if vision else _instance
     if current is not None:
         return current
 
     config = _resolve_config(vision=vision)
+    cb_name = "vision-llm" if vision else "llm"
+
+    # 创建熔断器
+    cb = _get_circuit_breaker(cb_name)
+    if vision:
+        _vision_circuit_breaker = cb
+    else:
+        _primary_circuit_breaker = cb
+
     logger.info(
         "Initializing %sLLM provider: base_url=%s, model=%s, api_key=%s",
         "vision-" if vision else "",
@@ -112,12 +219,18 @@ def get_llm_client(*, vision: bool = False) -> LLMProvider:
         "***" if config["api_key"] else "<empty>",
     )
 
-    provider = OpenAICompatibleProvider(
+    primary = OpenAICompatibleProvider(
         base_url=config["base_url"],
         api_key=config["api_key"],
         model=config["model"],
         timeout_seconds=float(config["timeout_seconds"]),
+        circuit_breaker=cb,
     )
+
+    # 构建 fallback（仅非 vision 模式）
+    fallback = _build_fallback_provider() if not vision else None
+    provider: LLMProvider = FallbackProvider(primary, fallback)
+
     if vision:
         _vision_instance = provider
     else:
@@ -125,8 +238,15 @@ def get_llm_client(*, vision: bool = False) -> LLMProvider:
     return provider
 
 
+def get_primary_circuit_breaker() -> CircuitBreaker | None:
+    """获取主 LLM 熔断器实例（用于指标暴露）"""
+    return _primary_circuit_breaker
+
+
 def reset_llm_client() -> None:
     """重置单例（用于测试或动态切换配置）"""
-    global _instance, _vision_instance
+    global _instance, _vision_instance, _primary_circuit_breaker, _vision_circuit_breaker
     _instance = None
     _vision_instance = None
+    _primary_circuit_breaker = None
+    _vision_circuit_breaker = None

@@ -1,10 +1,15 @@
 import axios from 'axios'
 import { controlPlaneApiBase, requestDefaults } from './runtime'
+import { attachErrorToast, attachCsrfToken } from './index'
 
-const authApi = axios.create({
-  baseURL: controlPlaneApiBase('/auth'),
-  ...requestDefaults,
-})
+const authApi = attachErrorToast(
+  attachCsrfToken(
+    axios.create({
+      baseURL: controlPlaneApiBase('/auth'),
+      ...requestDefaults,
+    })
+  )
+)
 
 export const getAuthStatus = () => authApi.get('/me')
 

@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
   async rewrites() {
     const target =
       process.env.NEXT_PUBLIC_DEV_API_PROXY_TARGET ||

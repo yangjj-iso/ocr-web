@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 
 import {
   aiMergeExtractBatch,
@@ -482,11 +483,17 @@ export function useBatchUpload(mode: string, callbacks: BatchCallbacks = {}) {
   // PLACEHOLDER_AI
 
   const doExportExcel = useCallback(() => {
+    if (!lastBatchId) {
+      toast.error('当前没有可导出的批次记录。')
+      return
+    }
     exportArchiveRecords({ batch_id: lastBatchId, filename: 'batch_archive.xlsx' })
+    toast.success('已开始下载本次归档清单')
   }, [lastBatchId])
 
   const doExportInitExcel = useCallback(() => {
     exportArchiveRecords({ batch_id: 'init_import', filename: 'archive_catalog.xlsx' })
+    toast.success('已开始下载目录清单')
   }, [])
 
   const fetchAiMetrics = useCallback(async ({ forceRefresh = false, batchId = '' } = {}) => {

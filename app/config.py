@@ -224,6 +224,29 @@ MINIMAX_ENABLED = _env_flag("MINIMAX_ENABLED", bool(MINIMAX_API_KEY.strip()))
 BAIDU_API_KEY = os.getenv("BAIDU_API_KEY", "")
 BAIDU_SECRET_KEY = os.getenv("BAIDU_SECRET_KEY", "")
 
+# Embedding (RAG vector search)
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", os.getenv("LLM_BASE_URL", "")).strip()
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small").strip()
+EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+EMBEDDING_BATCH_SIZE = max(1, int(os.getenv("EMBEDDING_BATCH_SIZE", "32")))
+
+# LLM Circuit Breaker
+LLM_CB_FAILURE_THRESHOLD = max(1, int(os.getenv("LLM_CB_FAILURE_THRESHOLD", "5")))
+LLM_CB_RECOVERY_SECONDS = max(1.0, float(os.getenv("LLM_CB_RECOVERY_SECONDS", "60")))
+
+# LLM Fallback
+LLM_FALLBACK_BASE_URL = os.getenv("LLM_FALLBACK_BASE_URL", "").strip()
+LLM_FALLBACK_API_KEY = os.getenv("LLM_FALLBACK_API_KEY", "").strip()
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "").strip()
+
+# Agent timeouts
+PAGE_AGENT_TIMEOUT_SECONDS = float(os.getenv("PAGE_AGENT_TIMEOUT_SECONDS", "120"))
+OCR_NODE_TIMEOUT_SECONDS = float(os.getenv("OCR_NODE_TIMEOUT_SECONDS", "90"))
+
+# Structured logging
+LOG_FORMAT = _env_choice("LOG_FORMAT", "text", {"text", "json"})
+
 # Local filesystem access
 LOCAL_PATH_ROOTS = _build_path_roots(
     os.getenv("LOCAL_PATH_ROOTS", ""),
